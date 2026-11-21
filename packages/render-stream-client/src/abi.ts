@@ -91,6 +91,7 @@ export interface GswRs {
   set_async_programs?(on: boolean): void;
   /** Pin material TIME; optional so older glue ignores the client option. */
   set_static_shaders?(on: boolean): void;
+  set_draw_batching?(mask: number): void;
   /** J1: an apply of no change over the same state, taking emitter buffers set since the last
    * (1: applied). Optional: a core built before it. */
   reapply?(): number;
@@ -252,6 +253,10 @@ export const STAT_FIELDS = [
   "damage_us",
   "damage_permille",
   "damage_regions",
+  "slot_calls",
+  "slot_bytes",
+  "slot_fallbacks",
+  "use_programs",
 ] as const;
 export type StatName = (typeof STAT_FIELDS)[number];
 

@@ -28,6 +28,8 @@ async function main(): Promise<void> {
       "to-seq": { type: "string" },
       "static-shaders": { type: "boolean", default: false },
       sabotage: { type: "string" },
+      batching: { type: "string", default: "0" },
+      damage: { type: "string", default: "on" },
       "rs-build": { type: "string", default: DEFAULT_RS_BUILD },
       "allow-no-partial": { type: "boolean", default: false },
     },
@@ -50,10 +52,20 @@ async function main(): Promise<void> {
   )
     throw new Error("from-seq exceeds to-seq");
   if (
+    !Number.isInteger(Number(a.batching)) ||
+    Number(a.batching) < 0 ||
+    Number(a.batching) > 0xffff_ffff
+  )
+    throw new Error(`invalid --batching: ${a.batching}`);
+  if (!["on", "off"].includes(a.damage))
+    throw new Error(`invalid --damage: ${a.damage}`);
+  if (
     a.sabotage &&
-    !["damage-no-scissor-clear", "damage-skip-back-producers"].includes(
-      a.sabotage,
-    )
+    ![
+      "damage-no-scissor-clear",
+      "damage-skip-back-producers",
+      "slot-swap",
+    ].includes(a.sabotage)
   )
     throw new Error(`unknown sabotage ${a.sabotage}`);
   const out = resolve(a.out);
@@ -126,6 +138,8 @@ async function main(): Promise<void> {
       store: "/store",
       nonce,
       "apply-every": a["apply-every"],
+      batching: a.batching,
+      damage: a.damage,
     });
     for (const key of ["from-seq", "to-seq", "sabotage"] as const)
       if (a[key] !== undefined) query.set(key, a[key]);

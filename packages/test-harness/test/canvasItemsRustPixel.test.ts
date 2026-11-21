@@ -46,7 +46,7 @@ import { compareRgbaBuffers } from "../src/image-diff";
 const here = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(here, "..", "..", "..");
 const ARTIFACTS = join(ROOT, "artifacts", "canvas-items-pixel");
-const WASM = join(ARTIFACTS, "wasm");
+const WASM = process.env.GSW_CANVAS_ITEMS_WASM ?? join(ARTIFACTS, "wasm");
 const BUILD = join(
   ROOT,
   "packages",
@@ -179,7 +179,8 @@ describe.skipIf(!ENABLED)(
   "canvas-items (Rust) against G7c's TypeScript executor, byte-identical",
   () => {
     beforeAll(async () => {
-      execFileSync(BUILD, { stdio: "inherit" });
+      if (!process.env.GSW_CANVAS_ITEMS_WASM)
+        execFileSync(BUILD, { stdio: "inherit" });
       const glue = await readFile(join(WASM, "canvas_items.js"));
       const wasm = await readFile(join(WASM, "canvas_items_bg.wasm"));
       const types = await readFile(join(WASM, "canvas_items.d.ts"), "utf8");
@@ -309,6 +310,134 @@ describe.skipIf(!ENABLED)(
       );
       expect(shared.ok).toBe(true);
     }, 120000);
+
+    it.each([
+      ...CASES,
+      ...buildDamageCases().map((c) => c.name),
+      "interleaved textures",
+      "slot texture updates",
+    ])("texture slots: %s is byte-identical", async (name) => {
+      const comparisons = await page.evaluate(async (name) => {
+        const results = [];
+        const differingBytes = (a: number[], b: number[]) => {
+          if (a.length !== b.length) return Math.max(a.length, b.length);
+          let count = 0;
+          for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) count++;
+          return count;
+        };
+        for (const godot of [false, true])
+          for (const format of ["rgba8", "rgb10a2"] as const)
+            for (const damage of [false, true]) {
+              const off = await window.__gswCanvasItems.slotCase(
+                name,
+                0,
+                "",
+                godot,
+                format,
+                damage,
+              );
+              const on = await window.__gswCanvasItems.slotCase(
+                name,
+                1,
+                "",
+                godot,
+                format,
+                damage,
+              );
+              results.push({
+                errors: [off.glError, on.glError],
+                frames: on.targets.map((target, f) => ({
+                  target: differingBytes(off.targets[f], target),
+                  canvas: differingBytes(off.canvases[f], on.canvases[f]),
+                  stats: on.stats[f],
+                })),
+              });
+            }
+        return results;
+      }, name);
+      for (const compared of comparisons) {
+        expect(compared.errors).toEqual([0, 0]);
+        for (const [f, frame] of compared.frames.entries()) {
+          expect(frame.target, `${name} f${f} target`).toBe(0);
+          expect(frame.canvas, `${name} f${f} canvas`).toBe(0);
+          if (frame.stats.damageMode !== 3)
+            expect(frame.stats.slotCalls).toBeGreaterThan(0);
+          if (f > 0) expect(frame.stats.slotBytes).toBe(0);
+        }
+      }
+    }, 120000);
+
+    it.each([
+      "conflict",
+      "toggle",
+      "upload-toggle",
+      "upload-toggle-resize",
+      "upload-fallback",
+    ] as const)("texture slot transition: %s stays byte-identical", async (name) => {
+      const comparisons = await page.evaluate(async (name) => {
+        const results = [];
+        for (const godot of [false, true])
+          for (const format of ["rgba8", "rgb10a2"] as const)
+            for (const surface of name === "toggle" ? [false, true] : [false]) {
+              const off = await window.__gswCanvasItems.slotTransitionCase(
+                name,
+                0,
+                godot,
+                format,
+                surface,
+              );
+              const on = await window.__gswCanvasItems.slotTransitionCase(
+                name,
+                1,
+                godot,
+                format,
+                surface,
+              );
+              results.push({ off, on, godot, format, surface });
+            }
+        return results;
+      }, name);
+      for (const { off, on, godot, format, surface } of comparisons) {
+        expect([off.glError, on.glError]).toEqual([0, 0]);
+        expect(on.stats[0].slotCalls).toBeGreaterThan(0);
+        expect(on.targets).toHaveLength(off.targets.length);
+        for (let f = 0; f < on.targets.length; f++) {
+          const label = `${name} ${godot}/${format}/surface=${surface} f${f}`;
+          expect(
+            byteDiff(off.targets[f], on.targets[f], off.width).differingBytes,
+            `${label} target`,
+          ).toBe(0);
+          expect(
+            byteDiff(off.canvases[f], on.canvases[f], off.width).differingBytes,
+            `${label} canvas`,
+          ).toBe(0);
+        }
+        if (name === "conflict")
+          expect(on.stats[1].slotFallbacks).toBeGreaterThan(0);
+        if (name === "conflict" || name === "toggle") {
+          expect(on.stats.at(-1)!.slotCalls).toBeGreaterThan(0);
+          expect(on.stats.at(-1)!.slotBytes).toBeGreaterThan(0);
+        }
+        if (name === "upload-fallback")
+          expect(on.stats[2].slotFallbacks).toBeGreaterThan(0);
+      }
+    }, 120000);
+
+    it("slot-swap is caught by the byte oracle", async () => {
+      const { off, bad } = await page.evaluate(async () => ({
+        off: await window.__gswCanvasItems.slotCase("interleaved textures", 0),
+        bad: await window.__gswCanvasItems.slotCase(
+          "interleaved textures",
+          1,
+          "slot-swap",
+        ),
+      }));
+      expect(bad.glError).toBe(0);
+      expect(bad.stats[0].slotCalls).toBeGreaterThan(0);
+      expect(
+        byteDiff(off.targets[0], bad.targets[0], off.width).differingBytes,
+      ).toBeGreaterThan(0);
+    });
 
     it.each(CASES)("damage enabled: %s stays byte-identical", async (name) => {
       const result = await page.evaluate(

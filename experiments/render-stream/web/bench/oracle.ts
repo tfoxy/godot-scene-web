@@ -7,6 +7,8 @@ interface OracleHost extends GswRs {
   live_accept(len: number): number;
   needed_kinds_ptr(): number;
   set_static_shaders(on: boolean): void;
+  set_draw_batching(mask: number): void;
+  set_damage_redraw(on: boolean): void;
   enable_damage_oracle(canvas: HTMLCanvasElement): void;
   damage_oracle_compare(on: boolean): void;
   damage_oracle_json(): string;
@@ -14,6 +16,8 @@ interface OracleHost extends GswRs {
 }
 
 export interface OracleReport {
+  batching: number;
+  slot_calls: number;
   frames: number;
   partial: number;
   full: number;
@@ -65,6 +69,18 @@ export async function* records(url: string): AsyncGenerator<Uint8Array> {
   try {
     const magic = await take(8);
     if (!magic) throw new Error("missing magic");
+    if (
+      magic[0] !== 71 ||
+      magic[1] !== 82 ||
+      magic[2] !== 83 ||
+      magic[4] !== 13 ||
+      magic[5] !== 10 ||
+      magic[6] !== 26 ||
+      magic[7] !== 10
+    )
+      throw new Error(
+        "recording: invalid magic (expected uncompressed GRS stream)",
+      );
     yield magic;
     while (true) {
       const prefix = await take(4, true);
@@ -139,6 +155,9 @@ export async function runOracle(): Promise<void> {
     if (!res.ok) throw new Error(`PUT ${name}: ${res.status}`);
   };
   gs.enable_damage_oracle(shadow);
+  // Only the primary receives these options; the independent shadow stays full redraw, K=1.
+  gs.set_draw_batching(Number(p.get("batching") ?? 0));
+  gs.set_damage_redraw(p.get("damage") !== "off");
   if (p.get("static-shaders") === "1") {
     if (typeof gs.set_static_shaders !== "function")
       throw new Error("build lacks set_static_shaders");

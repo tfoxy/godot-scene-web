@@ -172,6 +172,9 @@ export interface RenderStreamClientOptions {
   /** Pin material TIME to the first carried shader time after enabling. Default false.
    * Particle simulation keeps its carried clock. Change with `setStaticShaders`. */
   staticShaders?: boolean;
+  /** Texture-slot batching: true = bit 1; false = 0; or a u32 mask.
+   * Omitted: retain the executor default (currently off). */
+  drawBatching?: boolean | number;
   /** Retain unchanged canvas frames. Defaults to false. */
   damageRedraw?: boolean;
   /** How much motion per transaction still counts as ambient under `frameCap` (each field
@@ -243,6 +246,7 @@ export interface RenderStreamClient {
   setStaticParticles?(on: boolean): void;
   /** Switch the material TIME pin at runtime. */
   setStaticShaders?(on: boolean): void;
+  setDrawBatching?(value: boolean | number): void;
   setDamageRedraw?(on: boolean): void;
 }
 
@@ -266,6 +270,20 @@ const pageClock: LoopClock = {
   setTimeout: (cb, ms) => window.setTimeout(cb, ms),
   clearTimeout: (id) => window.clearTimeout(id),
 };
+
+function drawBatchingMask(value: boolean | number): number {
+  if (typeof value === "boolean") return value ? 1 : 0;
+  if (
+    typeof value !== "number" ||
+    !Number.isInteger(value) ||
+    value < 0 ||
+    value > 0xffff_ffff
+  )
+    throw new TypeError(
+      "render-stream client: drawBatching must be a boolean or u32 mask",
+    );
+  return value;
+}
 
 export function createRenderStreamClient(
   options: RenderStreamClientOptions,
@@ -321,6 +339,8 @@ export function createRenderStreamClient(
     throw new TypeError(
       "render-stream client: transparentClear must be a boolean",
     );
+  if (options.drawBatching !== undefined)
+    drawBatchingMask(options.drawBatching);
   if (typeof (options.staticShaders ?? false) !== "boolean")
     throw new TypeError(
       "render-stream client: staticShaders must be a boolean",
@@ -386,6 +406,7 @@ class Client implements RenderStreamClient {
   /** The frame cap in effect (the loop's, once there is one). */
   private frameCap: RenderStreamFrameCap;
   private staticParticles: boolean;
+  private drawBatching: number | undefined;
   private staticShaders: boolean;
   private damageRedraw: boolean;
   /** Its bounds (the loop's, once there is one). */
@@ -407,6 +428,10 @@ class Client implements RenderStreamClient {
       carrierTransport(o.carrier ?? "auto", { fetchInWorker: o.fetchInWorker });
     this.frameCap = o.frameCap ?? "off";
     this.staticParticles = o.staticParticles ?? false;
+    this.drawBatching =
+      o.drawBatching === undefined
+        ? undefined
+        : drawBatchingMask(o.drawBatching);
     this.staticShaders = o.staticShaders ?? false;
     this.damageRedraw = o.damageRedraw ?? false;
     this.frameCapBounds = o.frameCapBounds;
@@ -424,6 +449,14 @@ class Client implements RenderStreamClient {
     if (bounds !== undefined) this.frameCapBounds = { ...bounds };
     this.listenInput();
     this.loop?.setFrameCap(mode, bounds);
+  }
+
+  setDrawBatching(value: boolean | number): void {
+    const mask = drawBatchingMask(value);
+    if (this.disposed || this.drawBatching === mask) return;
+    this.drawBatching = mask;
+    this.core?.setDrawBatching(mask);
+    this.loop?.wake();
   }
 
   setStaticShaders(on: boolean): void {
@@ -653,6 +686,8 @@ class Client implements RenderStreamClient {
     );
     this.core.setStaticParticles(this.staticParticles);
     this.core.setStaticShaders(this.staticShaders);
+    if (this.drawBatching !== undefined)
+      this.core.setDrawBatching(this.drawBatching);
     this.core.setDamageRedraw(this.damageRedraw);
     this.ext?.bind(this.core);
     // This can precede the session's executor: create its context with the same attributes.

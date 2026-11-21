@@ -8,6 +8,8 @@ pub struct Oracle {
     pub compare: bool,
     pub primary_links: Vec<(u32, Result<(), String>)>,
     pub shadow_links: std::collections::HashMap<u32, Result<(), String>>,
+    batching: u32,
+    slot_calls: u64,
     frames: u64,
     partial: u64,
     full: u64,
@@ -29,6 +31,8 @@ impl Oracle {
             compare: true,
             primary_links: Vec::new(),
             shadow_links: Default::default(),
+            batching: 0,
+            slot_calls: 0,
             frames: 0,
             partial: 0,
             full: 0,
@@ -56,6 +60,8 @@ impl Oracle {
         if !self.compare {
             return Ok(());
         }
+        self.batching = primary.options().batching;
+        self.slot_calls += u64::from(stats.slot_calls);
         self.frames += 1;
         match stats.damage_mode {
             1 => self.full += 1,
@@ -119,6 +125,6 @@ impl Oracle {
             .map(|(frame, seq, mode)| format!("[{frame},{seq},{mode}]"))
             .collect::<Vec<_>>()
             .join(",");
-        format!("{{\"frames\":{},\"partial\":{},\"full\":{},\"skipped\":{},\"mismatched\":{},\"first_mismatch\":{},\"damage_history_reads\":{},\"damage_modes\":[{}]}}", self.frames, self.partial, self.full, self.skipped, self.mismatched, first, self.history_reads, modes)
+        format!("{{\"batching\":{},\"slot_calls\":{},\"frames\":{},\"partial\":{},\"full\":{},\"skipped\":{},\"mismatched\":{},\"first_mismatch\":{},\"damage_history_reads\":{},\"damage_modes\":[{}]}}", self.batching, self.slot_calls, self.frames, self.partial, self.full, self.skipped, self.mismatched, first, self.history_reads, modes)
     }
 }

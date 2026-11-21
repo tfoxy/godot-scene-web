@@ -130,6 +130,19 @@ const STAT_FIELDS = [
   "vertices",
   "indices",
   "draws",
+  "encoding",
+  "stream",
+  "why",
+  "back_buffer_items",
+  "surfaces_rendered",
+  "surfaces_skipped",
+  "surfaces_unchanged",
+  "surfaces_allocated",
+  "surface_pixels",
+  "slot_calls",
+  "slot_bytes",
+  "slot_fallbacks",
+  "use_programs",
 ] as const;
 type StatName = (typeof STAT_FIELDS)[number];
 

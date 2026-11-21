@@ -33,9 +33,13 @@ import {
   type Blend,
   buildDamageCases,
   caseByName,
+  type DamageCase,
   encodePdl1,
   type ItemsCase,
+  interleavedTextures,
   quad,
+  slotTextureUpdates,
+  type TargetFormat,
   tintOf,
 } from "./canvas-items-cases";
 
@@ -45,6 +49,15 @@ interface RustHarness {
   update(pdl: Uint8Array): void;
   mark_all(): void;
   set_damage(on: boolean): void;
+  set_draw_batching?(mask: number): void;
+  update_with_indices(pdl: Uint8Array, indices: Uint32Array): void;
+  execute_retained_surface(
+    surface: number,
+    pdl: Uint8Array,
+    indices: Uint32Array,
+  ): string;
+  define_program(id: number, module: string): void;
+  set_binding(slot: number, json: string): void;
   set_sabotage(name: string): void;
   alias_surface(texture: number, surface: number): void;
   execute_surface(surface: number, pdl: Uint8Array): string;
@@ -388,6 +401,244 @@ export async function runItemsCase(
   };
 }
 
+/** Same-page K=1/K=4 oracle, including warm-up while the lazy links are pending. */
+export async function slotCase(
+  name: string,
+  batching: number,
+  sabotage = "",
+  godot = false,
+  format: TargetFormat = "rgba8",
+  damage = false,
+): Promise<DepthProbeResult & { canvases: number[][] }> {
+  const spec: ItemsCase & Partial<DamageCase> =
+    name === "interleaved textures"
+      ? interleavedTextures(format)
+      : name === "slot texture updates"
+        ? slotTextureUpdates(format)
+        : name.startsWith("damage-")
+          ? buildDamageCases().find((c) => c.name === name)!
+          : caseByName(name);
+  spec.format = format;
+  const module = await rustModule();
+  const canvas = document.createElement("canvas");
+  const harness = module.CanvasItemsTestHarness.with_options(
+    canvas,
+    sabotage,
+    godot,
+  );
+  const targets: number[][] = [],
+    canvases: number[][] = [],
+    stats: Record<string, number>[] = [];
+  try {
+    harness.set_draw_batching?.(batching);
+    const bind = () => {
+      harness.set_replay_tables(JSON.stringify(spec));
+      if (spec.depth)
+        harness.set_depth(
+          Int32Array.from(spec.depth.tiles),
+          Uint32Array.from(spec.depth.draws),
+        );
+      if (name !== "interleaved textures") return;
+      // Thirteen active samplers reach units 12..14, proving both directions of cache restoration.
+      const names = Array.from({ length: 13 }, (_, i) => `page${i}`);
+      harness.set_binding(
+        0,
+        JSON.stringify({
+          program: 1,
+          post_modulate: [1, 1, 1, 1],
+          uniforms: [],
+          samplers: names.map((name, i) => ({
+            name,
+            texture: (i % 5) + 1,
+            sampler: i % 6,
+          })),
+        }),
+      );
+    };
+    if (name === "interleaved textures") {
+      const names = Array.from({ length: 13 }, (_, i) => `page${i}`);
+      harness.define_program(
+        1,
+        `${names.map((n) => `uniform sampler2D ${n};`).join("\n")}
+void godot_item_fragment(inout vec4 COLOR, in vec2 UV) {
+  COLOR *= (${names.map((n) => `texture(${n}, UV)`).join(" + ")}) / 16.0;
+}`,
+      );
+    }
+    uploadTextures(harness, spec);
+    harness.load(encodePdl1(spec, 0));
+    bind();
+    if (batching) {
+      for (let i = 0; i < 120; i++) {
+        const warm = JSON.parse(harness.execute()) as Record<string, number>;
+        if (warm.slotCalls > 0 || !harness.set_draw_batching) break;
+        await new Promise<void>((resolve) =>
+          requestAnimationFrame(() => resolve()),
+        );
+      }
+    }
+    harness.set_damage(damage);
+    for (let f = 0; f < spec.frames.length; f++) {
+      harness.update(encodePdl1(spec, f));
+      if (name === "slot texture updates" && f > 0)
+        harness.upload_texture(1, 1, 1, new Uint8Array([0, 0, 255, 255]));
+      bind();
+      const out = rustFrame(harness);
+      targets.push(out.target);
+      canvases.push(out.canvas);
+      stats.push(out.stats);
+    }
+    return {
+      width: spec.width,
+      height: spec.height,
+      targets,
+      canvases,
+      stats,
+      glError: harness.gl_error(),
+    };
+  } finally {
+    harness.free();
+    releaseContext(canvas.getContext("webgl2"));
+  }
+}
+
+/** Exercise retained slot ownership and texture state across K=1/K=4 transitions. */
+export async function slotTransitionCase(
+  name:
+    | "conflict"
+    | "toggle"
+    | "upload-toggle"
+    | "upload-toggle-resize"
+    | "upload-fallback",
+  batching: number,
+  godot: boolean,
+  format: TargetFormat,
+  surface = false,
+): Promise<DepthProbeResult & { canvases: number[][] }> {
+  const spec = slotTextureUpdates(format);
+  // Six vertices, six indices, unchanged allocation throughout the ownership transitions.
+  spec.meshes = spec.meshes.map((m) => ({
+    ...m,
+    vertices: m.vertices.slice(0, 3),
+    indices: [0, 1, 2],
+  }));
+  const root = { ...spec, meshes: [quad(0, 0, 48, 32, { texture: 40 })] };
+  const module = await rustModule();
+  const canvas = document.createElement("canvas");
+  const harness = module.CanvasItemsTestHarness.with_options(canvas, "", godot);
+  const targets: number[][] = [],
+    canvases: number[][] = [],
+    stats: Record<string, number>[] = [];
+  const normal = [0, 1, 2, 3, 4, 5],
+    conflict = [0, 1, 2, 0, 1, 2];
+  let indices = normal;
+  const frame = () => {
+    if (surface) {
+      const out = JSON.parse(
+        harness.execute_retained_surface(
+          7,
+          encodePdl1(spec, 0),
+          Uint32Array.from(indices),
+        ),
+      );
+      return {
+        stats: out,
+        target: Array.from(harness.read_target()),
+        canvas: Array.from(harness.read_canvas()),
+      };
+    }
+    harness.update_with_indices(encodePdl1(spec, 0), Uint32Array.from(indices));
+    return rustFrame(harness);
+  };
+  const record = () => {
+    const out = frame();
+    const error = harness.gl_error();
+    if (error)
+      throw new Error(
+        `${name}/${batching}/${godot}/${format}/${surface} f${stats.length}: GL ${error}`,
+      );
+    targets.push(out.target);
+    canvases.push(out.canvas);
+    stats.push(out.stats);
+  };
+  try {
+    harness.set_draw_batching?.(batching);
+    uploadTextures(harness, spec);
+    harness.load(encodePdl1(surface ? root : spec, 0));
+    if (surface) harness.alias_surface(40, 7);
+    for (let i = 0; i < 120; i++) {
+      const out = frame();
+      if (!batching || out.stats.slotCalls > 0) break;
+      await new Promise<void>((resolve) =>
+        requestAnimationFrame(() => resolve()),
+      );
+    }
+    record();
+    if (name === "conflict" || name === "toggle") {
+      if (name === "toggle") harness.set_draw_batching?.(0);
+      indices = name === "conflict" ? conflict : [3, 4, 5, 0, 1, 2];
+      record();
+      if (name === "toggle") harness.set_draw_batching?.(batching);
+      indices = [3, 4, 5, 0, 1, 2];
+      record();
+      // Poll lazy links without changing or dirtying indices again.
+      for (
+        let i = 0;
+        batching && stats.at(-1)!.slotCalls === 0 && i < 120;
+        i++
+      ) {
+        await new Promise<void>((resolve) =>
+          requestAnimationFrame(() => resolve()),
+        );
+        record();
+      }
+    } else {
+      if (name === "upload-toggle" || name === "upload-toggle-resize") {
+        harness.set_draw_batching?.(0);
+        if (name === "upload-toggle-resize") {
+          // A size change also uploads item rows on unit one before the cached A-only draw.
+          spec.meshes = spec.meshes.slice(0, 1);
+          indices = [0, 1, 2];
+        } else {
+          // Keep geometry lengths fixed so this is a cached A-only frame without item uploads.
+          spec.meshes = [spec.meshes[0], { ...spec.meshes[1], texture: 1 }];
+        }
+      } else {
+        // A different sampler makes shared vertices conflict while both K=1 calls cache A.
+        spec.meshes = [
+          spec.meshes[0],
+          { ...spec.meshes[1], texture: 1, filter: "linear" },
+        ];
+        indices = conflict;
+      }
+      record();
+      record();
+      harness.upload_texture(1, 1, 1, new Uint8Array([0, 0, 255, 255]));
+      spec.meshes = [
+        spec.meshes[0],
+        {
+          ...quad(24, 0, 24, 32, { untextured: true }),
+          vertices: quad(24, 0, 24, 32).vertices.slice(0, 3),
+          indices: [0, 1, 2],
+        },
+      ];
+      indices = normal;
+      record();
+    }
+    return {
+      width: spec.width,
+      height: spec.height,
+      targets,
+      canvases,
+      stats,
+      glError: harness.gl_error(),
+    };
+  } finally {
+    harness.free();
+    releaseContext(canvas.getContext("webgl2"));
+  }
+}
+
 export async function damageSequence(
   name: string,
   damage: boolean,
@@ -652,6 +903,8 @@ declare global {
         contextLoss?: boolean,
         damage?: boolean,
       ): Promise<ItemsCaseResult>;
+      slotCase: typeof slotCase;
+      slotTransitionCase: typeof slotTransitionCase;
       damageSequence: typeof damageSequence;
       damageStart: typeof damageStart;
       damageNext: typeof damageNext;
@@ -670,6 +923,8 @@ declare global {
 
 window.__gswCanvasItems = {
   run: runItemsCase,
+  slotCase,
+  slotTransitionCase,
   damageSequence,
   damageStart,
   damageNext,

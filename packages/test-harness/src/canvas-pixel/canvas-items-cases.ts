@@ -987,3 +987,93 @@ export function buildDamageCases(): DamageCase[] {
     group("damage-two-groups", false, true),
   ];
 }
+
+/** Alternating pages and all six samplers, plus item programs and a transparent group. */
+export function interleavedTextures(format: TargetFormat): DamageCase {
+  const meshes: MeshSpec[] = [];
+  for (let i = 0; i < 18; i++) {
+    meshes.push(
+      quad((i % 9) * 12, Math.floor(i / 9) * 20, 18, 24, {
+        item: 0,
+        texture: (i % 5) + 1,
+        filter: i % 2 === 0 ? "nearest" : "linear",
+        wrap: (["clamp", "repeat", "mirror"] as const)[Math.floor(i / 2) % 3],
+        ...(i === 7 ? { scissor: [24, 0, 50, 38] as const } : {}),
+      }),
+    );
+    if (i % 4 === 0)
+      meshes.push(quad(i * 5, 3, 8, 30, { item: 1, untextured: true }));
+    if (i === 4 || i === 12)
+      meshes.push(quad(30 + i * 2, 6, 20, 22, { program: 1 }));
+  }
+  for (const outline of [0, 1]) {
+    for (const texture of [4, 5, 4, 5]) {
+      meshes.push(
+        quad(4 + (meshes.length % 8) * 13, 40 + outline * 18, 24, 25, {
+          texture,
+          msdf: [4, outline],
+          filter: "linear",
+        }),
+      );
+    }
+  }
+  const first = meshes.length;
+  meshes.push(quad(24, 20, 70, 50, { texture: 2 }));
+  meshes.push(quad(30, 20, 70, 50, { texture: 3 }));
+  meshes.push(quad(20, 16, 88, 60, { colors: solid([1, 1, 1, 0.6]) }));
+  meshes.push(quad(8, 64, 90, 25, { texture: 1 }));
+  meshes.push(quad(22, 64, 90, 25, { texture: 4 }));
+  const flags = meshes.map(() => 0);
+  flags[first] = 8 | 16;
+  flags[first + 1] = 16;
+  flags[first + 2] = 64;
+  return {
+    name: "interleaved textures",
+    width: 128,
+    height: 96,
+    format,
+    clear: [0.15, 0.2, 0.3, 0.25],
+    textures: Array.from({ length: 5 }, (_, i) =>
+      texture(i + 1, 2, 2, [
+        [25 + i * 35, 210 - i * 25, 80 + i * 25, 180],
+        [210 - i * 25, 40 + i * 30, 200, 255],
+        [80, 100 + i * 25, 40 + i * 35, 80],
+        [180, 30 + i * 30, 160 - i * 20, 220],
+      ]),
+    ),
+    meshes,
+    flags,
+    ops: [[first, 1, 16, 12, 96, 68, 0, 0]],
+    frames: [
+      [
+        { xform: IDENTITY, modulate: WHITE },
+        { xform: IDENTITY, modulate: WHITE },
+      ],
+      [
+        { xform: [1, 0, 0, 1, 1, 0], modulate: WHITE },
+        { xform: IDENTITY, modulate: WHITE },
+      ],
+    ],
+  };
+}
+
+/** A texture revision must upload to unit zero even when a slot call cached that texture. */
+export function slotTextureUpdates(format: TargetFormat): ItemsCase {
+  const items = [{ xform: IDENTITY, modulate: WHITE }];
+  return {
+    name: "slot texture updates",
+    width: 48,
+    height: 32,
+    format,
+    clear: [0, 0, 0, 0],
+    textures: [
+      texture(1, 1, 1, [[255, 0, 0, 255]]),
+      texture(2, 1, 1, [[0, 255, 0, 255]]),
+    ],
+    meshes: [
+      quad(0, 0, 24, 32, { texture: 1 }),
+      quad(24, 0, 24, 32, { texture: 2 }),
+    ],
+    frames: [items, items],
+  };
+}

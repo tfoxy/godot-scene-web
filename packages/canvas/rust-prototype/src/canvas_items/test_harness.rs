@@ -16,6 +16,7 @@ fn js(error: impl std::fmt::Display) -> JsValue {
 pub struct CanvasItemsTestHarness {
     executor: CanvasItemsExecutor,
     list: DrawList,
+    surface_list: DrawList,
 }
 
 #[wasm_bindgen]
@@ -50,7 +51,14 @@ impl CanvasItemsTestHarness {
         Ok(CanvasItemsTestHarness {
             executor,
             list: DrawList::default(),
+            surface_list: DrawList::default(),
         })
+    }
+
+    pub fn set_draw_batching(&mut self, mask: u32) {
+        let mut options = self.executor.options();
+        options.batching = mask;
+        self.executor.set_options(options);
     }
 
     pub fn set_damage(&mut self, on: bool) {
@@ -82,6 +90,27 @@ impl CanvasItemsTestHarness {
             .execute_frame(&self.list, &[pass], &[])
             .map_err(js)?;
         self.list.consumed();
+        Ok(stats.to_json())
+    }
+
+    /// Update geometry with explicit shared indices before computing retained dirty ranges.
+    pub fn update_with_indices(&mut self, pdl: &[u8], indices: &[u32]) -> Result<(), JsValue> {
+        let mut next = pdl1::decode(pdl).map_err(js)?;
+        next.indices = indices.to_vec();
+        replace_marking_changes(&mut self.list, next);
+        Ok(())
+    }
+
+    /// Update and consume a retained surface list, just like the root's `update`/`execute` pair.
+    pub fn execute_retained_surface(&mut self, surface: u32, pdl: &[u8], indices: &[u32]) -> Result<String, JsValue> {
+        let mut next = pdl1::decode(pdl).map_err(js)?;
+        next.target.surface = surface;
+        next.indices = indices.to_vec();
+        replace_marking_changes(&mut self.surface_list, next);
+        let pass = SurfacePass { list: &self.surface_list, clear: true };
+        let stats = self.executor.execute_frame(&self.list, &[pass], &[]).map_err(js)?;
+        self.list.consumed();
+        self.surface_list.consumed();
         Ok(stats.to_json())
     }
 

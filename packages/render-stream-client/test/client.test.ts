@@ -356,6 +356,7 @@ describe("endpoint protocol changes", () => {
     transparentClear?: boolean,
     staticShaders?: boolean,
     damageRedraw?: boolean,
+    drawBatching?: boolean | number,
   ) {
     vi.useFakeTimers();
     const memory = new WebAssembly.Memory({ initial: 1 });
@@ -372,6 +373,7 @@ describe("endpoint protocol changes", () => {
       readonly free = vi.fn();
       readonly set_window = vi.fn();
       set_static_shaders: ((on: boolean) => void) | undefined = vi.fn();
+      set_draw_batching: ((mask: number) => void) | undefined = vi.fn();
       readonly reapply = vi.fn(() => 1);
       readonly payloads = new Set<string>();
       readonly live_reset = vi.fn((keep: boolean) => {
@@ -454,6 +456,7 @@ describe("endpoint protocol changes", () => {
       ...(staticParticles !== undefined ? { staticParticles } : {}),
       ...(staticShaders !== undefined ? { staticShaders } : {}),
       ...(damageRedraw !== undefined ? { damageRedraw } : {}),
+      ...(drawBatching !== undefined ? { drawBatching } : {}),
       ...(viewports !== undefined ? { viewports } : {}),
       ...(transparentClear !== undefined ? { transparentClear } : {}),
       onStatus: (st) => statuses.push(st),
@@ -604,6 +607,104 @@ describe("endpoint protocol changes", () => {
     expect(() =>
       mount(13, [], undefined, undefined, undefined, "yes" as never),
     ).toThrow(/transparentClear must be a boolean/);
+  });
+
+  it("drawBatching validates boolean/u32 options and forwards runtime masks", async () => {
+    const set = vi.spyOn(WasmStreamCore.prototype, "setDrawBatching");
+    try {
+      for (const value of [undefined, false, true, 0, 1, 15, 0xffff_ffff]) {
+        const h = mount(
+          13,
+          [],
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          value,
+        );
+        h.c.connect();
+        await vi.advanceTimersByTimeAsync(0);
+        if (value === undefined) {
+          expect(set).not.toHaveBeenCalled();
+          expect(h.instances[0].set_draw_batching).not.toHaveBeenCalled();
+          h.c.setEndpoint({ ...endpoint, protocol: 14 });
+          expect(set).not.toHaveBeenCalled();
+          expect(h.instances[1].set_draw_batching).not.toHaveBeenCalled();
+          // Explicit false must override an unknown executor default, then survive rebuilding.
+          h.c.setDrawBatching?.(false);
+          expect(h.instances[1].set_draw_batching).toHaveBeenLastCalledWith(0);
+          h.c.setEndpoint(endpoint);
+          expect(h.instances[2].set_draw_batching).toHaveBeenLastCalledWith(0);
+        } else {
+          expect(h.instances[0].set_draw_batching).toHaveBeenLastCalledWith(
+            typeof value === "number" ? value : value ? 1 : 0,
+          );
+        }
+        const instance = h.instances.at(-1)!;
+        h.c.setDrawBatching?.(true);
+        expect(instance.set_draw_batching).toHaveBeenLastCalledWith(1);
+        h.c.setDrawBatching?.(false);
+        expect(instance.set_draw_batching).toHaveBeenLastCalledWith(0);
+        h.c.dispose();
+        const calls = set.mock.calls.length;
+        h.c.setDrawBatching?.(1);
+        expect(set).toHaveBeenCalledTimes(calls);
+        set.mockClear();
+      }
+      for (const bad of [-1, 1.5, NaN, Infinity, 0x1_0000_0000, "yes"]) {
+        expect(() =>
+          mount(
+            13,
+            [],
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            bad as never,
+          ),
+        ).toThrow(/drawBatching must be a boolean or u32 mask/);
+      }
+    } finally {
+      set.mockRestore();
+    }
+  });
+
+  it("drawBatching survives replacement, retries frame settling and supports older glue", async () => {
+    const cores: WasmStreamCore[] = [];
+    const original = WasmStreamCore.prototype.setDrawBatching;
+    const set = vi
+      .spyOn(WasmStreamCore.prototype, "setDrawBatching")
+      .mockImplementation(function (this: WasmStreamCore, mask: number) {
+        cores.push(this);
+        original.call(this, mask);
+      });
+    try {
+      const h = mount(13);
+      h.c.setDrawBatching?.(true);
+      h.c.connect();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(h.instances[0].set_draw_batching).toHaveBeenLastCalledWith(1);
+      const core = cores[0],
+        g = h.instances[0];
+      h.c.setDrawBatching?.(0);
+      g.reapply.mockReturnValueOnce(0);
+      expect(core.settleParticles(1)).toBe(false);
+      expect(core.settleParticles(1)).toBe(true);
+      expect(core.settleParticles(1)).toBe(false);
+      h.c.setDrawBatching?.(15);
+      h.c.setEndpoint({ ...endpoint, protocol: 14 });
+      expect(h.instances[1].set_draw_batching).toHaveBeenLastCalledWith(15);
+      h.instances[1].set_draw_batching = undefined;
+      expect(() => h.c.setDrawBatching?.(false)).not.toThrow();
+      expect(() => h.c.setDrawBatching?.(-1)).toThrow(/drawBatching/);
+      h.c.dispose();
+    } finally {
+      set.mockRestore();
+    }
   });
 
   it("staticShaders defaults off, validates and forwards creation and runtime toggles", async () => {

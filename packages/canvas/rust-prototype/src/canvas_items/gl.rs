@@ -39,6 +39,9 @@ use gsw_canvas_draw_list::{
     UniformValue, Vertex, WHITE_TEXTURE, default_texture_texel, premultiplies,
 };
 use gsw_canvas_draw_list::{damage::{DamageFacts, Plan, PlanOptions, Planner}, cover::ProgramFacts};
+#[path = "slots.rs"]
+mod slots;
+use slots::{SlotPrograms, SlotPlan, SLOT_UNITS};
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::ops::ControlFlow;
@@ -242,6 +245,7 @@ pub enum FenceState {
 struct Gl {
     raw: glow::Context,
     calls: Cell<u32>,
+    use_programs: Cell<u32>,
 }
 
 impl Gl {
@@ -249,7 +253,12 @@ impl Gl {
         Gl {
             raw,
             calls: Cell::new(0),
+            use_programs: Cell::new(0),
         }
+    }
+    fn use_program(&self, program: Option<glow::Program>) {
+        self.use_programs.set(self.use_programs.get() + 1);
+        unsafe { self.c().use_program(program); }
     }
     /// The context, counting one GL call.
     #[inline]
@@ -424,6 +433,7 @@ enum DepthProgram {
 /// Every GL object besides the list's textures (re-created on restore).
 struct Objects {
     program: glow::Program,
+    slots: SlotPrograms,
     msdf: MsdfProgram,
     u_projection: Option<glow::UniformLocation>,
     u_godot_screen: Option<glow::UniformLocation>,
@@ -464,6 +474,9 @@ struct Objects {
 struct ListObjects {
     vertex_array: glow::VertexArray,
     vertex_buffer: glow::Buffer,
+    slot_buffer: Option<(glow::Buffer, usize)>,
+    slot_plan: SlotPlan,
+    slot_attribute: bool,
     index_buffer: glow::Buffer,
     /// `DrawList::instances`, read by DRAW_INSTANCED draws.
     instance_buffer: glow::Buffer,
@@ -541,6 +554,9 @@ impl ListObjects {
             Ok(ListObjects {
                 vertex_array,
                 vertex_buffer,
+                slot_buffer: None,
+                slot_plan: SlotPlan::default(),
+                slot_attribute: false,
                 index_buffer,
                 instance_buffer,
                 vertex_capacity: INITIAL_VERTICES,
@@ -561,6 +577,7 @@ impl ListObjects {
         unsafe {
             gl.delete_vertex_array(self.vertex_array);
             gl.delete_buffer(self.vertex_buffer);
+            if let Some((buffer, _)) = self.slot_buffer { gl.delete_buffer(buffer); }
             gl.delete_buffer(self.index_buffer);
             gl.delete_buffer(self.instance_buffer);
             gl.delete_texture(self.item_texture);
@@ -797,7 +814,7 @@ fn ensure_screen<'o>(
             );
             c.sampler_parameter_i32(sampler, glow::TEXTURE_WRAP_S, glow::CLAMP_TO_EDGE as i32);
             c.sampler_parameter_i32(sampler, glow::TEXTURE_WRAP_T, glow::CLAMP_TO_EDGE as i32);
-            c.use_program(Some(program));
+            gl.use_program(Some(program));
             cache.program = Some(program);
             c.uniform_1_i32(
                 c.get_uniform_location(program, "source").as_ref(),
@@ -807,7 +824,7 @@ fn ensure_screen<'o>(
             let u_copy_section = c.get_uniform_location(program, "copy_section");
             let u_source_section = c.get_uniform_location(program, "source_section");
             // The group program's fixed uniforms (the back buffer is this target's size).
-            c.use_program(Some(group_program));
+            gl.use_program(Some(group_program));
             cache.program = Some(group_program);
             let at = |name: &str| c.get_uniform_location(group_program, name);
             c.uniform_1_i32(at("u_texture").as_ref(), UNIT_DRAW as i32);
@@ -924,7 +941,7 @@ fn gaussian_chain(
             cache.blend_enabled = Some(false);
         }
         if cache.program != Some(screen.program) {
-            c.use_program(Some(screen.program));
+            gl.use_program(Some(screen.program));
             cache.program = Some(screen.program);
         }
         bind_vertex_array(gl, cache, present_vertex_array);
@@ -1527,6 +1544,7 @@ impl Objects {
             let u_flip_rows = gl.get_uniform_location(present_program, "u_flip_rows");
             Ok(Objects {
                 program,
+                slots: SlotPrograms::default(),
                 msdf,
                 u_projection,
                 u_godot_screen,
@@ -1658,6 +1676,9 @@ pub struct CanvasItemsExecutor {
     /// the root's): the next blit binds the root's again.
     target_unit_stale: bool,
     calls: Vec<Call>,
+    active_slots: bool,
+    slot_units_touched: bool,
+    slots_failed: bool,
     max_side: u32,
     fence: Option<(glow::Fence, u32)>,
     frames: u32,
@@ -1720,6 +1741,9 @@ impl CanvasItemsExecutor {
             surface_aliases: HashMap::new(),
             target_unit_stale: false,
             calls: Vec::new(),
+            active_slots: false,
+            slot_units_touched: false,
+            slots_failed: false,
             max_side,
             fence: None,
             frames: 0,
@@ -1966,6 +1990,13 @@ impl CanvasItemsExecutor {
             self.planner.invalidate();
             self.damage_reason = 104;
         }
+        if self.options.batching != options.batching {
+            self.planner.invalidate();
+            self.damage_reason = 106;
+        }
+        if (self.options.sabotage == Some(Sabotage::SlotSwap)) != (options.sabotage == Some(Sabotage::SlotSwap)) {
+            if let Some(o) = self.objects.as_mut() { o.slots.delete(&self.gl.raw); }
+        }
         self.options = options;
     }
 
@@ -2116,6 +2147,7 @@ impl CanvasItemsExecutor {
         }
         self.validate(root)?;
         self.gl.calls.set(0);
+        self.gl.use_programs.set(0);
         self.frames += 1;
         self.texture_ops(root, &mut stats);
         for pass in surfaces {
@@ -2175,6 +2207,7 @@ impl CanvasItemsExecutor {
                 self.version_bindings(root);
                 if let Some(o) = self.objects.as_mut() { o.list.needs_full = false; }
                 stats.gl_calls = self.gl.calls.get();
+                stats.use_programs = self.gl.use_programs.get();
                 return Ok(stats);
             }
         }
@@ -2188,6 +2221,7 @@ impl CanvasItemsExecutor {
             stats.fence_issued = 1;
         }
         stats.gl_calls = self.gl.calls.get();
+        stats.use_programs = self.gl.use_programs.get();
         Ok(stats)
     }
 
@@ -2195,6 +2229,18 @@ impl CanvasItemsExecutor {
     fn run_list(&mut self, list: &DrawList, clear: bool, partial: Option<(&[[i32; 4]], &[[i32; 4]])>, stats: &mut ExecStats) {
         self.upload(list, stats);
         self.version_bindings(list);
+        let requested_slots = self.options.batching & super::batching::SLOTS != 0;
+        let was_ready = self.objects.as_ref().is_some_and(|o| matches!(o.slots, SlotPrograms::Ready(_)));
+        let ready = requested_slots && !self.slots_failed && self.objects.as_mut().is_some_and(|o|
+            o.slots.ready(&self.gl, self.options.sabotage == Some(Sabotage::SlotSwap)));
+        if requested_slots {
+            // Losing a context during a status read is retried with the restored objects.
+            self.slots_failed |= !self.context.is_context_lost()
+                && self.objects.as_ref().is_some_and(|o| matches!(o.slots, SlotPrograms::Failed));
+            if !ready { stats.slot_fallbacks += 1; }
+            // Finishing a slot link initializes its sampler uniforms with useProgram.
+            if ready && !was_ready { self.cache.program = None; }
+        }
         let mut calls = std::mem::take(&mut self.calls);
         let counts = {
             let facts = FrameFacts {
@@ -2202,13 +2248,28 @@ impl CanvasItemsExecutor {
                 programs: &self.programs, texture_revisions: &self.texture_revisions,
                 program_revisions: &self.program_revisions,
             };
-            let counts = plan_calls(list, |id| facts.known_texture(id), |p| facts.known_binding(p), &mut calls);
+            let counts = if ready {
+                let plan = &mut self.objects.as_mut().unwrap().list.slot_plan;
+                plan.update(list, |id| facts.known_texture(id), |p| facts.known_binding(p));
+                calls.clear();
+                calls.extend_from_slice(&plan.calls);
+                self.active_slots = plan.counts.slot_fallbacks == 0;
+                stats.slot_fallbacks += plan.counts.slot_fallbacks;
+                plan.counts
+            } else {
+                self.active_slots = false;
+                self.objects.as_mut().unwrap().list.slot_plan.invalidate();
+                plan_calls(list, |id| facts.known_texture(id), |p| facts.known_binding(p), &mut calls)
+            };
             // Bounds only feed the partial region loop; a Full or damage-off frame skips the walk.
             if partial.is_some() {
                 call_bounds(list, &mut calls, |d| self.planner.draw_bounds(d));
             }
             counts
         };
+        // A conflict fallback also updates the CPU stream. Keep its GPU bytes in sync
+        // before the next planner update replaces the dirty ranges.
+        if ready { self.upload_slots(stats); }
         stats.planned_calls += calls.len() as u32;
         stats.draws_merged += counts.merged;
         stats.draws_skipped += counts.skipped;
@@ -3110,8 +3171,34 @@ impl CanvasItemsExecutor {
         }
     }
 
-    /// Draw `calls` into the active list's target, cleared first when `clear` (Godot's clear of
-    /// a render target; a surface whose clear mode is not due keeps its contents).
+    /// Upload only the changed slot byte ranges into this list's lazily allocated buffer.
+    fn upload_slots(&mut self, stats: &mut ExecStats) {
+        let Some(o) = self.objects.as_mut() else { return; };
+        let l = &mut o.list;
+        let gl = &self.gl;
+        if l.slot_buffer.is_none() {
+            let Ok(buffer) = (unsafe { gl.c().create_buffer() }) else { return; };
+            l.slot_buffer = Some((buffer, 0));
+            bind_vertex_array(gl, &mut self.cache, l.vertex_array);
+            bind_array_buffer(gl, &mut self.cache, buffer);
+            unsafe { gl.c().vertex_attrib_pointer_i32(8, 1, glow::UNSIGNED_BYTE, 1, 0); }
+        }
+        let (buffer, capacity) = l.slot_buffer.as_mut().unwrap();
+        bind_array_buffer(gl, &mut self.cache, *buffer);
+        if *capacity < l.slot_plan.stream.len() {
+            *capacity = l.slot_plan.stream.len().next_power_of_two();
+            unsafe { gl.c().buffer_data_size(glow::ARRAY_BUFFER, *capacity as i32, glow::DYNAMIC_DRAW); }
+            l.slot_plan.dirty.clear();
+            l.slot_plan.dirty.push(0..l.slot_plan.stream.len());
+        }
+        for range in l.slot_plan.dirty.drain(..) {
+            if range.is_empty() { continue; }
+            unsafe { gl.c().buffer_sub_data_u8_slice(glow::ARRAY_BUFFER, range.start as i32, &l.slot_plan.stream[range.clone()]); }
+            stats.slot_bytes += range.len() as u32; stats.upload_calls += 1;
+        }
+    }
+
+    /// Draw `calls` into the active target, cleared first when `clear` is due.
     fn draw(
         &mut self,
         list: &DrawList,
@@ -3302,7 +3389,20 @@ impl CanvasItemsExecutor {
             // `plan_calls` admitted only known blends.
             let blend = Blend::from_u32(draw.blend).unwrap_or(Blend::Mix);
             let msdf = draw.flags & DRAW_MSDF != 0;
-            if group_mode != 0 {
+            let slot_call = self.active_slots && draw.program == BUILTIN_PROGRAM
+                && draw.flags & (DRAW_GROUP_CLIP | DRAW_GROUP_COMPOSITE | DRAW_INSTANCED) == 0;
+            if objects.list.slot_attribute != slot_call {
+                unsafe {
+                    if slot_call { gl.c().enable_vertex_attrib_array(8); }
+                    else { gl.c().disable_vertex_attrib_array(8); gl.c().vertex_attrib_4_u32(8, 0, 0, 0, 1); }
+                }
+                objects.list.slot_attribute = slot_call;
+            }
+            if slot_call {
+                if let SlotPrograms::Ready(programs) = &mut objects.slots {
+                    programs[msdf as usize].bind(gl, cache, (width, height), godot, draw, opaque, sabotage);
+                }
+            } else if group_mode != 0 {
                 // A group owner through Godot's default clip-children or canvas-group shader.
                 let Some(bb) = objects.list.screen.as_mut() else {
                     stats.calls_dropped += 1;
@@ -3310,7 +3410,7 @@ impl CanvasItemsExecutor {
                 };
                 let g = &mut bb.group;
                 if cache.program != Some(g.program) {
-                    unsafe { gl.c().use_program(Some(g.program)) };
+                    gl.use_program(Some(g.program));
                     cache.program = Some(g.program);
                 }
                 if g.projection != Some((width, height, godot)) {
@@ -3341,7 +3441,7 @@ impl CanvasItemsExecutor {
                 // The builtin's MSDF variant.
                 let m = &mut objects.msdf;
                 if cache.program != Some(m.program) {
-                    unsafe { gl.c().use_program(Some(m.program)) };
+                    gl.use_program(Some(m.program));
                     cache.program = Some(m.program);
                 }
                 if cache.msdf_projection != Some((width, height, godot)) {
@@ -3369,7 +3469,7 @@ impl CanvasItemsExecutor {
                 }
             } else if draw.program == BUILTIN_PROGRAM {
                 if cache.program != Some(objects.program) {
-                    unsafe { gl.c().use_program(Some(objects.program)) };
+                    gl.use_program(Some(objects.program));
                     cache.program = Some(objects.program);
                 }
                 if cache.projection != Some((width, height, godot)) {
@@ -3398,7 +3498,7 @@ impl CanvasItemsExecutor {
                     continue;
                 };
                 if cache.program != Some(item.program) {
-                    unsafe { gl.c().use_program(Some(item.program)) };
+                    gl.use_program(Some(item.program));
                     cache.program = Some(item.program);
                     stats.program_binds += 1;
                 }
@@ -3551,9 +3651,13 @@ impl CanvasItemsExecutor {
                 level.map(|level| depth_ndc(level, true))
             };
             if let Some(z) = z {
-                if cache.u_depth != Some((objects.program, z.to_bits())) {
-                    unsafe { gl.c().uniform_1_f32(objects.u_depth.as_ref(), z) };
-                    cache.u_depth = Some((objects.program, z.to_bits()));
+                let (program, location) = if slot_call {
+                    let SlotPrograms::Ready(programs) = &objects.slots else { unreachable!() };
+                    (programs[msdf as usize].program, programs[msdf as usize].u_depth.as_ref())
+                } else { (objects.program, objects.u_depth.as_ref()) };
+                if cache.u_depth != Some((program, z.to_bits())) {
+                    unsafe { gl.c().uniform_1_f32(location, z) };
+                    cache.u_depth = Some((program, z.to_bits()));
                 }
             }
             if level.is_some() || group_test {
@@ -3562,7 +3666,7 @@ impl CanvasItemsExecutor {
             set_blend(gl, cache, blend, opaque, stats);
             let premultiply = premultiplies(blend, opaque);
             // (The MSDF variant holds its own `u_premultiply_out`, set above.)
-            if draw.program == BUILTIN_PROGRAM
+            if !slot_call && draw.program == BUILTIN_PROGRAM
                 && !msdf
                 && group_mode == 0
                 && cache.premultiply != Some(premultiply)
@@ -3583,7 +3687,46 @@ impl CanvasItemsExecutor {
             // An all-untextured call binds the white texel too: its fragments ignore the texture,
             // but leaving a stale binding in place (the cache is not the whole GL state) can drop
             // an MSDF frame's draws after an atlas re-upload.
-            if tex_draw.flags & DRAW_UNTEXTURED != 0 || tex_draw.texture == WHITE_TEXTURE {
+            if slot_call {
+                self.slot_units_touched = true;
+                // Item samplers reach units 3..15, including 12..14. Both paths consult this
+                // cache, so returning in either direction restores every required binding.
+                for (i, unit) in SLOT_UNITS.into_iter().enumerate() {
+                    let (id, bits) = call.slots[i];
+                    let texture = if id == WHITE_TEXTURE { objects.white } else {
+                        lookup_texture(&self.textures, &self.surface_aliases, objects, id).unwrap_or(objects.white)
+                    };
+                    if unit == UNIT_DRAW {
+                        bind_draw_texture_with(gl, cache, texture, stats);
+                        if id != WHITE_TEXTURE {
+                            let sampler = objects.samplers[sampler_index(bits)];
+                            if cache.draw_sampler != Some(sampler) {
+                                unsafe { gl.c().bind_sampler(unit, Some(sampler)); }
+                                cache.draw_sampler = Some(sampler); stats.sampler_binds += 1;
+                            }
+                        }
+                    } else {
+                        let previous = cache.units[unit as usize];
+                        let sampler = if id == WHITE_TEXTURE { previous.map(|p| p.1) }
+                            else { Some(objects.samplers[sampler_index(bits)]) };
+                        if previous.map(|p| p.0) != Some(texture) {
+                            set_active_unit(gl, cache, unit);
+                            unsafe { gl.c().bind_texture(glow::TEXTURE_2D, Some(texture)); }
+                            stats.texture_binds += 1;
+                        }
+                        if let Some(sampler) = sampler {
+                            if previous.map(|p| p.1) != Some(sampler) {
+                                unsafe { gl.c().bind_sampler(unit, Some(sampler)); }
+                                stats.sampler_binds += 1;
+                            }
+                            cache.units[unit as usize] = Some((texture, sampler));
+                        }
+                    }
+                }
+                // Uploads may cache-hit unit zero after a toggle or conflict fallback. Leave
+                // it active so texImage2D cannot overwrite a texture on another slot unit.
+                set_active_unit(gl, cache, UNIT_DRAW);
+            } else if tex_draw.flags & DRAW_UNTEXTURED != 0 || tex_draw.texture == WHITE_TEXTURE {
                 // A 1×1 white texel samples white under every filter and wrap: keep the sampler.
                 bind_draw_texture_with(gl, cache, objects.white, stats);
             } else if let Some(texture) =
@@ -3642,6 +3785,7 @@ impl CanvasItemsExecutor {
                     apply_scissor(gl, cache, rect, height, godot, stats);
                     issue_call(gl, call, instance_count);
                     stats.draw_calls += 1;
+                    if slot_call { stats.slot_calls += 1; }
                     stats.damage_calls += 1;
                 }
             } else {
@@ -3649,6 +3793,7 @@ impl CanvasItemsExecutor {
                 apply_scissor(gl, cache, effective_scissor(own, None), height, godot, stats);
                 issue_call(gl, call, instance_count);
                 stats.draw_calls += 1;
+                if slot_call { stats.slot_calls += 1; }
             }
             if instance_count.is_some() {
                 unsafe {
@@ -3693,7 +3838,7 @@ impl CanvasItemsExecutor {
                     cache.blend_enabled = Some(false);
                 }
                 if cache.program != Some(objects.present_program) {
-                    unsafe { gl.c().use_program(Some(objects.present_program)) };
+                    gl.use_program(Some(objects.present_program));
                     cache.program = Some(objects.present_program);
                 }
                 let flip = if self.options.godot_orientation {
@@ -3741,6 +3886,12 @@ impl CanvasItemsExecutor {
     }
 
     fn bind_draw_texture(&mut self, texture: glow::Texture, stats: &mut ExecStats) {
+        if self.active_slots || self.slot_units_touched {
+            // Keep this guard after toggling off or falling back: intervening item uploads
+            // can select another unit even though a K=1 draw cache-hits the draw texture.
+            // An executor that never used slots retains its original GL sequence.
+            set_active_unit(&self.gl, &mut self.cache, UNIT_DRAW);
+        }
         bind_draw_texture_with(&self.gl, &mut self.cache, texture, stats);
     }
 }
@@ -3771,7 +3922,8 @@ impl Drop for CanvasItemsExecutor {
                 }
             }
             self.item_shaders.delete(gl);
-            if let Some(o) = self.objects.take() {
+            if let Some(mut o) = self.objects.take() {
+                o.slots.delete(gl);
                 gl.delete_program(o.program);
                 gl.delete_program(o.msdf.program);
                 gl.delete_program(o.present_program);
@@ -3986,7 +4138,7 @@ fn depth_prepass(
         return;
     };
     if cache.program != Some(program) {
-        unsafe { gl.c().use_program(Some(program)) };
+        gl.use_program(Some(program));
         cache.program = Some(program);
     }
     set_color_mask(gl, cache, false);

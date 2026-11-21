@@ -193,6 +193,7 @@ export interface StreamCore {
   setStaticParticles?(on: boolean): void;
   /** Pin material TIME while particle simulation keeps the carried clock. */
   setStaticShaders?(on: boolean): void;
+  setDrawBatching?(mask: number): void;
   setDamageRedraw?(on: boolean): void;
   apply(seq: number): void;
   /** What the last `apply` did to the draw list, read after it (`RenderStreamStats`). The
@@ -335,6 +336,8 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
   private coding: LiveCoding | null = null;
   private particles: GswParticles;
   private staticParticles = false;
+  private drawBatching: number | undefined;
+  private drawBatchingDirty = false;
   private staticShaders = false;
   private staticShadersDirty = false;
   private damageRedraw = false;
@@ -424,6 +427,8 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
         next.set_damage_redraw?.(this.damageRedraw);
         next.set_async_programs?.(true);
         next.set_static_shaders?.(this.staticShaders);
+        if (this.drawBatching !== undefined)
+          next.set_draw_batching?.(this.drawBatching);
       } catch (e) {
         next.free();
         throw e;
@@ -804,6 +809,12 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
     this.particles = this.makeParticles();
   }
 
+  setDrawBatching(mask: number): void {
+    if (this.drawBatching !== mask) this.drawBatchingDirty = true;
+    this.drawBatching = mask;
+    this.instance?.set_draw_batching?.(mask);
+  }
+
   setStaticShaders(on: boolean): void {
     if (this.staticShaders !== on) this.staticShadersDirty = true;
     this.staticShaders = on;
@@ -830,11 +841,19 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
     if (g === null || g.reapply === undefined) return false;
     const uploaded =
       this.particles.settling && this.particles.settle(g, this.memory);
-    if (!uploaded && !this.particleUploadReady && !this.staticShadersDirty)
+    if (
+      !uploaded &&
+      !this.particleUploadReady &&
+      !this.staticShadersDirty &&
+      !this.drawBatchingDirty
+    )
       return false;
     this.particleUploadReady = false;
     const applied = g.reapply() > 0;
-    if (applied) this.staticShadersDirty = false;
+    if (applied) {
+      this.staticShadersDirty = false;
+      this.drawBatchingDirty = false;
+    }
     return applied;
   }
 
@@ -842,6 +861,7 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
     this.transactionPending = false;
     if (this.g.apply() < 0) throw failWith(seq, this.g.error());
     this.staticShadersDirty = false;
+    this.drawBatchingDirty = false;
   }
 
   draw(seq: number): void {

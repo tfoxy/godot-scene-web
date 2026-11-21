@@ -52,6 +52,14 @@ pub use gl::{gpu_families, CanvasItemsExecutor, ContextState, ExecError, FenceSt
 #[cfg(all(target_arch = "wasm32", feature = "canvas-items-test"))]
 pub mod test_harness;
 
+/// Runtime draw batching flags; other bits are reserved and have no effect. Texture slots are on
+/// by default: they are exact (each slot texture is sampled at level 0 through the same sampler
+/// objects and shader arithmetic as the single-texture program), and they cut draw calls.
+pub mod batching {
+    pub const DEFAULT: u32 = SLOTS;
+    pub const SLOTS: u32 = 1;
+}
+
 /// The GL enums [`blend_state`] names, as numbers so the choice is testable off wasm32 (glow is a
 /// wasm-only dependency); `gl.rs` asserts each equals glow's at compile time.
 pub(crate) mod gl_enum {
@@ -145,6 +153,8 @@ pub enum Sabotage {
     /// Skip every second merged draw call the executor plans (the 2nd, 4th, …, counted across
     /// frames since creation).
     DropDraws,
+    /// Sample the next texture slot to prove the on/off pixel oracle.
+    SlotSwap,
     /// Skip uploading dirty item rows unless `dirty.all`: a transform-only frame draws stale rows.
     StaleItemRow,
     /// `premultiplied-upload`: textures are premultiplied (8-bit) on upload
@@ -167,6 +177,7 @@ impl Sabotage {
     pub fn parse(name: &str) -> Result<Option<Sabotage>, String> {
         match name {
             "" | "none" => Ok(None),
+            "slot-swap" => Ok(Some(Sabotage::SlotSwap)),
             "drop-draws" => Ok(Some(Sabotage::DropDraws)),
             "stale-item-row" => Ok(Some(Sabotage::StaleItemRow)),
             "premultiplied-upload" => Ok(Some(Sabotage::PremultipliedUpload)),
@@ -189,8 +200,10 @@ pub struct SurfacePass<'a> {
     pub clear: bool,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ExecOptions {
+    /// Opt-in draw batching bits: SLOTS=1; bits 2, 4 and 8 are reserved.
+    pub batching: u32,
     /// Plan and execute retained damage, including partial redraws.
     pub damage: bool,
     pub sabotage: Option<Sabotage>,
@@ -202,6 +215,17 @@ pub struct ExecOptions {
     /// edges, a LineEdit's StyleBoxFlat). Shots read the target without a row swap and the present draw
     /// flips it onto the canvas. Off by default, which keeps `executor-webgl.ts`'s orientation.
     pub godot_orientation: bool,
+}
+
+impl Default for ExecOptions {
+    fn default() -> Self {
+        Self {
+            batching: batching::DEFAULT,
+            damage: false,
+            sabotage: None,
+            godot_orientation: false,
+        }
+    }
 }
 
 /// One `execute`'s counters: a fixed `#[repr(C)]` block of u32s, so a wasm caller can read it
@@ -267,6 +291,12 @@ pub struct ExecStats {
     pub damage_calls: u32,
     /// Back-buffer operations omitted because no replayed reader consumes their output.
     pub damage_ops_skipped: u32,
+    /// Calls using the texture-slot programs, uploaded slot bytes, and K=1 fallbacks.
+    pub slot_calls: u32,
+    pub slot_bytes: u32,
+    pub slot_fallbacks: u32,
+    /// Every useProgram issued during execution, including auxiliary passes.
+    pub use_programs: u32,
 }
 
 impl ExecStats {
@@ -297,7 +327,7 @@ impl ExecStats {
                 "\"textureBinds\":{},\"samplerBinds\":{},\"glCalls\":{},\"restored\":{},",
                 "\"fenceIssued\":{},\"programBinds\":{},\"bindingUploads\":{},",
                 "\"screenCopies\":{},\"screenMipmaps\":{},\"depthTiles\":{},\"depthTested\":{},\"plannedCalls\":{},\"damageMode\":{},\"damageReason\":{},",
-                "\"damageRegions\":{},\"damagePermille\":{},\"damageChanged\":{},\"damageUs\":{},\"damageCalls\":{},\"damageOpsSkipped\":{}}}"
+                "\"damageRegions\":{},\"damagePermille\":{},\"damageChanged\":{},\"damageUs\":{},\"damageCalls\":{},\"damageOpsSkipped\":{},\"slotCalls\":{},\"slotBytes\":{},\"slotFallbacks\":{},\"usePrograms\":{}}}"
             ),
             self.draws,
             self.draw_calls,
@@ -334,6 +364,10 @@ impl ExecStats {
             self.damage_us,
             self.damage_calls,
             self.damage_ops_skipped,
+            self.slot_calls,
+            self.slot_bytes,
+            self.slot_fallbacks,
+            self.use_programs,
 
         )
     }
@@ -1270,15 +1304,19 @@ mod tests {
             damage_us: 12,
             damage_calls: 13,
             damage_ops_skipped: 14,
+            slot_calls: 15,
+            slot_bytes: 16,
+            slot_fallbacks: 17,
+            use_programs: 18,
             ..ExecStats::default()
         };
         // The word block is read by position: a new field goes last and bumps WORDS.
-        assert_eq!(ExecStats::WORDS, 35);
+        assert_eq!(ExecStats::WORDS, 39);
         assert_eq!(stats.as_words()[23], 7);
         assert_eq!(stats.as_words()[0], 3);
         assert_eq!(stats.as_words()[19], 1);
         assert_eq!(stats.as_words()[21], 5);
-        assert_eq!(&stats.as_words()[25..], &[9, 11, 2, 4, 6, 80, 10, 12, 13, 14]);
+        assert_eq!(&stats.as_words()[25..], &[9, 11, 2, 4, 6, 80, 10, 12, 13, 14, 15, 16, 17, 18]);
         assert!(stats.to_json().starts_with("{\"draws\":3,"));
     }
 

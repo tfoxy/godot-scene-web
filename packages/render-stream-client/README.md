@@ -231,3 +231,17 @@ in progress can overrun the budget. Pending materials stay omitted; a failed lin
 the existing shaderless refusal behavior. File replay
 defines every shader before its first apply. Older wasm builds without `hold_program` keep
 unbudgeted definition.
+
+### Draw batching
+
+Omitting `drawBatching` preserves `canvas_items::batching::DEFAULT` in the Rust executor
+(texture slots, mask `1`). Changing that single constant changes the default for direct
+executors, clients and the options probe. With mask `1` the executor batches builtin draws
+across up to four texture/sampler pairs; the pixels are the same as without it. `setDrawBatching(value)` changes it at runtime;
+the next frame redraws the retained scene. `false` or mask `0` uses the original programs.
+
+Numeric masks are unsigned 32-bit integers. Bit `1` enables texture slots; every other bit
+is reserved and has no effect.
+Slot programs link lazily; draws use the original single-texture path until both are
+ready, and keep that path if linking fails. Older wasm glue without the setter ignores
+the option. The setting persists across connection and protocol changes.

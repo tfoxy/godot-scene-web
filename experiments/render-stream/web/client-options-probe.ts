@@ -17,6 +17,7 @@ async function replay(input: {
   payloads?: Record<string, string>;
   staticParticles?: boolean;
   staticShaders?: boolean;
+  drawBatching?: boolean | number;
   transparentClear?: boolean;
 }) {
   const moduleUrl = "/rust/rs_gsw_wasm.js";
@@ -44,13 +45,26 @@ async function replay(input: {
   const count = check(g.load(data.length));
   check(g.start());
   g.set_static_shaders?.(input.staticShaders ?? false);
+  if (input.drawBatching !== undefined)
+    g.set_draw_batching?.(
+      typeof input.drawBatching === "number"
+        ? input.drawBatching
+        : input.drawBatching
+          ? 1
+          : 0,
+    );
   const particles = new GswParticles(
     undefined,
     undefined,
     input.staticParticles,
   );
   const uploads: { id: number; buffer: Uint8Array<ArrayBuffer> }[] = [];
-  const frames: { message: string; time: number; calls: number }[] = [];
+  const frames: {
+    message: string;
+    time: number;
+    calls: number;
+    slotCalls: number;
+  }[] = [];
   const host = {
     particles_sync: () => g.particles_sync(),
     particles_curves_ptr: g.particles_curves_ptr?.bind(g),
@@ -67,6 +81,11 @@ async function replay(input: {
       g.particles_set(id, buffer);
     },
   };
+  const hash = async (bytes: Uint8Array<ArrayBuffer>) =>
+    Array.from(
+      new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)),
+      (v) => v.toString(16).padStart(2, "0"),
+    ).join("");
   const stats = statsReader(g, memory);
   for (let i = 1; i < count; i++) {
     const code = check(g.accept(i));
@@ -88,6 +107,7 @@ async function replay(input: {
     check(g.apply());
     check(g.draw());
     frames.push({
+      slotCalls: stats().slot_calls,
       message,
       time: g.shader_time(),
       calls: stats().executed_calls,
@@ -108,11 +128,6 @@ async function replay(input: {
   g.free();
   gl?.getExtension("WEBGL_lose_context")?.loseContext();
   canvas.remove();
-  const hash = async (bytes: Uint8Array<ArrayBuffer>) =>
-    Array.from(
-      new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)),
-      (v) => v.toString(16).padStart(2, "0"),
-    ).join("");
   const pixel = (x: number, y: number) =>
     Array.from(pixels.slice(4 * (y * width + x), 4 * (y * width + x) + 4));
   return {

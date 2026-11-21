@@ -191,6 +191,10 @@ pub struct Stats {
     pub damage_us: u32,
     pub damage_permille: u32,
     pub damage_regions: u32,
+    pub slot_calls: u32,
+    pub slot_bytes: u32,
+    pub slot_fallbacks: u32,
+    pub use_programs: u32,
 }
 
 impl Stats {
@@ -1135,6 +1139,7 @@ impl GswRs {
         }
         let mut options = self.opts.exec;
         options.damage = false;
+        options.batching = 0;
         options.sabotage = None;
         self.oracle = Some(damage_oracle::Oracle::new(canvas, options).map_err(|e| JsValue::from_str(&e))?);
         self.set_damage_redraw(true);
@@ -1383,6 +1388,16 @@ impl GswRs {
     /// definition, so a replay draws every program from its first apply.
     pub fn set_async_programs(&mut self, on: bool) {
         self.async_programs = on;
+    }
+
+    /// Opt-in draw batching bits; unimplemented bits have no effect.
+    pub fn set_draw_batching(&mut self, mask: u32) {
+        self.opts.exec.batching = mask;
+        if let Some(x) = self.executor.as_mut() {
+            let mut options = x.options();
+            options.batching = mask;
+            x.set_options(options);
+        }
     }
 
     /// Pin material TIME on the first apply carrying it. The pin belongs to this core,
@@ -3043,6 +3058,11 @@ impl GswRs {
                 self.stats.item_bytes = es.item_bytes;
                 self.stats.vertex_bytes = es.vertex_bytes;
                 self.stats.index_bytes = es.index_bytes;
+                self.stats.slot_calls = es.slot_calls;
+                self.stats.slot_bytes = es.slot_bytes;
+                self.stats.slot_fallbacks = es.slot_fallbacks;
+                self.stats.use_programs = es.use_programs;
+                if es.slot_calls != 0 { expected = es.draws - es.draws_skipped - es.draws_merged; }
                 self.totals.draw_calls += u64::from(es.draw_calls);
                 self.totals.texture_uploads += u64::from(es.texture_uploads);
                 // draw-count-parity: planned calls = lowered draws - typed skips - merges, over

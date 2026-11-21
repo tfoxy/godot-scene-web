@@ -1,8 +1,10 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parseArgs } from "node:util";
 import { build } from "esbuild";
 import { records } from "../../web/bench/oracle";
 
@@ -41,6 +43,8 @@ try {
     serve(bytes, size);
     assert.deepEqual(await collect(), [magic, record, record]);
   }
+  serve(new Uint8Array([40, 181, 47, 253, 0, 0, 0, 0]), 1);
+  await assert.rejects(collect, /invalid magic/);
   serve(bytes.slice(0, -1), 1);
   await assert.rejects(collect, /truncated recording/);
   serve(bytes.slice(0, 9), 2);
@@ -52,7 +56,7 @@ try {
   assert.equal(cancelled, true);
   globalThis.fetch = async () => new Response(null, { status: 404 });
   await assert.rejects(collect, /HTTP 404/);
-  console.log("damage-oracle stream: 7 passed, 0 failed");
+  console.log("damage-oracle stream: 8 passed, 0 failed");
 } finally {
   globalThis.fetch = originalFetch;
 }
@@ -96,6 +100,8 @@ async function replay(complete: boolean, windowStop = false) {
   let seq = 0;
   let frames = 0;
   let freed = false;
+  let batching: number | undefined;
+  let damage: boolean | undefined;
   const evidence = new Map<string, string>();
   const pageWindow: { __bench?: { state: string } } = {};
   class Host {
@@ -117,6 +123,12 @@ async function replay(complete: boolean, windowStop = false) {
       return 64;
     }
     enable_damage_oracle() {}
+    set_draw_batching(mask: number) {
+      batching = mask;
+    }
+    set_damage_redraw(on: boolean) {
+      damage = on;
+    }
     damage_oracle_compare() {}
     apply() {
       return 0;
@@ -127,8 +139,10 @@ async function replay(complete: boolean, windowStop = false) {
     }
     damage_oracle_json() {
       return JSON.stringify({
+        batching,
+        slot_calls: frames * 4,
         frames,
-        partial: frames,
+        partial: damage ? frames : 0,
         mismatched: 0,
         first_mismatch: null,
       });
@@ -154,7 +168,7 @@ async function replay(complete: boolean, windowStop = false) {
     window: pageWindow,
     location: {
       origin: "http://oracle.test",
-      search: `?nonce=test&input=/recording&store=/store${windowStop ? "&to-seq=3" : ""}`,
+      search: `?nonce=test&input=/recording&store=/store&batching=1&damage=off${windowStop ? "&to-seq=3" : ""}`,
     },
     document: {
       getElementById: () => ({}),
@@ -188,7 +202,11 @@ async function replay(complete: boolean, windowStop = false) {
     evidence.get("/evidence/test/oracle.json") ?? "null",
   );
   assert.equal(report?.frames, windowStop ? 1 : 2);
-  assert.equal(report.partial, report.frames);
+  assert.equal(batching, 1);
+  assert.equal(damage, false);
+  assert.equal(report.batching, 1);
+  assert.equal(report.slot_calls, report.frames * 4);
+  assert.equal(report.partial, 0);
 }
 try {
   await replay(true);
@@ -197,11 +215,80 @@ try {
   console.log("damage-oracle intentional window stop: passed");
   await assert.rejects(() => replay(false), /recording-incomplete/);
   console.log("damage-oracle record-aligned incomplete recording: passed");
-  console.log("damage-oracle self-test: 10 passed, 0 failed");
+  console.log("damage-oracle self-test: 11 passed, 0 failed");
 } finally {
   for (const [i, name] of globals.entries()) {
     const descriptor = saved[i];
     if (descriptor) Object.defineProperty(globalThis, name, descriptor);
     else Reflect.deleteProperty(globalThis, name);
   }
+}
+
+// Optional real-GPU checks use the same driver and compare actual executor bytes, including sabotage.
+const { values: args } = parseArgs({
+  options: {
+    recording: { type: "string" },
+    store: { type: "string" },
+    out: { type: "string" },
+    "rs-build": { type: "string" },
+    "to-seq": { type: "string", default: "300" },
+  },
+});
+if (args.recording || args.store || args.out) {
+  assert.ok(
+    args.recording && args.store && args.out,
+    "need recording, store and out",
+  );
+  for (const sabotage of [false, true]) {
+    const out = resolve(args.out, sabotage ? "slot-swap" : "slots");
+    const command = [
+      "--conditions=development",
+      fileURLToPath(new URL("../damage-oracle.ts", import.meta.url)),
+      "--recording",
+      resolve(args.recording),
+      "--store",
+      resolve(args.store),
+      "--out",
+      out,
+      "--batching",
+      "1",
+      "--damage",
+      "off",
+      "--allow-no-partial",
+      "--apply-every",
+      "1",
+      "--to-seq",
+      args["to-seq"],
+      ...(args["rs-build"] ? ["--rs-build", resolve(args["rs-build"])] : []),
+      ...(sabotage ? ["--sabotage", "slot-swap"] : []),
+    ];
+    const result = spawnSync(
+      process.execPath,
+      ["--import", "tsx", ...command],
+      {
+        encoding: "utf8",
+        timeout: 600_000,
+        maxBuffer: 8 * 1024 * 1024,
+      },
+    );
+    assert.equal(result.error, undefined, String(result.error));
+    assert.equal(
+      result.status,
+      sabotage ? 1 : 0,
+      result.stderr + result.stdout,
+    );
+    const report = JSON.parse(
+      await readFile(resolve(out, "oracle.json"), "utf8"),
+    );
+    assert.equal(report.batching, 1);
+    assert.ok(report.frames > 0);
+    assert.ok(report.slot_calls > 0);
+    assert.equal(report.partial, 0);
+    if (sabotage) assert.ok(report.mismatched > 0);
+    else assert.equal(report.mismatched, 0);
+    console.log(
+      `damage-oracle real GPU ${sabotage ? "slot-swap detected" : "slots exact"}: passed (${report.frames} frames, ${report.mismatched} mismatches, ${report.slot_calls} slot calls), ${out}/oracle.json`,
+    );
+  }
+  console.log("damage-oracle self-test with real GPU: 13 passed, 0 failed");
 }
