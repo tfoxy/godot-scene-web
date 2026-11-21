@@ -55,6 +55,21 @@ impl CanvasItemsTestHarness {
         })
     }
 
+    /// Context-only construction for preparation lifecycle tests.
+    pub fn begin(canvas: web_sys::HtmlCanvasElement) -> Result<CanvasItemsTestHarness, JsValue> {
+        Ok(Self {
+            executor: CanvasItemsExecutor::begin(canvas, ExecOptions::default()).map_err(js)?,
+            list: DrawList::default(),
+            surface_list: DrawList::default(),
+        })
+    }
+
+    pub fn prepare_step(&mut self) -> Result<bool, JsValue> {
+        self.executor.prepare_step().map_err(js)
+    }
+
+    pub fn is_prepared(&self) -> bool { self.executor.is_prepared() }
+
     pub fn set_draw_batching(&mut self, mask: u32) {
         let mut options = self.executor.options();
         options.batching = mask;

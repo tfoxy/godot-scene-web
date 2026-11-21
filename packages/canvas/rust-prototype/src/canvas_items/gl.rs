@@ -497,11 +497,79 @@ struct ListObjects {
     binding_versions: Vec<u64>,
 }
 
+/// Roll back a failed allocation stage. Successful construction transfers ownership to Objects.
+#[derive(Default)]
+struct Allocations {
+    buffers: Vec<glow::Buffer>,
+    arrays: Vec<glow::VertexArray>,
+    textures: Vec<glow::Texture>,
+    samplers: Vec<glow::Sampler>,
+    depth: Option<DepthProgram>,
+    list: Option<ListObjects>,
+}
+
+struct ObjectBuild<'a> {
+    gl: &'a glow::Context,
+    held: std::cell::RefCell<Allocations>,
+}
+
+impl<'a> ObjectBuild<'a> {
+    fn new(gl: &'a glow::Context) -> Self {
+        Self { gl, held: Default::default() }
+    }
+    fn create_buffer(&self) -> Result<glow::Buffer, String> {
+        let h = unsafe { self.gl.create_buffer()? };
+        self.held.borrow_mut().buffers.push(h);
+        Ok(h)
+    }
+    fn create_vertex_array(&self) -> Result<glow::VertexArray, String> {
+        let h = unsafe { self.gl.create_vertex_array()? };
+        self.held.borrow_mut().arrays.push(h);
+        Ok(h)
+    }
+    fn create_texture(&self) -> Result<glow::Texture, String> {
+        let h = unsafe { self.gl.create_texture()? };
+        self.held.borrow_mut().textures.push(h);
+        Ok(h)
+    }
+    fn create_sampler(&self) -> Result<glow::Sampler, String> {
+        let h = unsafe { self.gl.create_sampler()? };
+        self.held.borrow_mut().samplers.push(h);
+        Ok(h)
+    }
+    fn commit(&self) { *self.held.borrow_mut() = Allocations::default(); }
+}
+
+impl std::ops::Deref for ObjectBuild<'_> {
+    type Target = glow::Context;
+    fn deref(&self) -> &Self::Target { self.gl }
+}
+
+impl Drop for ObjectBuild<'_> {
+    fn drop(&mut self) {
+        let h = self.held.get_mut();
+        unsafe {
+            for b in h.buffers.drain(..) { self.gl.delete_buffer(b); }
+            for a in h.arrays.drain(..) { self.gl.delete_vertex_array(a); }
+            for t in h.textures.drain(..) { self.gl.delete_texture(t); }
+            for s in h.samplers.drain(..) { self.gl.delete_sampler(s); }
+            if let Some(DepthProgram::Pending { program, shaders, fence, .. }) = h.depth.take() {
+                if let Some(f) = fence { self.gl.delete_sync(f); }
+                for s in shaders { self.gl.delete_shader(s); }
+                self.gl.delete_program(program);
+            }
+            if let Some(l) = h.list.take() { l.delete(self.gl); }
+        }
+    }
+}
+
 impl ListObjects {
     /// A list's arrays (VAO, vertex, index and instance buffers, the item texture), no target.
     /// Leaves ARRAY_BUFFER, the vertex array and the active unit changed (the caller forgets
     /// them in its [`Cache`]), and the item texture bound on [`UNIT_ITEMS`].
     fn create(gl: &glow::Context) -> Result<ListObjects, String> {
+        let build = ObjectBuild::new(gl);
+        let gl = &build;
         unsafe {
             let vertex_array = gl.create_vertex_array()?;
             let vertex_buffer = gl.create_buffer()?;
@@ -551,7 +619,7 @@ impl ListObjects {
                 gl.tex_parameter_i32(glow::TEXTURE_2D, parameter, value as i32);
             }
             allocate_items(gl, 1);
-            Ok(ListObjects {
+            let objects = ListObjects {
                 vertex_array,
                 vertex_buffer,
                 slot_buffer: None,
@@ -568,7 +636,9 @@ impl ListObjects {
                 screen: None,
                 needs_full: true,
                 binding_versions: Vec::new(),
-            })
+            };
+            build.commit();
+            Ok(objects)
         }
     }
 
@@ -1393,54 +1463,87 @@ fn set_uniform(
     }
 }
 
-impl Objects {
-    /// Create every object, leaving the context in the state [`Cache::default`] does not assume.
-    /// On failure (a lost context, in practice) objects created so far are left to the context.
-    fn create(gl: &glow::Context) -> Result<Objects, String> {
+struct OrdinaryProgram {
+    program: glow::Program,
+    u_projection: Option<glow::UniformLocation>,
+    u_godot_screen: Option<glow::UniformLocation>,
+    u_screen: Option<glow::UniformLocation>,
+    u_premultiply: Option<glow::UniformLocation>,
+    u_texel_premultiply: Option<glow::UniformLocation>,
+    u_depth: Option<glow::UniformLocation>,
+}
+
+/// One builtin is issued and settled before the next is issued. A status read can wait for
+/// every compile queued in the context, so queueing all three would defeat preparation slices.
+#[derive(Default)]
+struct ObjectPreparation {
+    ordinary: Option<OrdinaryProgram>,
+    msdf: Option<MsdfProgram>,
+    present: Option<glow::Program>,
+    error: Option<String>,
+}
+
+impl ObjectPreparation {
+    fn step(&mut self, gl: &glow::Context) -> Result<Option<Objects>, String> {
+        if let Some(e) = &self.error { return Err(e.clone()); }
+        let result = self.step_inner(gl);
+        if let Err(e) = &result { self.error = Some(e.clone()); }
+        result
+    }
+
+    fn step_inner(&mut self, gl: &glow::Context) -> Result<Option<Objects>, String> {
         unsafe {
-            let program = compile(gl, VERT, FRAG)?;
-            gl.use_program(Some(program));
-            let u_projection = gl.get_uniform_location(program, "u_projection");
-            let u_godot_screen = gl.get_uniform_location(program, "u_godot_screen");
-            let u_screen = gl.get_uniform_location(program, "u_screen");
-            let u_premultiply = gl.get_uniform_location(program, "u_premultiply");
-            let u_texel_premultiply = gl.get_uniform_location(program, "u_texel_premultiply");
-            let u_depth = gl.get_uniform_location(program, "u_depth");
-            gl.uniform_1_i32(
-                gl.get_uniform_location(program, "u_texture").as_ref(),
-                UNIT_DRAW as i32,
-            );
-            gl.uniform_1_i32(
-                gl.get_uniform_location(program, "u_items").as_ref(),
-                UNIT_ITEMS as i32,
-            );
-            // The MSDF variant. Its vertex stage passes the modulate straight; the fragment
-            // stage premultiplies last.
-            let msdf_program = compile(gl, VERT, &msdf_fragment())?;
-            gl.use_program(Some(msdf_program));
-            gl.uniform_1_i32(
-                gl.get_uniform_location(msdf_program, "u_premultiply")
-                    .as_ref(),
-                0,
-            );
-            gl.uniform_1_i32(
-                gl.get_uniform_location(msdf_program, "u_texture").as_ref(),
-                UNIT_DRAW as i32,
-            );
-            gl.uniform_1_i32(
-                gl.get_uniform_location(msdf_program, "u_items").as_ref(),
-                UNIT_ITEMS as i32,
-            );
-            let msdf = MsdfProgram {
-                program: msdf_program,
-                u_projection: gl.get_uniform_location(msdf_program, "u_projection"),
-                u_godot_screen: gl.get_uniform_location(msdf_program, "u_godot_screen"),
-                u_screen: gl.get_uniform_location(msdf_program, "u_screen"),
-                u_premultiply_out: gl.get_uniform_location(msdf_program, "u_premultiply_out"),
-                u_msdf: gl.get_uniform_location(msdf_program, "u_msdf"),
-                u_msdf_no_median: gl.get_uniform_location(msdf_program, "u_msdf_no_median"),
-                premultiply_out: None,
-            };
+            if self.ordinary.is_none() {
+                let program = compile(gl, VERT, FRAG)?;
+                gl.use_program(Some(program));
+                let u_projection = gl.get_uniform_location(program, "u_projection");
+                let u_godot_screen = gl.get_uniform_location(program, "u_godot_screen");
+                let u_screen = gl.get_uniform_location(program, "u_screen");
+                let u_premultiply = gl.get_uniform_location(program, "u_premultiply");
+                let u_texel_premultiply = gl.get_uniform_location(program, "u_texel_premultiply");
+                let u_depth = gl.get_uniform_location(program, "u_depth");
+                gl.uniform_1_i32(
+                    gl.get_uniform_location(program, "u_texture").as_ref(),
+                    UNIT_DRAW as i32,
+                );
+                gl.uniform_1_i32(
+                    gl.get_uniform_location(program, "u_items").as_ref(),
+                    UNIT_ITEMS as i32,
+                );
+                self.ordinary = Some(OrdinaryProgram {
+                    program, u_projection, u_godot_screen, u_screen, u_premultiply, u_texel_premultiply, u_depth
+                });
+                return Ok(None);
+            }
+            if self.msdf.is_none() {
+                let msdf_program = compile(gl, VERT, &msdf_fragment())?;
+                gl.use_program(Some(msdf_program));
+                gl.uniform_1_i32(
+                    gl.get_uniform_location(msdf_program, "u_premultiply")
+                        .as_ref(),
+                    0,
+                );
+                gl.uniform_1_i32(
+                    gl.get_uniform_location(msdf_program, "u_texture").as_ref(),
+                    UNIT_DRAW as i32,
+                );
+                gl.uniform_1_i32(
+                    gl.get_uniform_location(msdf_program, "u_items").as_ref(),
+                    UNIT_ITEMS as i32,
+                );
+                let msdf = MsdfProgram {
+                    program: msdf_program,
+                    u_projection: gl.get_uniform_location(msdf_program, "u_projection"),
+                    u_godot_screen: gl.get_uniform_location(msdf_program, "u_godot_screen"),
+                    u_screen: gl.get_uniform_location(msdf_program, "u_screen"),
+                    u_premultiply_out: gl.get_uniform_location(msdf_program, "u_premultiply_out"),
+                    u_msdf: gl.get_uniform_location(msdf_program, "u_msdf"),
+                    u_msdf_no_median: gl.get_uniform_location(msdf_program, "u_msdf_no_median"),
+                    premultiply_out: None,
+                };
+                self.msdf = Some(msdf);
+                return Ok(None);
+            }
             let present_program = compile(gl, PRESENT_VERT, PRESENT_FRAG)?;
             gl.use_program(Some(present_program));
             gl.uniform_1_i32(
@@ -1448,6 +1551,34 @@ impl Objects {
                 UNIT_TARGET as i32,
             );
             gl.use_program(None);
+            self.present = Some(present_program);
+            let objects = Objects::create(gl, self.ordinary.as_ref().unwrap(), self.msdf.as_ref().unwrap(), present_program)?;
+            self.ordinary = None;
+            self.msdf = None;
+            self.present = None;
+            Ok(Some(objects))
+        }
+    }
+
+    fn delete(&mut self, gl: &glow::Context) {
+        unsafe {
+            if self.ordinary.is_some() || self.msdf.is_some() || self.present.is_some() {
+                gl.use_program(None);
+            }
+            if let Some(p) = self.ordinary.take() { gl.delete_program(p.program); }
+            if let Some(p) = self.msdf.take() { gl.delete_program(p.program); }
+            if let Some(p) = self.present.take() { gl.delete_program(p); }
+        }
+    }
+}
+
+impl Objects {
+    /// Finish object construction after all three builtin programs have settled.
+    fn create(gl: &glow::Context, ordinary: &OrdinaryProgram, msdf: &MsdfProgram, present_program: glow::Program) -> Result<Objects, String> {
+        let OrdinaryProgram { program, u_projection, u_godot_screen, u_screen, u_premultiply, u_texel_premultiply, u_depth } = ordinary;
+        let build = ObjectBuild::new(gl);
+        let gl = &build;
+        unsafe {
             let present_vertex_array = gl.create_vertex_array()?;
             let (depth_program, depth_shaders) = start_link(gl, DEPTH_VERT, DEPTH_FRAG)?;
             let depth_program = DepthProgram::Pending {
@@ -1456,6 +1587,7 @@ impl Objects {
                 polled: false,
                 fence: gl.fence_sync(glow::SYNC_GPU_COMMANDS_COMPLETE, 0).ok(),
             };
+            build.held.borrow_mut().depth = Some(depth_program);
             let depth_vertex_array = gl.create_vertex_array()?;
             let depth_buffer = gl.create_buffer()?;
             gl.bind_vertex_array(Some(depth_vertex_array));
@@ -1464,7 +1596,7 @@ impl Objects {
             gl.vertex_attrib_pointer_f32(0, 3, glow::FLOAT, false, 12, 0);
             gl.bind_vertex_array(None);
 
-            let list = ListObjects::create(gl)?;
+            build.held.borrow_mut().list = Some(ListObjects::create(gl)?);
 
             let white = gl.create_texture()?;
             gl.active_texture(glow::TEXTURE0 + UNIT_DRAW);
@@ -1542,16 +1674,27 @@ impl Objects {
                 samplers.try_into().map_err(|_| "samplers".to_string())?;
 
             let u_flip_rows = gl.get_uniform_location(present_program, "u_flip_rows");
-            Ok(Objects {
-                program,
+            let depth_program = build.held.borrow_mut().depth.take().unwrap();
+            let list = build.held.borrow_mut().list.take().unwrap();
+            let objects = Objects {
+                program: *program,
                 slots: SlotPrograms::default(),
-                msdf,
-                u_projection,
-                u_godot_screen,
-                u_screen,
-                u_premultiply,
-                u_texel_premultiply,
-                u_depth,
+                msdf: MsdfProgram {
+                    program: msdf.program,
+                    u_projection: msdf.u_projection.clone(),
+                    u_godot_screen: msdf.u_godot_screen.clone(),
+                    u_screen: msdf.u_screen.clone(),
+                    u_premultiply_out: msdf.u_premultiply_out.clone(),
+                    u_msdf: msdf.u_msdf.clone(),
+                    u_msdf_no_median: msdf.u_msdf_no_median.clone(),
+                    premultiply_out: None,
+                },
+                u_projection: u_projection.clone(),
+                u_godot_screen: u_godot_screen.clone(),
+                u_screen: u_screen.clone(),
+                u_premultiply: u_premultiply.clone(),
+                u_texel_premultiply: u_texel_premultiply.clone(),
+                u_depth: u_depth.clone(),
                 depth_program,
                 depth_vertex_array,
                 depth_buffer,
@@ -1565,7 +1708,9 @@ impl Objects {
                 list,
                 active: ROOT_SURFACE,
                 parked: HashMap::new(),
-            })
+            };
+            build.commit();
+            Ok(objects)
         }
     }
 }
@@ -1667,6 +1812,7 @@ pub struct CanvasItemsExecutor {
     texture_revisions: HashMap<u32, u32>,
     program_revisions: HashMap<u32, u32>,
     objects: Option<Objects>,
+    preparation: ObjectPreparation,
     cache: Cache,
     textures: HashMap<u32, glow::Texture>,
     /// [`TextureOp::Surface`] aliases: texture id to the surface whose colour texture it
@@ -1719,11 +1865,19 @@ impl CanvasItemsExecutor {
     /// Create `canvas`'s WebGL2 context ([`CONTEXT_ATTRIBUTES`]) and every object a frame needs.
     /// The canvas must have no context yet. The first `execute` must carry `dirty.all`.
     pub fn new(canvas: web_sys::HtmlCanvasElement, options: ExecOptions) -> Result<Self, String> {
+        let mut executor = Self::begin(canvas, options)?;
+        executor.finish_prepare()?;
+        Ok(executor)
+    }
+
+    /// Create and wrap the context and read capabilities, without issuing builtin programs.
+    pub fn begin(canvas: web_sys::HtmlCanvasElement, options: ExecOptions) -> Result<Self, String> {
         let context = create_context(&canvas, CONTEXT_ATTRIBUTES)?;
+        // glow's capability reads require a live context.
+        if context.is_context_lost() { return Err(ExecError::Lost.to_string()); }
         let loss = LossWatch::new(&canvas);
         let raw = glow::Context::from_webgl2_context(context.clone());
         let max_side = unsafe { raw.get_parameter_i32(glow::MAX_TEXTURE_SIZE) } as u32;
-        let objects = Objects::create(&raw)?;
         Ok(CanvasItemsExecutor {
             canvas,
             context,
@@ -1735,7 +1889,8 @@ impl CanvasItemsExecutor {
             damage_history_reads: 0,
             texture_revisions: HashMap::new(),
             program_revisions: HashMap::new(),
-            objects: Some(objects),
+            objects: None,
+            preparation: ObjectPreparation::default(),
             cache: Cache::default(),
             textures: HashMap::new(),
             surface_aliases: HashMap::new(),
@@ -1754,6 +1909,47 @@ impl CanvasItemsExecutor {
             links_restored: Vec::new(),
             version_counter: 0,
         })
+    }
+
+    /// Issue and settle at most one builtin program. `true` means every object is ready.
+    pub fn prepare_step(&mut self) -> Result<bool, String> {
+        if self.context.is_context_lost() { self.loss.mark_lost(); }
+        if self.loss.lost() && self.objects.is_some() {
+            return match self.context_state() {
+                ContextState::Lost => Err(ExecError::Lost.to_string()),
+                _ => Ok(self.is_prepared()),
+            };
+        }
+        if self.loss.lost() {
+            if !self.loss.take_restored() { return Err(ExecError::Lost.to_string()); }
+            // No old handle may be deleted or reused in the restored context.
+            self.preparation = ObjectPreparation::default();
+            self.objects = None;
+            self.gl = Gl::new(glow::Context::from_webgl2_context(self.context.clone()));
+            self.max_side = unsafe { self.gl.raw.get_parameter_i32(glow::MAX_TEXTURE_SIZE) } as u32;
+            self.cache = Cache::default();
+        }
+        if self.is_prepared() { return Ok(true); }
+        let prepared = self.preparation.step(&self.gl.raw);
+        // Loss during a slice can surface as a link or allocation error; restore must retry it.
+        if self.context.is_context_lost() {
+            self.loss.mark_lost();
+            return Err(ExecError::Lost.to_string());
+        }
+        if let Some(objects) = prepared? {
+            self.objects = Some(objects);
+        }
+        Ok(self.is_prepared())
+    }
+
+    pub fn is_prepared(&self) -> bool {
+        self.objects.is_some() && !self.loss.lost() && !self.context.is_context_lost()
+    }
+
+    fn finish_prepare(&mut self) -> Result<(), String> {
+        if self.objects.is_some() { return Ok(()); }
+        while !self.prepare_step()? {}
+        Ok(())
     }
 
     /// This context's `MAX_TEXTURE_SIZE`: a texture over it is reduced at upload
@@ -1785,6 +1981,7 @@ impl CanvasItemsExecutor {
         if self.context_state() == ContextState::Lost {
             return Err(ExecError::Lost.to_string());
         }
+        self.finish_prepare()?;
         let compiled = compile_item(&self.gl.raw, module, vertex, &mut self.item_shaders);
         self.cache.program = None;
         let compiled = compiled?;
@@ -1825,6 +2022,7 @@ impl CanvasItemsExecutor {
         if self.context_state() == ContextState::Lost {
             return Err(ExecError::Lost.to_string());
         }
+        self.finish_prepare()?;
         let (program, shaders) = start_item(&self.gl.raw, module, vertex, &mut self.item_shaders)?;
         let fence = unsafe { self.gl.raw.fence_sync(glow::SYNC_GPU_COMMANDS_COMPLETE, 0).ok() };
         // The driver starts on the commands now, not when the frame's task ends.
@@ -2022,6 +2220,8 @@ impl CanvasItemsExecutor {
     /// `webglcontextrestored` this re-creates every object and answers `Restored`: every texture is
     /// gone, and the next `execute` needs `dirty.all` and re-queued texture uploads.
     pub fn context_state(&mut self) -> ContextState {
+        // Prepared executors follow loss events; only preparation observes loss eagerly.
+        if self.objects.is_none() && self.context.is_context_lost() { self.loss.mark_lost(); }
         if self.loss.lost() {
             if !self.loss.take_restored() {
                 return ContextState::Lost;
@@ -2037,10 +2237,10 @@ impl CanvasItemsExecutor {
             self.item_shaders.forget_context();
             self.cache = Cache::default();
             self.gl = Gl::new(glow::Context::from_webgl2_context(self.context.clone()));
-            return match Objects::create(&self.gl.raw) {
-                Ok(objects) => {
+            self.preparation = ObjectPreparation::default();
+            return match self.finish_prepare() {
+                Ok(()) => {
                     // Fresh list objects need `dirty.all` (ListObjects::needs_full).
-                    self.objects = Some(objects);
                     // Item-space programs come back from their modules (they compiled before).
                     // A pending link's objects died with the context: it is recompiled here
                     // too, and its outcome goes to the next `poll_programs`.
@@ -2075,7 +2275,7 @@ impl CanvasItemsExecutor {
                 }
             };
         }
-        if self.objects.is_some() {
+        if self.objects.is_some() || !self.context.is_context_lost() {
             ContextState::Ready
         } else {
             ContextState::Lost
@@ -2128,6 +2328,7 @@ impl CanvasItemsExecutor {
             ContextState::Restored => stats.restored = 1,
             ContextState::Ready => {}
         }
+        self.finish_prepare().map_err(ExecError::Invalid)?;
         if self.list_needs_full() && !root.dirty.all {
             return Err(ExecError::NeedsFullUpload);
         }
@@ -3902,6 +4103,7 @@ impl Drop for CanvasItemsExecutor {
             return;
         }
         let gl = &self.gl.raw;
+        self.preparation.delete(gl);
         unsafe {
             if let Some((fence, _)) = self.fence.take() {
                 gl.delete_sync(fence);

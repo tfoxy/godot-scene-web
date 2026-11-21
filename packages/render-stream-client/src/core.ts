@@ -113,6 +113,10 @@ export interface SessionMeta {
 export interface StreamCore {
   /** A fresh connection: a fresh live-coding decoder (W11c: one per connection). */
   beginConnection(protocol: RenderStreamProtocol): void;
+  /** Prepare the context after opening transport; older cores do this at the session. */
+  prepareExecutor?(): void;
+  /** One preparation slice; true once done. Draw synchronously finishes any remainder. */
+  prepareStep?(): boolean;
   /** One binary message: decoded (W11t), then the session (a connection's first) or one record.
    * Throws `StreamFailure`. `copyDecoded` (only when a recorder is on) copies the decoded
    * bytes out of wasm so `takeDecoded` can hand them to the recorder. */
@@ -320,6 +324,8 @@ const hex = (bytes: Uint8Array): string => {
 /** `StreamCore` over a replaceable `GswRs` instance and its module memory. */
 export class WasmStreamCore implements StreamCore, ExtensionCore {
   private instance: GswRs | null = null;
+  private executorError: string | null = null;
+  private sessionStarted = false;
   private logRemoved = false;
   /** `setMotion`: re-applied to every new instance. */
   private motionOn = false;
@@ -401,6 +407,8 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
   }
 
   beginConnection(protocol = this.protocol): void {
+    this.sessionStarted = false;
+    this.executorError = null;
     this.programsHeld = false;
     this.transactionPending = false;
     if (this.disposed) throw new Error("the stream core is disposed");
@@ -443,6 +451,26 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
     this.lastAcceptedSeq = 0;
   }
 
+  prepareExecutor(): void {
+    if ((this.g.prepare_executor?.() ?? 0) < 0) this.preparationFailed();
+  }
+
+  prepareStep(): boolean {
+    if (this.executorError !== null) return true;
+    const result = this.g.prepare_step?.() ?? 0;
+    if (result < 0) this.preparationFailed();
+    return result <= 0;
+  }
+
+  private preparationFailed(): void {
+    const error = this.g.error();
+    // Loss can be observed before the canvas event; the loop holds work until restore.
+    if (/lost/i.test(error)) throw failWith(null, error);
+    this.executorError = error;
+    // Session validation keeps precedence over GL construction errors, as synchronous start did.
+    if (this.sessionStarted) throw failWith(null, this.executorError);
+  }
+
   receive(
     data: ArrayBuffer,
     sessionSeen: boolean,
@@ -478,6 +506,8 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
       this.resetParticles();
       if (g.live_session(len, this.protocol) < 0)
         throw failWith(null, g.error());
+      this.sessionStarted = true;
+      if (this.executorError !== null) throw failWith(null, this.executorError);
       return { kind: "session", meta: JSON.parse(g.session_meta()) };
     }
     const code = g.live_accept(len);

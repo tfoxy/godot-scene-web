@@ -7,6 +7,10 @@ export interface GswRs {
   alloc_recording(len: number): number;
   load(len: number): number;
   start(): number;
+  /** Context-only preparation before a session; absent on older cores. */
+  prepare_executor?(): number;
+  /** One builtin per existing frame tick: 0 done, 1 more, -1 error. */
+  prepare_step?(): number;
   accept(index: number): number;
   needed_count(): number;
   needed_ptr(): number;

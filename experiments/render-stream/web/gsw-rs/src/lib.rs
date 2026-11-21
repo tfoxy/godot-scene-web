@@ -1551,6 +1551,25 @@ impl GswRs {
         0
     }
 
+    /// Prepare the context before a live session arrives. Existing executors are retained.
+    pub fn prepare_executor(&mut self) -> i32 {
+        if self.executor.is_some() { return 0; }
+        match CanvasItemsExecutor::begin(self.canvas.clone(), self.opts.exec) {
+            Ok(executor) => { self.executor = Some(executor); 0 }
+            Err(e) => { self.error = e; -1 }
+        }
+    }
+
+    /// Settle one builtin on the client's existing frame tick: 0 done, 1 more, -1 error.
+    pub fn prepare_step(&mut self) -> i32 {
+        let Some(executor) = self.executor.as_mut() else { return 0; };
+        match executor.prepare_step() {
+            Ok(true) => 0,
+            Ok(false) => 1,
+            Err(e) => { self.error = e; -1 }
+        }
+    }
+
     /// Accept the session record and size the target (and canvas) from its viewport.
     pub fn start(&mut self) -> i32 {
         match self.start_inner() {
@@ -1642,10 +1661,11 @@ impl GswRs {
         self.canvas.set_width(viewport.width);
         self.canvas.set_height(viewport.height);
         if self.executor.is_none() {
-            self.executor = Some(CanvasItemsExecutor::new(
-                self.canvas.clone(),
-                self.opts.exec,
-            )?);
+            self.executor = Some(if self.live {
+                CanvasItemsExecutor::begin(self.canvas.clone(), self.opts.exec)?
+            } else {
+                CanvasItemsExecutor::new(self.canvas.clone(), self.opts.exec)?
+            });
         }
         let mut applier = Applier::new(viewport);
         applier.set_deferred_cover(true);

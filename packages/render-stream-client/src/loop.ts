@@ -713,6 +713,9 @@ export class StreamLoop {
 
   // ----------------------------------------------------------------------- connection
 
+  private executorPreparing = false;
+  private executorNeedsBegin = false;
+
   private open(): void {
     const core = this.o.core;
     this.phase = "connecting";
@@ -777,6 +780,29 @@ export class StreamLoop {
         itemMeta: this.ext?.request ?? null,
       }),
     );
+    this.executorPreparing = true;
+    this.executorNeedsBegin = true;
+    if (this.ctx === "ok") {
+      try {
+        this.beginExecutor();
+      } catch (e) {
+        this.fail(e);
+      }
+    }
+  }
+
+  private beginExecutor(): void {
+    try {
+      this.o.core.prepareExecutor?.();
+      this.executorNeedsBegin = false;
+    } catch (e) {
+      if (
+        e instanceof StreamFailure &&
+        /lost/i.test(`${e.reason} ${e.message}`)
+      )
+        this.contextLost();
+      else throw e;
+    }
   }
 
   private protocol() {
@@ -1095,6 +1121,26 @@ export class StreamLoop {
     this.cold.beginFrame();
     try {
       if (this.ext) this.ext.beginFrame();
+      if (
+        this.executorPreparing &&
+        this.ctx === "ok" &&
+        this.phase === "streaming" &&
+        this.conn?.closeInfo === null
+      ) {
+        try {
+          // An absent executor reports no pending stages, so retry Stage A before stepping.
+          if (this.executorNeedsBegin) this.beginExecutor();
+          if (!this.executorNeedsBegin)
+            this.executorPreparing = this.o.core.prepareStep?.() === false;
+        } catch (e) {
+          if (
+            e instanceof StreamFailure &&
+            /lost/i.test(`${e.reason} ${e.message}`)
+          )
+            this.contextLost();
+          else throw e;
+        }
+      }
       this.step();
     } catch (e) {
       this.fail(e);
@@ -1266,6 +1312,8 @@ export class StreamLoop {
   /** Closes the current connection and drops its unapplied state; the core starts a fresh
    * session on the next one (payloads kept). */
   private teardown(code: number, reason: string): void {
+    this.executorPreparing = false;
+    this.executorNeedsBegin = false;
     const conn = this.conn;
     this.conn = null;
     if (conn?.transport) conn.transport.close(code, reason);

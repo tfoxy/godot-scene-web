@@ -136,6 +136,67 @@ function harness(
 
 const bytes = new Uint8Array([1, 2, 3]).buffer;
 
+describe("WasmStreamCore executor preparation", () => {
+  it("adapts stage return codes and uses the current instance after protocol replacement", () => {
+    const { core, instances } = harness();
+    const begin = vi.fn(() => 0);
+    const step = vi.fn().mockReturnValueOnce(1).mockReturnValue(0);
+    Object.assign(instances[0], {
+      prepare_executor: begin,
+      prepare_step: step,
+    });
+    core.prepareExecutor();
+    expect(begin).toHaveBeenCalledTimes(1);
+    expect(core.prepareStep()).toBe(false);
+    expect(core.prepareStep()).toBe(true);
+    core.beginConnection(14);
+    expect(instances[0].free).toHaveBeenCalledTimes(1);
+    core.prepareExecutor();
+    expect(core.prepareStep()).toBe(true); // Older wasm has neither export.
+    expect(step).toHaveBeenCalledTimes(2);
+    core.dispose();
+  });
+
+  it("keeps session-validation precedence over early GL failures", () => {
+    const { core, instances } = harness();
+    Object.assign(instances[0], {
+      prepare_step: () => -1,
+      error: () => "canvas-items program link failed: GL log",
+    });
+    expect(core.prepareStep()).toBe(true);
+    instances[0].live_session.mockReturnValueOnce(-1);
+    Object.assign(instances[0], { error: () => "session: bad viewport" });
+    expect(() => core.receive(bytes, false)).toThrow("bad viewport");
+    expect(() => core.receive(bytes, false)).toThrow("GL log");
+    core.dispose();
+  });
+
+  it("does not cache a context loss as a permanent preparation failure", () => {
+    const { core, instances } = harness();
+    const step = vi.fn().mockReturnValueOnce(-1).mockReturnValue(1);
+    Object.assign(instances[0], {
+      prepare_step: step,
+      error: () => "WebGL2 context lost",
+    });
+    expect(() => core.prepareStep()).toThrow(
+      expect.objectContaining({ reason: "WebGL2 context lost" }),
+    );
+    expect(core.prepareStep()).toBe(false);
+    core.dispose();
+  });
+
+  it("reports a preparation error after the session with its original code and detail", () => {
+    const { core, instances } = harness();
+    core.receive(bytes, false);
+    Object.assign(instances[0], {
+      prepare_step: () => -1,
+      error: () => "canvas-items program link failed: GL log",
+    });
+    expect(() => core.prepareStep()).toThrow("GL log");
+    core.dispose();
+  });
+});
+
 describe("WasmStreamCore program links (J1)", () => {
   it("turns the background link on for every instance it builds", () => {
     const { core, instances } = harness();
