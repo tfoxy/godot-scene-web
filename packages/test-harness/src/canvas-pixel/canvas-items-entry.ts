@@ -866,6 +866,9 @@ export async function depthProbe(
     harness.set_depth(Int32Array.from(run.tiles), Uint32Array.from(run.draws));
     stats.push(JSON.parse(harness.execute()) as Record<string, number>);
     targets.push(Array.from(harness.read_target()));
+    // WebGL cannot report a fence signalled until control returns to the event loop.
+    // Model separate frames so the depth program's readiness fence can advance.
+    await new Promise((resolve) => setTimeout(resolve, 0));
   }
   const glError = harness.gl_error();
   harness.free();

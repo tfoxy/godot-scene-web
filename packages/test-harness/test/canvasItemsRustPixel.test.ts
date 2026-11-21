@@ -676,7 +676,8 @@ describe.skipIf(!ENABLED)(
       // The depth program links without a status read (settled on a later frame without
       // KHR_parallel_shader_compile), so the first frame with tables after the executor's
       // objects are made (creation, a restored context) may still draw untested: the same pixels
-      // either way. The second such frame must use them.
+      // either way. The probe yields between frames so WebGL can signal the readiness fence;
+      // the second such frame must use them.
       const runs = [
         none,
         good,
