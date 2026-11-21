@@ -44,7 +44,7 @@ Set before the capture's GDExtension loads.
 | `GRC_RESOURCE_STORE_DIR` | The out-of-band payload store a file sink's resources are written to. |
 | `GRC_ADOPT` | `arm`: at arm, walk the scene tree and adopt existing canvases, layers, items, textures, meshes, glyph atlases, materials and shaders, so a running game can be captured mid-session. Must arm on the main thread. |
 | `GRC_UNKNOWN_ITEM` | `strict` (default) or `skip`. An opt-in diagnostic: under `skip`, canvas items the mirror never saw created are withheld and counted instead of ending the stream. |
-| `GRC_ROOT_SIZE` | Root window policy: `observe`, `enforce-min-size`, or `presentation:<W>x<H>` (the headless root takes the game's logical size at arm, so the scene relays out under the hooks). |
+| `GRC_ROOT_SIZE` | Root window policy: `observe` (the windowed-host recipe below), `enforce-min-size`, or `presentation:<W>x<H>` (the headless root takes the game's logical size at arm, so the scene relays out under the hooks). |
 | `GRC_MIRROR_MAX_ITEMS`, `GRC_MIRROR_MAX_COMMANDS` | Mirror caps (items; commands per item). A scene over a cap ends the stream with a typed reason, so raise them for a large game. |
 | `GRC_RESOURCE_MAX_PAYLOAD_BYTES`, `GRC_RESOURCE_BUDGET_BYTES` | Per-payload ceiling and the host resource store's budget. |
 | `GRC_RESOURCE_INLINE_MAX_BYTES` | Live: payloads up to this size ride the connection as resource records ahead of their transaction instead of being fetched by GET (default 0, off). Worth setting for content that creates many small payloads per frame, such as skeletal meshes. |
@@ -53,6 +53,21 @@ Set before the capture's GDExtension loads.
 | `GRC_SHADER_POLICY` | `source` (default) serves game shader code to receivers; `params` and `exclude` do not. |
 | `GRC_ITEM_META` | Opt-in per-item metadata, as comma-separated grants (`groups`, `meta`, or column names; `/14` adds identity columns). |
 | `GRC_PERF_TIMELINE_MAX_BYTES` | Bounds the perf timeline evidence file by rotating it (unbounded when unset). Set it on a long-running host. |
+
+For a windowed host, use `GRC_ROOT_SIZE=observe`. Before arming, the consumer sets the root
+Window's `content_scale_mode` to `canvas_items`, `content_scale_size` to W×H and
+`content_scale_aspect` to `keep`. Godot letterboxes that logical presentation inside the host's
+current window. The capture writes neither the window size nor its minimum size; the session's
+`presentation_size` and the browser's backing store are W×H.
+
+When window and presentation sizes differ, the session reports `host_size_status: degenerate-window`
+and the browser reports `presentation_check: mismatch` / `oversampling-mismatch`. These diagnostics
+are expected and harmless for this recipe: the receiver still draws. Glyph rasterisation and
+StyleBoxFlat AA follow the host's stretch (window/logical), so fidelity follows the host window's
+resolution. Resizing the window while armed keeps capture and drawing going at W×H without
+re-arming, provided the logical size and aspect stay fixed. Godot updates its stretch and font
+oversampling; session geometry remains the arm-time evidence. The resize can also report
+`global-canvas-transform` without refusing or ending the stream.
 
 ### Textures
 

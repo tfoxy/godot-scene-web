@@ -21,6 +21,7 @@ extends Control
 ##
 ## Environment (all optional): RS_FIXTURE_STEP_LOG, RS_FIXTURE_SHOT_DIR (rendered runs only),
 ## RS_FIXTURE_SIZE_LOG, RS_FIXTURE_QUIT_FRAME (>= K+26, the default).
+## RS_FIXTURE_RESIZE_PROBE=on additionally probes window changes and shoots a final checkpoint.
 
 const SETTLE_OFFSET: int = 7
 
@@ -31,6 +32,9 @@ var _shot_dir: String = ""
 var _step_log_file: FileAccess
 var _size_log_file: FileAccess
 var _failed: bool = false
+var _resize_probe: bool = false
+var _resize_deadline_usec: int = 0
+var _last_window_size: Vector2i = Vector2i.ZERO
 ## [applied_frame, settle_frame] per checkpoint
 var _checkpoints: Array[Array] = []
 
@@ -44,6 +48,7 @@ func _ready() -> void:
 		_failed = true
 		get_tree().quit(2)
 		return
+	_resize_probe = OS.get_environment("RS_FIXTURE_RESIZE_PROBE") == "on"
 	_checkpoints = [
 		[_arm_frame, _arm_frame + 2],
 		[_arm_frame + 4, _arm_frame + 4 + SETTLE_OFFSET],
@@ -56,6 +61,19 @@ func _process(_delta: float) -> void:
 	if _failed:
 		return
 	_frame += 1
+	if _resize_probe:
+		var current_size: Vector2i = get_window().size
+		if current_size != _last_window_size:
+			if _last_window_size != Vector2i.ZERO:
+				_resize_deadline_usec = Time.get_ticks_usec() + 2500000
+			_last_window_size = current_size
+			_probe()
+		if _resize_deadline_usec > 0 and Time.get_ticks_usec() >= _resize_deadline_usec:
+			_resize_deadline_usec = 0
+			_quit_frame = _frame + 4
+			_probe()
+			_log_step(3, _frame, _frame)
+			_maybe_take_shot("step-3.png")
 	if _frame == _arm_frame - 1 or _frame == _arm_frame + 1:
 		_probe()
 	for k: int in range(_checkpoints.size()):
@@ -102,6 +120,13 @@ func _probe() -> void:
 		"oversampling": get_viewport().get_oversampling(),
 		"stretch": [get_viewport().get_stretch_transform().x.x, get_viewport().get_stretch_transform().y.y],
 	}
+	if _resize_probe:
+		var final_xform: Transform2D = get_viewport().get_final_transform()
+		line["ticks_usec"] = Time.get_ticks_usec()
+		line["host_final_xform"] = [
+			final_xform.x.x, final_xform.x.y, final_xform.y.x, final_xform.y.y,
+			final_xform.origin.x, final_xform.origin.y,
+		]
 	_size_log_file.store_line(JSON.stringify(line, "", false))
 	_size_log_file.flush()
 
