@@ -372,7 +372,11 @@ const baseline = {
   },
   "arm-failed": {
     driver: failed,
-    evidence: { ...evidence, last_reason: "listen-bind" },
+    evidence: {
+      ...evidence,
+      attachment_state: "attached",
+      last_reason: "listen-bind",
+    },
     result: { status: "standby" },
   },
   "arm-failed-ws": structuredClone({
@@ -386,6 +390,7 @@ const baseline = {
     },
     evidence: {
       ...evidence,
+      attachment_state: "attached",
       last_reason: "listen-bind",
       track_inject_prepared: true,
       track_inject_pending: false,
@@ -504,6 +509,37 @@ try {
     JSON.stringify(checks),
   );
   assertions += 2;
+  // Shutdown detaches after the live driver observed re-armable standby.
+  const detached = structuredClone(baseline);
+  for (const leg of ["arm-failed", "arm-failed-ws"] as const) {
+    detached[leg].evidence.attachment_state = "detached";
+    detached[leg].evidence.can_arm = false;
+  }
+  write(detached);
+  const detachedChecks = await runApiChecks(out);
+  assert.equal(detachedChecks.length, 18);
+  assert.ok(
+    detachedChecks.every((c) => c.passed),
+    JSON.stringify(detachedChecks),
+  );
+  assertions += 2;
+  for (const leg of ["arm-failed", "arm-failed-ws"] as const) {
+    for (const [path, value] of [
+      ["evidence.can_arm", true],
+      ["driver.final.can_arm", false],
+    ] as [string, unknown][]) {
+      const invalid = structuredClone(detached);
+      set(invalid, `${leg}.${path}`, value);
+      write(invalid);
+      assert.equal(
+        (await runApiChecks(out)).find((c) => c.id === "g8l-api-arm-failed")
+          ?.passed,
+        false,
+        `detached ${leg}.${path}=${JSON.stringify(value)} must fail`,
+      );
+      assertions++;
+    }
+  }
   for (const [path, value] of [
     ["driver.evidence_dir_failure.reason", "listen-bind"],
     ["driver.evidence_dir_failure.after", { "resources.jsonl": "overwritten" }],
@@ -738,6 +774,9 @@ try {
     ["driver.final.last_reason", "other"],
     ["evidence.state", "refused"],
     ["evidence.can_arm", false],
+    ["evidence.attachment_state", "detached"],
+    ["evidence.attachment_state", "attaching"],
+    ["evidence.attachment_state", null],
     ["evidence.last_reason", "other"],
     ["evidence.texture_workers_running", true],
     ["driver.arm_failed_capture.texture_workers_running", true],

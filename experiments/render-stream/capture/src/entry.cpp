@@ -594,6 +594,7 @@ struct Rearm {
   std::vector<std::unique_ptr<rs2::Hub>> kept_hubs;
   // The last release's accounting (evidence/arm-<k>/teardown.json and swap-cycle.jsonl).
   std::string accounting;
+  bool release_recorded = false;
 };
 Rearm g_rearm;
 
@@ -5446,6 +5447,7 @@ void api_arm_rollback(const std::string &reason) {
 // fields: the stream and live structs are rebuilt for a re-arm, each arm k >= 2 gets its own
 // evidence directory and recordings, and the one-shot flags of the frame path are cleared.
 bool arm_prepare() {
+  g_rearm.release_recorded = false;
   const uint64_t k = g_rearm.arm_index;
   g_state.evidence_dir = g_rearm.evidence_root;
   if (k >= 2) {
@@ -6346,6 +6348,10 @@ void arm_release() {
   g_meta.on = false;
   rs::texture_cache().close();
   rs::settings_install({});
+  // Detach also cleans a standby attachment at shutdown. Its last arm was already released;
+  // keep that arm's restoration result and evidence instead of writing it into the load path.
+  if (g_rearm.release_recorded) return;
+  g_rearm.release_recorded = true;
   rearm_restore_min_size();
   if (g_rearm.trim) {
     rs::heap_trim();  // GRC_TEST_TRIM_AT_DISARM (test only): RSS then reads what is held

@@ -382,13 +382,16 @@ export function apiArmFailedProblems(
   )
     problems.push("cancelled re-arm must queue one disarmed with arm_index 0");
   const final = object(driver.final);
+  // The live driver observes standby before shutdown detaches the attachment.
+  const attachment = evidence.attachment_state;
   if (
     final.state !== "standby" ||
     final.can_arm !== true ||
     final.arm_count !== 1 ||
     final.last_reason !== "listen-bind" ||
     evidence.state !== "standby" ||
-    evidence.can_arm !== true ||
+    (attachment !== "attached" && attachment !== "detached") ||
+    evidence.can_arm !== (attachment === "attached") ||
     evidence.last_reason !== "listen-bind"
   )
     problems.push(
