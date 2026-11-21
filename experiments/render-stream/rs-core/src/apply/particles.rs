@@ -171,13 +171,13 @@ fn string(out: &mut String, s: &str) {
     out.push('"');
 }
 
-/// A texture's level 0 as RGBA floats when it is small enough to be a curve (at most 4 rows):
-/// its f32 values, else its half floats widened, else its RGBA8 over 255.
-fn curve_texels(
+/// Borrow a curve payload (at most four rows) without decoding or allocating its texels.
+/// Keep the same float, half-float and RGBA8 precedence and shape checks as the decoder.
+fn curve_pixels<'a>(
     state: &ResolvedState,
-    textures: &super::payloads::PayloadStore,
+    textures: &'a super::payloads::PayloadStore,
     tex: Id,
-) -> Option<(u32, u32, Vec<f32>)> {
+) -> Option<&'a super::payloads::TexturePixels> {
     let t = state.textures.get(&tex)?;
     if t.status != EntryStatus::Ok || t.height > 4 {
         return None;
@@ -187,23 +187,30 @@ fn curve_texels(
         return None;
     }
     let n = (px.width * px.height) as usize;
-    if let Some(f) = &px.floats {
-        return Some((px.width, px.height, f.clone()));
-    }
-    if let Some(h) = &px.half {
-        let v: Vec<f32> = h
-            .chunks_exact(2)
-            .map(|c| super::payloads::half_to_f32(u16::from_le_bytes([c[0], c[1]])))
-            .collect();
-        return (v.len() == 4 * n).then_some((px.width, px.height, v));
-    }
-    (px.rgba.len() == 4 * n).then(|| {
-        (
-            px.width,
-            px.height,
-            px.rgba.iter().map(|b| f32::from(*b) / 255.0).collect(),
+    // Match the decoding path's precedence and shape checks without allocating texels.
+    if px.floats.is_some()
+        || px.half.as_ref().map_or_else(
+            || px.rgba.len() == 4 * n,
+            |h| h.len() / 2 == 4 * n,
         )
-    })
+    {
+        Some(px)
+    } else {
+        None
+    }
+}
+
+fn append_curve(px: &super::payloads::TexturePixels, out: &mut Vec<f32>) {
+    let finite = |v: f32| if v.is_finite() { v } else { 0.0 };
+    if let Some(f) = &px.floats {
+        out.extend(f.iter().copied().map(finite));
+    } else if let Some(h) = &px.half {
+        out.extend(h.chunks_exact(2).map(|c| {
+            finite(super::payloads::half_to_f32(u16::from_le_bytes([c[0], c[1]])))
+        }));
+    } else {
+        out.extend(px.rgba.iter().map(|b| f32::from(*b) / 255.0));
+    }
 }
 
 /// A material's [`Described`] key: its version, its curve textures resolved, its shader's version
@@ -520,6 +527,29 @@ pub fn describe(
     linear_colors: bool,
     shared_key: bool,
 ) -> String {
+    describe_impl(state, store, linear_colors, shared_key, None)
+}
+
+/// The wasm sync metadata, with curve offsets and lengths in floats into `curves`.
+/// The arena is replaced on every sync; the caller must copy it before another wasm call.
+pub fn describe_with_curves(
+    state: &ResolvedState,
+    store: &mut super::payloads::PayloadStore,
+    linear_colors: bool,
+    shared_key: bool,
+    curves: &mut Vec<f32>,
+) -> String {
+    curves.clear();
+    describe_impl(state, store, linear_colors, shared_key, Some(curves))
+}
+
+fn describe_impl(
+    state: &ResolvedState,
+    store: &mut super::payloads::PayloadStore,
+    linear_colors: bool,
+    shared_key: bool,
+    mut curves: Option<&mut Vec<f32>>,
+) -> String {
     let ids = simulated(state);
     // A material's key: its version and how many of its texture params resolve to a curve now
     // (a curve payload may arrive after the material), its shader's version and whether the
@@ -540,7 +570,7 @@ pub fn describe(
             .params
             .iter()
             .filter(|p| match p.value {
-                ParamValue::Tex(t) => curve_texels(state, store, t).is_some(),
+                ParamValue::Tex(t) => curve_pixels(state, store, t).is_some(),
                 _ => false,
             })
             .count();
@@ -746,7 +776,7 @@ pub fn describe(
             let ParamValue::Tex(t) = p.value else {
                 continue;
             };
-            let Some((w, h, data)) = curve_texels(state, store, t) else {
+            let Some(px) = curve_pixels(state, store, t) else {
                 continue;
             };
             if !first {
@@ -754,8 +784,19 @@ pub fn describe(
             }
             first = false;
             string(&mut out, &p.name);
-            let _ = write!(out, ":{{\"width\":{w},\"height\":{h},\"data\":");
-            nums(&mut out, &data);
+            let (w, h) = (px.width, px.height);
+            let _ = write!(out, ":{{\"width\":{w},\"height\":{h},");
+            if let Some(arena) = curves.as_deref_mut() {
+                let offset = arena.len();
+                append_curve(px, arena);
+                let length = arena.len() - offset;
+                let _ = write!(out, "\"offset\":{offset},\"length\":{length}");
+            } else {
+                let mut data = Vec::new();
+                append_curve(px, &mut data);
+                out.push_str("\"data\":");
+                nums(&mut out, &data);
+            }
             out.push('}');
         }
         out.push_str("}}");
@@ -899,6 +940,87 @@ mod pse_tests {
             shader: Some(shader),
             params,
         }
+    }
+
+    #[test]
+    fn curve_sidecar_matches_decimal_f32_bits_and_late_arrival() {
+        use crate::apply::payloads::{PayloadStore, TexturePixels};
+        use crate::state::{Hash, Origin, Texture, TextureKind};
+        let hash = Hash([0x63; 32]);
+        let mut s = ResolvedState::empty(12);
+        s.particles.insert(1, emitter(1, 20));
+        s.shaders.insert(30, process_shader(30, Hash([0x62; 32])));
+        s.materials.insert(20, process_material(20, 30, vec![
+            param("scale_curve", VariantType::Rid, ParamValue::Tex(40)),
+            param("precise_uniform", VariantType::Float, ParamValue::Scalar(1.0000000000000002)),
+        ]));
+        s.textures.insert(40, Texture {
+            id: 40, origin: Origin::Created, adopted_content: None, kind: TextureKind::Image,
+            status: EntryStatus::Ok, reason: None, version: 1, hash: Some(hash),
+            format: Some("RGBAF".into()), source_format: None, width: 2, height: 1,
+            mipmaps: false, payload_bytes: 32, variants: Vec::new(), size_override: None,
+            viewport: None, target: None, canvas: None,
+        });
+        let mut old = PayloadStore::default();
+        let mut side = PayloadStore::default();
+        let mut arena = vec![99.0];
+        // Emitter precedes its curve hash. The first sync still carries the emitter.
+        let initial = describe_with_curves(&s, &mut side, false, false, &mut arena);
+        assert!(initial.contains("\"emitters\":[{\"id\":1"));
+        assert!(arena.is_empty());
+        assert_eq!(initial, describe(&s, &mut old, false, false));
+        let values = vec![-0.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY,
+            f32::from_bits(1), f32::MAX, -0.12345679, 1.0];
+        let pixels = TexturePixels {
+            width: 2, height: 1, rgba: std::sync::Arc::new(Vec::new()), compressed: None,
+            half: None, floats: Some(values.clone()), opacity: None, format: "RGBAF".into(),
+            mipmaps: false, data_len: 32,
+        };
+        for store in [&mut old, &mut side] { store.textures.insert(hash, pixels.clone()); }
+        let legacy: serde_json::Value = serde_json::from_str(&describe(&s, &mut old, false, false)).unwrap();
+        let metadata: serde_json::Value = serde_json::from_str(
+            &describe_with_curves(&s, &mut side, false, false, &mut arena)).unwrap();
+        assert_eq!(metadata["emitters"].as_array().unwrap().len(), 0, "late material only");
+        let curve = &metadata["materials"][0]["curves"]["scale_curve"];
+        assert_eq!(curve["offset"], 0);
+        assert_eq!(curve["length"], 8);
+        assert!(curve.get("data").is_none());
+        let expected: Vec<u32> = legacy["materials"][0]["curves"]["scale_curve"]["data"]
+            .as_array().unwrap().iter().map(|v| (v.as_f64().unwrap() as f32).to_bits()).collect();
+        assert_eq!(arena.iter().map(|v| v.to_bits()).collect::<Vec<_>>(), expected);
+        assert_eq!(arena[0].to_bits(), (-0.0f32).to_bits());
+        assert_eq!(&expected[1..4], &[0, 0, 0]);
+        assert_eq!(metadata["materials"][0]["uniforms"], legacy["materials"][0]["uniforms"]);
+        assert_eq!(metadata["materials"][0]["uniforms"]["precise_uniform"].as_f64(), Some(1.0000000000000002));
+        assert_eq!(describe_with_curves(&s, &mut side, false, false, &mut arena), "");
+        assert!(arena.is_empty(), "unchanged sync must not retain old curve output");
+        // A restart only sends the changed emitter; a reconnect resends its complete material.
+        s.particles.get_mut(&1).unwrap().version += 1;
+        s.particles.get_mut(&1).unwrap().restarts += 1;
+        let restarted = describe_with_curves(&s, &mut side, false, false, &mut arena);
+        assert!(restarted.contains("\"restarts\":1"));
+        assert!(arena.is_empty());
+        side.particles = Default::default();
+        describe_with_curves(&s, &mut side, false, false, &mut arena);
+        assert_eq!(arena.iter().map(|v| v.to_bits()).collect::<Vec<_>>(), expected);
+    }
+
+    #[test]
+    fn curve_half_and_byte_decoding_preserves_bits() {
+        use crate::apply::payloads::TexturePixels;
+        let mut px = TexturePixels {
+            width: 1, height: 1, rgba: std::sync::Arc::new(vec![0, 1, 128, 255]),
+            compressed: None, half: None, floats: None, opacity: None,
+            format: "RGBA8".into(), mipmaps: false, data_len: 4,
+        };
+        let mut out = Vec::new();
+        append_curve(&px, &mut out);
+        assert_eq!(out, vec![0.0, 1.0f32 / 255.0, 128.0f32 / 255.0, 1.0]);
+        px.half = Some(std::sync::Arc::new(vec![0, 128, 0, 124, 1, 0, 0, 60]));
+        out.clear();
+        append_curve(&px, &mut out);
+        assert_eq!(out.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+            vec![(-0.0f32).to_bits(), 0, (2.0f32.powi(-24)).to_bits(), 1.0f32.to_bits()]);
     }
 
     /// Emitter 1 keys from a uniform-switched process shader whose code is not held, emitter 2

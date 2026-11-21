@@ -41,6 +41,8 @@ import {
 /** The wasm module's particles surface (`GswRs`). */
 export interface ParticlesHost {
   particles_sync(): string;
+  /** Output curve arena from the last sync; offsets and lengths are in floats. */
+  particles_curves_ptr?(): number;
   shader_time(): number;
   particles_set(id: number, data: Float32Array): void;
   /** The core's scratch buffer for `floats` floats (a pointer into wasm memory), which
@@ -99,7 +101,13 @@ interface WireMaterial {
     turbulence: boolean;
   } | null;
   uniforms: Record<string, number | number[]>;
-  curves: Record<string, { width: number; height: number; data: number[] }>;
+  curves: Record<
+    string,
+    { width: number; height: number } & (
+      | { data: number[] | Float32Array }
+      | { offset: number; length: number }
+    )
+  >;
 }
 
 interface Held {
@@ -333,23 +341,44 @@ export class GswParticles {
   /** Sync with the accepted state only (a revisit: no host time passed, so nothing steps or
    * uploads): a suspended material's emitters drop their simulation, an arrived one's are
    * re-created, and the next `step` advances and uploads them. */
-  syncOnly(g: ParticlesHost): void {
+  syncOnly(g: ParticlesHost, memory?: WebAssembly.Memory): void {
     const msg = g.particles_sync();
-    if (msg !== "")
-      this.sync(
-        JSON.parse(msg) as {
-          ids: number[];
-          emitters: WireEmitter[];
-          materials: WireMaterial[];
-        },
-      );
+    if (msg !== "") {
+      const parsed = JSON.parse(msg) as {
+        ids: number[];
+        emitters: WireEmitter[];
+        materials: WireMaterial[];
+      };
+      // Take the pointer before creating views, then copy every curve before any other wasm
+      // call (including shader_time or an instance upload) can detach memory or reuse the arena.
+      const ptr = g.particles_curves_ptr?.();
+      for (const m of parsed.materials) {
+        for (const [name, c] of Object.entries(m.curves)) {
+          if ("data" in c) continue;
+          if (ptr === undefined || memory === undefined)
+            throw new Error(
+              "Particle curve sidecar requires wasm memory and its arena pointer",
+            );
+          m.curves[name] = {
+            width: c.width,
+            height: c.height,
+            data: new Float32Array(
+              memory.buffer,
+              ptr + c.offset * 4,
+              c.length,
+            ).slice(),
+          };
+        }
+      }
+      this.sync(parsed);
+    }
     if (!this.settling) this.stopIdle();
   }
 
   /** Sync with the accepted state, step every emitter by the host's time and upload. With the
    * core's `memory`, each emitter packs straight into the core's scratch buffer. */
   step(g: ParticlesHost, memory?: WebAssembly.Memory): void {
-    this.syncOnly(g);
+    this.syncOnly(g, memory);
     this.expire(g, memory);
     const t = g.shader_time();
     let dt = DEFAULT_FRAME;
@@ -582,14 +611,21 @@ export class GswParticles {
               uniforms: m.uniforms,
               curves: Object.fromEntries(
                 Object.entries(m.curves).map(
-                  ([k, c]): [string, GodotCurveTexture] => [
-                    k,
-                    {
-                      width: c.width,
-                      height: c.height,
-                      data: Float32Array.from(c.data),
-                    },
-                  ],
+                  ([k, c]): [string, GodotCurveTexture] => {
+                    if (!("data" in c))
+                      throw new Error("Uncopied particle curve sidecar");
+                    return [
+                      k,
+                      {
+                        width: c.width,
+                        height: c.height,
+                        data:
+                          c.data instanceof Float32Array
+                            ? c.data
+                            : Float32Array.from(c.data),
+                      },
+                    ];
+                  },
                 ),
               ),
             }

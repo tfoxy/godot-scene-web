@@ -808,6 +808,8 @@ pub struct GswRs {
     /// One emitter's simulated instances, packed by the glue through a view on this buffer
     /// (`particles_scratch`) and taken by `particles_set_scratch`: no allocation per emitter.
     particles_scratch: Vec<f32>,
+    /// Output-only curve arena, independent of the simulation instance upload scratch.
+    particles_curves: Vec<f32>,
     totals: Totals,
     /// G8g: the float payload formats (render-stream/8, D9) this receiver took as RGBA8 through
     /// rs-core's `texture_rgba8` quantization (GSW samples no float texture): the
@@ -1086,6 +1088,7 @@ impl GswRs {
             last_exec: ExecStats::default(),
             query: QueryScratch::default(),
             particles_scratch: Vec::new(),
+            particles_curves: Vec::new(),
             totals: Totals::default(),
             quantized_float: std::collections::BTreeSet::new(),
             shot_buf: Vec::new(),
@@ -3434,10 +3437,11 @@ impl GswRs {
         )
     }
 
-    /// PM6b: the emitters this receiver simulates and what changed since the last call (JSON,
-    /// `render_stream_core::apply::particles::describe`), or an empty string when nothing did. Call after the
-    /// transactions are accepted and before `apply`.
+    /// The emitters this receiver simulates and what changed since the last call: metadata JSON
+    /// with curve offsets into `particles_curves_ptr`, or empty when nothing did. Call after
+    /// transactions are accepted and before `apply`, and copy the curves before other wasm calls.
     pub fn particles_sync(&mut self) -> String {
+        self.particles_curves.clear();
         let Some(v) = self.validator.as_ref() else {
             return String::new();
         };
@@ -3451,12 +3455,19 @@ impl GswRs {
             && render_stream_core::apply::particles::host_linearizes_particle_colors(
                 &v.session().engine.rendering_method,
             );
-        render_stream_core::apply::particles::describe(
+        render_stream_core::apply::particles::describe_with_curves(
             st,
             &mut self.payloads,
             linear,
             self.opts.shared_process_key,
+            &mut self.particles_curves,
         )
+    }
+
+    /// Curve arena from the most recent `particles_sync`, addressed in f32 units by its JSON.
+    /// Copy into durable JS arrays before any other wasm call can grow memory or replace it.
+    pub fn particles_curves_ptr(&self) -> *const f32 {
+        self.particles_curves.as_ptr()
     }
 
     /// PM6b: the host's shader time for the newest accepted state (the process material reads

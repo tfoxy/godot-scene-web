@@ -702,7 +702,7 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
         throw e;
       }
     }
-    this.particles.syncOnly(this.g);
+    this.particles.syncOnly(this.g, this.memory);
     return this.g.revisit() > 0;
   }
 

@@ -128,6 +128,8 @@ export interface GswRs {
   check_fetch(hash: string): string;
   // PM6b: /12 GPU particles (particles.ts).
   particles_sync(): string;
+  /** Output curve arena from the last sync (optional for cores with inline curve JSON). */
+  particles_curves_ptr?(): number;
   shader_time(): number;
   particles_set(id: number, data: Float32Array): void;
   /** The scratch buffer `particles_set_scratch` takes (optional: a core built before it). */

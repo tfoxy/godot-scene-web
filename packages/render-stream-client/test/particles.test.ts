@@ -144,6 +144,150 @@ describe("GswParticles revisit sync", () => {
   });
 });
 
+describe("GswParticles curve sidecar", () => {
+  it("copies exact float bits before memory growth, late arrival, suspension, restart and reconnect", () => {
+    const source = Float32Array.from([
+      -0,
+      0,
+      2 ** -149,
+      3.4028234663852886e38,
+      -0.12345679,
+      1,
+      0.5,
+      1,
+    ]);
+    const bits = (data: Float32Array) =>
+      Array.from(new Uint32Array(data.buffer, data.byteOffset, data.length));
+    const memory = new WebAssembly.Memory({ initial: 1 });
+    const ptr = 256;
+    const initial = {
+      ids: [1],
+      emitters: [emitter(1, 20)],
+      materials: [material(20, 1, false)],
+    };
+    const curveMaterial = (sidecar: boolean) => ({
+      ...material(20, 1, false),
+      uniforms: { precise: 1.0000000000000002 },
+      curves: {
+        scale_curve: {
+          width: 2,
+          height: 1,
+          ...(sidecar
+            ? { offset: 4, length: source.length }
+            : { data: Array.from(source) }),
+        },
+        color_ramp: {
+          width: 2,
+          height: 1,
+          ...(sidecar
+            ? { offset: 12, length: source.length }
+            : { data: Array.from(source) }),
+        },
+      },
+    });
+    const run = (sidecar: boolean) => {
+      let p = new GswParticles(UNPACED_PARTICLES);
+      const first = JSON.stringify(initial);
+      // Decimal JSON can spell signed zero; JSON.stringify on JS numbers cannot.
+      const arrived = JSON.stringify({
+        ids: [1],
+        emitters: [],
+        materials: [curveMaterial(sidecar)],
+      }).replaceAll('"data":[0,0,', '"data":[-0,0,');
+      const restart = JSON.stringify({
+        ids: [1],
+        emitters: [{ ...emitter(1, 20), version: 2, restarts: 1 }],
+        materials: [],
+      });
+      const suspended = JSON.stringify({
+        ids: [1],
+        emitters: [],
+        materials: [material(20, 2, true)],
+      });
+      const reconnect = JSON.stringify({
+        ids: [1],
+        emitters: [emitter(1, 20)],
+        materials: [curveMaterial(sidecar)],
+      }).replaceAll('"data":[0,0,', '"data":[-0,0,');
+      const messages = [
+        first,
+        arrived,
+        "",
+        restart,
+        suspended,
+        arrived,
+        reconnect,
+      ];
+      const uploads: number[][] = [];
+      const curves: number[][] = [];
+      const g: ParticlesHost = {
+        particles_sync: () => {
+          // Sync can grow memory itself. Acquire the pointer and view only after it returns.
+          memory.grow(1);
+          new Float32Array(memory.buffer, ptr + 16, source.length).set(source);
+          new Float32Array(memory.buffer, ptr + 48, source.length).set(source);
+          return messages.shift() ?? "";
+        },
+        ...(sidecar ? { particles_curves_ptr: () => ptr } : {}),
+        shader_time: () => {
+          // The first subsequent wasm call invalidates both the view and the arena contents.
+          new Float32Array(memory.buffer, ptr, 20).fill(99);
+          memory.grow(1);
+          return 0;
+        },
+        particles_set: (_id, data) => uploads.push(bits(data.slice())),
+      };
+      for (let n = 0; n < 7; n++) {
+        if (n === 6) {
+          p.dispose();
+          p = new GswParticles(UNPACED_PARTICLES);
+        }
+        // Exercise syncOnly separately, as the core's resource-revisit path does.
+        if (n === 1) p.syncOnly(g, memory);
+        else p.step(g, memory);
+        const held = Reflect.get(p, "held") as Map<
+          number,
+          { sim: GodotGpuEmitter | null }
+        >;
+        const m = held.get(1)?.sim?.config.material;
+        if (m?.curves?.scale_curve) {
+          expect(m.uniforms.precise).toBe(1.0000000000000002);
+          for (const c of Object.values(m.curves)) {
+            expect(bits(c.data)).toEqual(bits(source));
+            expect(c.data.buffer).not.toBe(memory.buffer);
+            curves.push(bits(c.data));
+          }
+        }
+      }
+      expect(p.evidence.particles_created).toBe(1);
+      p.dispose();
+      return { uploads, curves };
+    };
+    expect(run(true)).toEqual(run(false));
+  });
+
+  it("rejects a sidecar without memory instead of silently dropping its curve", () => {
+    const p = new GswParticles();
+    const { g } = host([
+      JSON.stringify({
+        ids: [1],
+        emitters: [emitter(1, 20)],
+        materials: [
+          {
+            ...material(20, 1, false),
+            curves: {
+              scale_curve: { width: 1, height: 1, offset: 0, length: 4 },
+            },
+          },
+        ],
+      }),
+    ]);
+    expect(() => p.syncOnly(g)).toThrow(
+      "Particle curve sidecar requires wasm memory and its arena pointer",
+    );
+  });
+});
+
 describe("GswParticles scratch upload", () => {
   it("packs into the core's scratch view and hands it over by length, the same floats as a copy", () => {
     const msg = () =>

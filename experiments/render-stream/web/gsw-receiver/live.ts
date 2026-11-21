@@ -1571,7 +1571,7 @@ class LiveReceiver {
     const firstHeap =
       this.firstApply === null ? (this.mem?.buffer.byteLength ?? null) : null;
     const b = performance.now();
-    this.particles.step(g);
+    this.particles.step(g, this.mem ?? undefined);
     if (g.apply() < 0) throw failWith(seq, g.error());
     const c = performance.now();
     const firstHeapApplied =

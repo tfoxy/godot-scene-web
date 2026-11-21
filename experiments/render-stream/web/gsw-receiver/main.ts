@@ -479,7 +479,7 @@ async function run(): Promise<void> {
       perf.programs.library_reads += programs.library_reads;
       const b = nowUs();
       // PM6b: the emitters stepped by the host's time, their instances set before the apply.
-      particles.step(g);
+      particles.step(g, mem);
       if (g.apply() < 0) throw failWith(seq, g.error());
       const c = nowUs();
       if (g.draw() < 0) throw failWith(seq, g.error());

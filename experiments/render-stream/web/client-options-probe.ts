@@ -53,6 +53,7 @@ async function replay(input: {
   const frames: { message: string; time: number; calls: number }[] = [];
   const host = {
     particles_sync: () => g.particles_sync(),
+    particles_curves_ptr: g.particles_curves_ptr?.bind(g),
     shader_time: () => g.shader_time(),
     particles_set: (id: number, buffer: Float32Array) => {
       uploads.push({
@@ -83,7 +84,7 @@ async function replay(input: {
     }
     await resolvePrograms(g, memory, null, () => {});
     const message = g.particles_sync();
-    particles.step({ ...host, particles_sync: () => message });
+    particles.step({ ...host, particles_sync: () => message }, memory);
     check(g.apply());
     check(g.draw());
     frames.push({
