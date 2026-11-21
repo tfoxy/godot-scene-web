@@ -107,6 +107,15 @@ command = (p / 'rtc/command.txt').read_text()
 assert 'rtc-run.py' in command and '--out' in command and '/rtc/run' in command
 PYRTC"
 
+check "canvas-pixel is a runnable local kind with its own output directory" "python3 - '$OUT' <<'PYPIXEL'
+import json, pathlib, sys
+p = pathlib.Path(sys.argv[1])
+row = next(r for r in json.loads((p / 'validate-summary.json').read_text())['runs'] if r['id'] == 'canvas-pixel')
+assert row['rc'] == '0' and row['phase'] == 'setup'
+command = (p / 'canvas-pixel/command.txt').read_text()
+assert 'run-canvas-pixel.sh' in command and '--out' in command and '/canvas-pixel/run' in command
+PYPIXEL"
+
 check "the cost block lists the timing runs with estimates, the lock status and the load before they start" \
 	"grep -q 'LOCAL TIMING about to run' '$TMP/validate.log' && grep -q 'g7live-gsw-timing .*est idle wall 2300 s' '$TMP/validate.log' && grep -q 'native-rust-gate6 .*unknown' '$TMP/validate.log' && grep -q '  uptime:' '$TMP/validate.log' && grep -q 'quiet lock:' '$TMP/validate.log'"
 check "the summary ends with one local wall / quiet-lock wait total line" \
@@ -321,6 +330,57 @@ assert 'libcxx-control.sh' in command and '--extension' in command and '--calibr
 PY"
 check "libcxx diagnostics reach both the job output and run log" \
     "grep -q 'file.cpp:1: error: synthetic libcxx diagnostic' '$TMP/libcxx.log' && grep -q 'file.cpp:1: error: synthetic libcxx diagnostic' '$TMP/libcxx/libcxx-control/run.log'"
+
+# Exercise the real pixel runner with only its build/test tool stubbed.
+mkdir -p "$TMP/pixel-bin"
+cat >"$TMP/pixel-bin/mise" <<'MISE'
+#!/usr/bin/env bash
+set -euo pipefail
+[ "$1" = exec ] && [ "$2" = -- ]
+shift 2
+[ "$GSW_CANVAS_ITEMS_PIXEL" = 1 ]
+[ "$GSW_CANVAS_ITEMS_WASM" = "$GSW_CANVAS_ITEMS_OUT" ]
+case "$1" in
+bash)
+    [ "$2" = packages/canvas/rust-prototype/scripts/build-canvas-items-test.sh ]
+    echo build >>"$PIXEL_STUB_LOG"
+    ;;
+pnpm)
+    [ "$*" = 'pnpm exec vitest run --no-file-parallelism packages/test-harness/test/canvasItemsRustPixel.test.ts packages/test-harness/test/canvasItemsProgramPixel.test.ts' ]
+    echo test >>"$PIXEL_STUB_LOG"
+    exit 1
+    ;;
+*) exit 2 ;;
+esac
+MISE
+chmod +x "$TMP/pixel-bin/mise"
+PATH="$TMP/pixel-bin:$PATH" PIXEL_STUB_LOG="$TMP/pixel-calls" \
+	bash "$SCRIPT_DIR/run-canvas-pixel.sh" --out "$TMP/pixel-runner" >"$TMP/pixel-runner.log" 2>&1
+pixel_runner_rc=$?
+check "pixel runner builds then opts into both serialized suites and preserves failure" \
+	"[ $pixel_runner_rc = 1 ] && [ \"\$(cat '$TMP/pixel-calls')\" = \"\$(printf 'build\\ntest')\" ] && test -s '$TMP/pixel-runner/quiet-lock-summary.json'"
+
+# A pixel test failure keeps its exit code even when all tier-excused checks would pass.
+cat >"$TMP/stub-pixel.sh" <<'STUB'
+[ "$RS_VALIDATE_KIND" = canvas-pixel ] || exit 2
+echo 'FAIL depth tiles change no pixel: synthetic pixel mismatch'
+exit 1
+STUB
+RS_VALIDATE_STUB="$TMP/stub-pixel.sh" bash "$SCRIPT_DIR/validate-increment.sh" --tier full \
+	--only canvas-pixel --paths packages/canvas/rust-prototype/src/canvas_items/gl.rs \
+	--out "$TMP/pixel-fail" >"$TMP/pixel-fail.log" 2>&1
+pixel_rc=$?
+check "a failing pixel case fails the run without tier excuses" "[ $pixel_rc = 1 ] && python3 - '$TMP/pixel-fail' <<'PYPIXEL'
+import json, pathlib, sys
+p = pathlib.Path(sys.argv[1])
+s = json.loads((p / 'validate-summary.json').read_text())
+assert len(s['runs']) == 1 and s['failed'] == 1
+assert s['runs'][0]['id'] == 'canvas-pixel' and s['runs'][0]['rc'] == '1'
+assert 'synthetic pixel mismatch' in (p / 'canvas-pixel/run.log').read_text()
+assert not (p / 'canvas-pixel/tier-verdict.json').exists()
+PYPIXEL"
+check "the plan prints the pixel run's remote refusal" \
+	"grep -q 'refused-remote: .*pixel suites explicitly reject llvmpipe' '$TMP/pixel-fail.log'"
 
 echo "self-test-validate-tier: $([ "$fails" = 0 ] && echo "all pass" || echo "$fails FAIL")"
 [ "$fails" = 0 ]

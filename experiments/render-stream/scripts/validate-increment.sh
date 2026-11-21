@@ -122,9 +122,10 @@ DIFF_BASE_ARGS=()
 [ "$MILESTONE" = 1 ] && [ "$BASE_SET" = 1 ] && PLAN_ARGS+=(--base "$BASE")
 python3 "$SCRIPT_DIR/lib/smoke-plan.py" --map "$SCRIPT_DIR/smoke-map.json" --repo "$REPO_ROOT" \
 	--only "$ONLY" "${PLAN_ARGS[@]}" ${DIFF_BASE_ARGS[@]+"${DIFF_BASE_ARGS[@]}"} --paths-from "$OUT/changed-paths.txt" >"$OUT/plan.json" || exit 2
-python3 - "$OUT/plan.json" <<'PY'
+python3 - "$OUT/plan.json" "$SCRIPT_DIR/smoke-map.json" <<'PY'
 import json, sys
 p = json.load(open(sys.argv[1]))
+refused_ids = json.load(open(sys.argv[2])).get("remote", {}).get("refuse", {}).get("ids", {})
 if p["milestone"]:
     print(f"validate-increment: milestone sweep, {p['milestone']}" + (f" (the diff since {p['base']})" if p.get("base") else ""))
 print(f"validate-increment: {len(p['paths'])} changed paths, {len(p['unmatched'])} unmatched (reach everything)")
@@ -143,6 +144,8 @@ for r in p["runs"]:
             f" of {r['full_legs']}" if r.get("full_legs") else "") + "]"
         smoke += sum(sl.values())
     print(f"  run {r['id']}: [{r['phase']}] {r['kind']} {extra if isinstance(extra, str) else ','.join(extra)}{note}")
+    if r['id'] in refused_ids:
+        print(f"    refused-remote: {refused_ids[r['id']]}")
 print(f"validate-increment: tier {p['tier']}; {smoke} representative legs in filtered runs "
       f"({sum(1 for r in p['runs'] if r.get('smoke_legs'))} runs); every other run is whole; "
       f"{len(p['smoke_deferred'])} group targets deferred to the full tier")
@@ -272,6 +275,10 @@ run_one() {
 		;;
 	pnpm-test)
 		launch "$dir" -- bash "$Q" shared --label validate:pnpm-test -- bash -c "cd '$REPO_ROOT' && mise exec -- pnpm test" \
+			>"$dir/run.log" 2>&1 || rc=$?
+		;;
+	canvas-pixel)
+		launch "$dir" -- bash "$SCRIPT_DIR/run-canvas-pixel.sh" --out "$dir/run" \
 			>"$dir/run.log" 2>&1 || rc=$?
 		;;
 	native)

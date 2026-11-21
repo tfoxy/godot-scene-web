@@ -55,6 +55,7 @@
       "lock-tests",
       "capture-build",
       "pnpm-test",
+      "canvas-pixel",
       "bench-instr",
       "windows",
       "macos",
@@ -185,6 +186,7 @@
       },
       "ids": {
         "lock-tests": "lock self-tests need this machine's quiet lock",
+        "canvas-pixel": "the canvas-items pixel suites explicitly reject llvmpipe and SwiftShader; hosted lavapipe reports llvmpipe, and these suites do not implement the CI renderer allowance",
         "g7x": "g7x drives the attached phone and timing benches"
       },
       "match": {
@@ -334,6 +336,24 @@
       ],
       "reach": ["none"],
       "exclusive": true
+    },
+    {
+      "why": "canvas-items pixel parity: executor, shader and image comparison dependencies; both opt-in suites run whole in every tier",
+      "paths": [
+        "packages/canvas/**",
+        "packages/canvas-effects/**",
+        "packages/effects/**",
+        "packages/hb-gpu/**",
+        "packages/core/**",
+        "packages/test-harness/src/canvas-pixel/**",
+        "packages/test-harness/src/image-diff*.ts",
+        "packages/test-harness/package.json",
+        "packages/test-harness/test/canvasItemsRustPixel.test.ts",
+        "packages/test-harness/test/canvasItemsProgramPixel.test.ts",
+        "experiments/render-stream/scripts/run-canvas-pixel.sh",
+        "vitest.config.ts"
+      ],
+      "reach": ["canvas-pixel"]
     },
     {
       "why": "repo worktree tooling: no leg runs it",

@@ -249,6 +249,8 @@ def runs(targets, m, sabotage, tier="smoke"):
             out.append({"id": f"cargo-{os.path.basename(c)}", "kind": "cargo", "crate": c})
     if "pnpm-test" in targets:
         out.append({"id": "pnpm-test", "kind": "pnpm-test"})
+    if "canvas-pixel" in targets:
+        out.append({"id": "canvas-pixel", "kind": "canvas-pixel"})
     if "bench-instr" in targets:  # R4: instruction counts (load-insensitive, so a setup-phase run)
         out.append({"id": "bench-instr", "kind": "bench-instr"})
     for core in u["cores"]:
@@ -420,6 +422,29 @@ def self_test(m):
     repo = "/nonexistent"
     uni = universe(m)
     P = lambda *ps, ms=False: plan(m, list(ps), repo, ms)
+    pixel_paths = [
+        "packages/canvas/rust-prototype/src/canvas_items/gl.rs",
+        "packages/canvas/rust-draw-list/src/lib.rs",
+        "packages/canvas/src/executor-webgl.ts",
+        "packages/test-harness/src/canvas-pixel/canvas-items-entry.ts",
+        "packages/test-harness/src/image-diff.ts",
+        "packages/test-harness/src/image-diff-types.ts",
+        "packages/test-harness/package.json",
+        "packages/test-harness/test/canvasItemsRustPixel.test.ts",
+        "packages/test-harness/test/canvasItemsProgramPixel.test.ts",
+        "packages/canvas/rust-prototype/scripts/build-canvas-items-test.sh",
+        "packages/effects/src/index.ts",
+        "packages/hb-gpu/src/index.ts",
+        "vitest.config.ts",
+        "experiments/render-stream/scripts/run-canvas-pixel.sh",
+    ]
+    for path in pixel_paths:
+        for tier in ("smoke", "full"):
+            pixel = plan(m, [path], repo, tier=tier)
+            check(f"{path} gates canvas pixels in {tier}", not pixel["unmatched"]
+                  and {"id": "canvas-pixel", "kind": "canvas-pixel", "phase": "setup"} in pixel["runs"])
+    check("canvas-pixel is explicitly refused on software-only hosted runners",
+          "llvmpipe" in m["remote"]["refuse"]["ids"].get("canvas-pixel", ""))
     a = P("experiments/render-stream/results/grt.md")
     check("a doc reaches nothing but the pure self-tests", a["targets"] == ["pure"])
     check("opt-in target stays out of wildcard and complete milestone",

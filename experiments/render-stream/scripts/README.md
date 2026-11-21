@@ -174,6 +174,14 @@ bash experiments/render-stream/scripts/validate-increment.sh [--base main] [--ou
 - `--plan` prints the plan (targets, sabotage decision, runs) and exits.
 - `--tier smoke` (default) runs one representative leg per reached live group and receiver and
   one receiver leg per file group; `--tier full` runs every leg of the reached groups.
+- `canvas-pixel` builds the canvas-items test wasm and runs both
+  `canvasItemsRustPixel.test.ts` and `canvasItemsProgramPixel.test.ts` with
+  `GSW_CANVAS_ITEMS_PIXEL=1`. Both tiers run every case; any failure fails the run. The run
+  holds the shared quiet lock and serializes test files because their setup builds the same wasm.
+  Canvas code, shader dependencies, pixel fixtures and comparison helpers reach this run.
+  It is refused remotely: these suites reject llvmpipe and SwiftShader, including the hosted
+  lavapipe renderer, and do not implement the gate 7 CI renderer allowance. The remote plan lists
+  the reason; `scripts/remote-validate.sh --and-local` includes it locally.
 - `--milestone` runs every target with every sabotage leg; with an explicit `--base REF` it is the
   delta sweep over the targets the diff since `REF` reaches.
 - `--base REF` diffs `REF...HEAD` plus uncommitted and untracked files (default `main`); `--paths`
@@ -187,6 +195,13 @@ bash experiments/render-stream/scripts/validate-increment.sh [--base main] [--ou
 It writes `<out>/plan.json`, one directory per run (with `command.txt`: the env and argv it
 launched) and `<out>/validate-summary.json`, prints one line per run and exits non-zero when any
 run fails. `python3 lib/smoke-plan.py --self-test --map smoke-map.json` tests the map.
+
+Run just the canvas-items pixel suites, including their wasm build:
+
+```bash
+bash experiments/render-stream/scripts/validate-increment.sh --tier full --only canvas-pixel \
+  --paths packages/canvas/rust-prototype/src/canvas_items/gl.rs --out .local/canvas-pixel
+```
 
 **Source cache.** `source-cache.sh` keeps passing native source runs, keyed by their inputs
 (template, capture library, calibration, receiver core and every source-shaping file;
