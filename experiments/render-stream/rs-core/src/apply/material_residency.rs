@@ -63,6 +63,12 @@ pub struct MaterialResidency {
     pub skip_changed: bool,
 }
 
+/// Matching the ascending held names proves that no name is stale or duplicated. This
+/// avoids building a name set for the usual, sorted parameter sequence.
+fn sorted_names_match(held: &BTreeMap<Box<str>, Param>, params: &[Param]) -> bool {
+    held.len() == params.len() && held.keys().zip(params).all(|(name, p)| *name == p.name)
+}
+
 /// The names `held` holds that `params` does not name, ascending, and whether `params` names one
 /// parameter twice: one hash set over `params`, one pass over `held` only when something is stale
 /// (MRA: was a scan of `params` per held name). The caller inserted every one of `params` first,
@@ -243,6 +249,7 @@ impl MaterialResidency {
             if stale_param && !is_new {
                 continue;
             }
+            let was_empty = m.params.is_empty();
             for p in &entry.params {
                 if m.params.get(&p.name) == Some(p) {
                     continue;
@@ -250,7 +257,14 @@ impl MaterialResidency {
                 m.params.insert(p.name.clone(), p.clone());
                 c.param_sets += 1;
             }
-            let (stale, dup) = stale_names(&m.params, &entry.params);
+            let (stale, dup) = if was_empty {
+                // Insertion into an empty map leaves exactly the distinct incoming names.
+                (Vec::new(), m.params.len() < entry.params.len())
+            } else if sorted_names_match(&m.params, &entry.params) {
+                (Vec::new(), false)
+            } else {
+                stale_names(&m.params, &entry.params)
+            };
             for n in stale {
                 m.params.remove(&n);
                 c.param_sets += 1;
@@ -278,7 +292,14 @@ impl MaterialResidency {
             let Some(it) = state.items.get(&id) else {
                 continue;
             };
+            if it.instance_params.is_empty() {
+                if let Some(held) = self.instance.remove(&id) {
+                    c.instance_param_sets += held.len() as u32;
+                }
+                continue;
+            }
             let held = self.instance.entry(id).or_default();
+            let was_empty = held.is_empty();
             for p in &it.instance_params {
                 if held.get(&p.name) == Some(p) {
                     continue;
@@ -286,9 +307,12 @@ impl MaterialResidency {
                 held.insert(p.name.clone(), p.clone());
                 c.instance_param_sets += 1;
             }
-            for n in stale_names(held, &it.instance_params).0 {
-                held.remove(&n);
-                c.instance_param_sets += 1;
+            // An initially empty map cannot hold a stale name after these insertions.
+            if !was_empty && !sorted_names_match(held, &it.instance_params) {
+                for n in stale_names(held, &it.instance_params).0 {
+                    held.remove(&n);
+                    c.instance_param_sets += 1;
+                }
             }
             if held.is_empty() {
                 self.instance.remove(&id);
@@ -627,6 +651,35 @@ mod tests {
             }
         }
         None
+    }
+
+    #[test]
+    fn empty_instance_params_do_not_allocate_residency() {
+        let mut st = ResolvedState::empty(12);
+        let mut it = crate::validate::blank_item();
+        it.id = 1;
+        st.items.insert(it.id, it);
+        let mut inc = MaterialResidency::default();
+        let mut full = MaterialResidency {
+            full_walk: true,
+            ..Default::default()
+        };
+        let delta = TxDelta {
+            items_upserted: vec![1],
+            ..Default::default()
+        };
+        for all in [false, true, false] {
+            let named = BTreeSet::new();
+            let a = inc.apply(&st, &delta, all, &named, &named, |_, _| false, false);
+            let b = full.apply(&st, &delta, all, &named, &named, |_, _| false, false);
+            assert_eq!(a, b);
+            assert!(inc.same_residency(&full));
+            assert_eq!(
+                inc.instance.capacity(),
+                0,
+                "empty parameters must not insert a map entry"
+            );
+        }
     }
 
     #[test]
