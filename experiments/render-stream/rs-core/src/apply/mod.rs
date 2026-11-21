@@ -1997,8 +1997,10 @@ impl Applier {
                 out.push(h);
             }
         };
-        for sid in self.names.named_payload_shaders(state) {
-            if let Some(h) = state.shaders.get(&sid).and_then(|s| s.hash) {
+        for sid in self.names.shaders(state).iter() {
+            if let Some(h) = state.shaders.get(sid)
+                .filter(|s| s.source == Some(ShaderSource::Payload))
+                .and_then(|s| s.hash) {
                 push(h, out);
             }
         }
@@ -5026,3 +5028,6 @@ mod static_shader_tests {
         assert_eq!(a.list.shader_time.to_bits(), 0.0_f32.to_bits());
     }
 }
+
+#[cfg(test)]
+mod accept_names_tests;

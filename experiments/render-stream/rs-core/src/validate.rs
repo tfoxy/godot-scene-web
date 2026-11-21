@@ -2814,19 +2814,20 @@ impl Validator {
     /// absence before a full on a granted stream (`item-meta-missing`).
     fn item_meta_form(&self, offset: usize) -> Result<(), Error> {
         let full = self.tx.is_full();
-        let at = format!("record at offset {offset}, {}", where_(self.tx.seq));
+        let at = || format!("record at offset {offset}, {}", where_(self.tx.seq));
         match &self.item_meta_pending {
             Some(p) if p.full != full => Err(Error::new(
                 "item-meta-form",
                 format!(
-                    "{at}: a {} item_meta record precedes a {} transaction",
+                    "{}: a {} item_meta record precedes a {} transaction",
+                    at(),
                     if p.full { "full" } else { "delta" },
                     if full { "full" } else { "patch" }
                 ),
             )),
             None if full && self.item_meta.grant.is_some() => Err(Error::new(
                 "item-meta-missing",
-                format!("{at}: a full transaction on a granted stream without a full item_meta record before it"),
+                format!("{}: a full transaction on a granted stream without a full item_meta record before it", at()),
             )),
             _ => Ok(()),
         }
@@ -5397,7 +5398,7 @@ impl Validator {
         let d = &self.dirty;
         let r = &self.removed;
         let v = self.opts.version;
-        let w = where_(tx.seq);
+        let w = std::format_args!("transaction seq {}", tx.seq);
         let first = |mut c: Vec<Id>| -> Option<Id> {
             c.sort_unstable();
             c.first().copied()
@@ -5801,13 +5802,14 @@ impl Validator {
                 ));
             }
         }
-        self.check_unsupported(&w)
+        self.check_unsupported()
     }
 
     /// The declared `unsupported[]` list against the maintained derived entries.
     #[allow(clippy::collapsible_match)]
-    fn check_unsupported(&self, w: &str) -> Result<(), Error> {
+    fn check_unsupported(&self) -> Result<(), Error> {
         let tx = &self.tx;
+        let w = std::format_args!("transaction seq {}", tx.seq);
         let st = &self.state;
         let ix = &self.idx;
         let v = self.opts.version;
@@ -6570,28 +6572,33 @@ impl Validator {
     /// id-reused, against the previous transaction's ids.
     fn check_id_reuse(&self, offset: usize) -> Result<(), Error> {
         let tx = &self.tx;
-        let v = self.opts.version;
-        let lists: [(&str, Vec<Id>); 6] = [
-            ("canvas", tx.canvases.iter().map(|c| c.id).collect()),
-            ("item", tx.items.iter().map(|c| c.id).collect()),
-            ("texture", tx.textures.iter().map(|c| c.id).collect()),
-            ("mesh", tx.meshes.iter().map(|c| c.id).collect()),
-            ("shader", tx.shaders.iter().map(|c| c.id).collect()),
-            ("material", tx.materials.iter().map(|c| c.id).collect()),
-        ];
-        for (k, (kind, ids)) in lists.iter().enumerate() {
+        fn check(
+            validator: &Validator,
+            k: usize,
+            kind: &str,
+            offset: usize,
+            ids: impl Iterator<Item = Id>,
+        ) -> Result<(), Error> {
+            let v = validator.opts.version;
             if k == 3 && v < 4 || k >= 4 && v < 5 {
-                continue;
+                return Ok(());
             }
-            for (j, &id) in ids.iter().enumerate() {
-                if self.was_new[k][j] && id as i64 <= self.max_id[k] {
+            for (j, id) in ids.enumerate() {
+                if validator.was_new[k][j] && id as i64 <= validator.max_id[k] {
                     return Err(Error::new(
                         "id-reused",
                         format!("record at offset {offset}: {kind} id {id} reappears after not being in the previous transaction"),
                     ));
                 }
             }
+            Ok(())
         }
+        check(self, 0, "canvas", offset, tx.canvases.iter().map(|c| c.id))?;
+        check(self, 1, "item", offset, tx.items.iter().map(|c| c.id))?;
+        check(self, 2, "texture", offset, tx.textures.iter().map(|c| c.id))?;
+        check(self, 3, "mesh", offset, tx.meshes.iter().map(|c| c.id))?;
+        check(self, 4, "shader", offset, tx.shaders.iter().map(|c| c.id))?;
+        check(self, 5, "material", offset, tx.materials.iter().map(|c| c.id))?;
         // render-stream-16.md "Viewport entry": viewport ids, likewise. An entry with a wrong value
         // (a bad id included) is viewport-entry's, reported later, never id-reused.
         for (j, vp) in tx.viewports.iter().enumerate() {
@@ -7076,3 +7083,7 @@ mod tests {
         assert_eq!(err.code, "parent-cycle", "{err}");
     }
 }
+
+#[cfg(test)]
+#[path = "accept_diagnostics_tests.rs"]
+mod accept_diagnostics_tests;

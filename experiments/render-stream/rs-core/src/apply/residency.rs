@@ -102,8 +102,10 @@ pub struct Names {
     /// Ids whose named-ness may have changed since the last [`Names::take_changed`].
     changed: BTreeSet<Id>,
     materials_dirty: bool,
-    /// G7o4: bumped by every [`Names::update`]; with the state's identity it keys `named`.
+    /// Bumped by every [`Names::update`]; with the state's identity it keys `named`.
     generation: u64,
+    /// The last state brought in line by `update`; only that cache can be carried forward.
+    prepared_key: Option<NamedKey>,
     /// G7o4: the last [`Names::named_materials`] and [`Names::named_shaders`] (one transaction
     /// asks for them several times: the adapter's pending shaders, `needed`, the refusals and the
     /// material residency), with the key they were computed for.
@@ -221,8 +223,10 @@ impl Names {
         if all {
             self.clear();
         }
+        let previous = self.prepared_key;
+        let mut membership_before = Vec::new();
         self.generation += 1;
-        let touch = |names: &mut Names, id: Id, it: Option<&crate::state::Item>| {
+        let mut touch = |names: &mut Names, id: Id, it: Option<&crate::state::Item>| {
             let new = it.map(item_names).unwrap_or_default();
             let new_mat = it.and_then(|i| i.material);
             let old = names.per_item.remove(&id).unwrap_or_default();
@@ -242,12 +246,18 @@ impl Names {
             }
             let old_mat = names.per_item_material.remove(&id);
             if old_mat != new_mat {
+                for m in old_mat.into_iter().chain(new_mat) {
+                    if !membership_before.iter().any(|(id, _)| *id == m) {
+                        membership_before.push((m, names.material_refs.get(&m).is_some_and(|n| *n > 0)));
+                    }
+                }
                 if let Some(m) = old_mat {
                     let e = names.material_refs.entry(m).or_insert(0);
                     *e = e.saturating_sub(1);
                 }
                 if let Some(m) = new_mat {
-                    *names.material_refs.entry(m).or_insert(0) += 1;
+                    let e = names.material_refs.entry(m).or_insert(0);
+                    *e += 1;
                 }
                 names.materials_dirty = true;
             }
@@ -340,6 +350,27 @@ impl Names {
                 .collect()
         };
         self.update_canvas(state, check, &delta.textures_upserted, all);
+        let membership_changed = membership_before.iter().any(|(m, before)| {
+            *before != self.material_refs.get(m).is_some_and(|n| *n > 0)
+        });
+        let key = self.named_key(state);
+        // Numeric item changes cannot affect these sets. Carry a cache forward only from
+        // the state verified by the preceding update, never from an unrelated query.
+        if !all
+            && previous.is_some_and(|old| old.1 == key.1)
+            && !membership_changed
+            && delta.materials_upserted.is_empty()
+            && delta.materials_removed.is_empty()
+            && delta.shaders_upserted.is_empty()
+            && delta.shaders_removed.is_empty()
+        {
+            if let Some((k, _, _)) = self.named.get_mut().as_mut() {
+                if Some(*k) == previous {
+                    *k = key;
+                }
+            }
+        }
+        self.prepared_key = Some(key);
     }
 
     /// The ids whose named-ness may have changed, ascending, and forget them.
@@ -360,14 +391,18 @@ impl Names {
         out
     }
 
-    /// The `ok` shaders whose code is a payload, of the named materials (`_named_shader_ids`).
+    /// Borrow the ordered shader set without cloning either prepared set.
+    pub fn shaders(&self, state: &ResolvedState) -> std::cell::Ref<'_, BTreeSet<Id>> {
+        std::cell::Ref::map(self.named_cached(state), |named| &named.2)
+    }
+
+    /// The `ok` shaders whose code is a payload, ascending.
     pub fn named_payload_shaders(&self, state: &ResolvedState) -> BTreeSet<Id> {
-        self.named_shaders(state)
-            .into_iter()
+        self.shaders(state)
+            .iter()
+            .copied()
             .filter(|sid| {
-                state
-                    .shaders
-                    .get(sid)
+                state.shaders.get(sid)
                     .is_some_and(|s| s.source == Some(ShaderSource::Payload))
             })
             .collect()
@@ -375,30 +410,34 @@ impl Names {
 
     /// The `ok` materials some item names (`_named_material_ids`), ascending.
     pub fn named_materials(&self, state: &ResolvedState) -> BTreeSet<Id> {
-        self.named_cached(state).0
+        self.named_cached(state).1.clone()
     }
 
     /// The `ok` shaders of the named materials, whatever their code's source (`_named_shader_ids`).
     pub fn named_shaders(&self, state: &ResolvedState) -> BTreeSet<Id> {
-        self.named_cached(state).1
+        self.named_cached(state).2.clone()
     }
 
-    fn named_cached(&self, state: &ResolvedState) -> (BTreeSet<Id>, BTreeSet<Id>) {
-        let key = (
+    fn named_key(&self, state: &ResolvedState) -> NamedKey {
+        (
             self.generation,
             state as *const ResolvedState as usize,
             state.seq,
             state.frame,
-        );
-        if let Some((k, m, s)) = self.named.borrow().as_ref() {
-            if *k == key {
-                return (m.clone(), s.clone());
-            }
+        )
+    }
+
+    fn named_cached(
+        &self,
+        state: &ResolvedState,
+    ) -> std::cell::Ref<'_, (NamedKey, BTreeSet<Id>, BTreeSet<Id>)> {
+        let key = self.named_key(state);
+        if !self.named.borrow().as_ref().is_some_and(|(k, _, _)| *k == key) {
+            let m = self.compute_named_materials(state);
+            let s = self.compute_named_shaders(state, &m);
+            *self.named.borrow_mut() = Some((key, m, s));
         }
-        let m = self.compute_named_materials(state);
-        let s = self.compute_named_shaders(state, &m);
-        *self.named.borrow_mut() = Some((key, m.clone(), s.clone()));
-        (m, s)
+        std::cell::Ref::map(self.named.borrow(), |named| named.as_ref().unwrap())
     }
 
     fn compute_named_materials(&self, state: &ResolvedState) -> BTreeSet<Id> {
