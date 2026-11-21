@@ -183,6 +183,16 @@ committed offline record, including an offline census on supported platforms. Th
   `run-gate7.sh` runs the browser receivers over sources made by the native runners.
 - **Smoke tier**: `bash experiments/render-stream/scripts/validate-increment.sh --plan` maps the
   current diff to the gates and receivers it can reach; without `--plan` it runs them.
+  GPU stress is opt-in: gate 6's `gpu-heavy` calibration and leg, and `rate-uncapped`,
+  are reported SKIPPED (`gpu stress: opt-in`) by default. Set `RS_GPU_STRESS=1`,
+  use `run-gate6.sh --legs gpu-heavy,rate-uncapped`, or select those leaves through
+  `G6C_LEGS=gpu-heavy,rate-uncapped`. Selecting the whole `g6c` group does not opt in.
+  Calibration fails on unavailable or nonpositive timing and refuses iterations above
+  the absolute ceiling; it never launches the gpu-heavy leg after a calibration failure.
+  Device runs (`g7x`) require `RS_DEVICE_LEGS=1` or an explicit
+  `validate-increment.sh --only <g7x run id>`. `remote-validate.sh --and-local` prints
+  refusals for GPU stress and device legs unless these same opt-ins are present.
+  Use `--plan --tier full` to inspect exclusions before running validation.
 
 Usage, flags and environment for all of these are in [scripts/README.md](scripts/README.md).
 

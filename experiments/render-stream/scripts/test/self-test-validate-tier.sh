@@ -91,7 +91,8 @@ esac
 exit 0
 STUB
 OUT="$TMP/out"
-STUB_Q="$Q" STUB_TIMES="$TMP/times.txt" STUB_FOREIGN="$TMP/foreign" RS_VALIDATE_STUB="$TMP/stub.sh" \
+# Explicit device opt-in keeps this all-runs stub sweep exercising g7x.
+RS_DEVICE_LEGS=1 STUB_Q="$Q" STUB_TIMES="$TMP/times.txt" STUB_FOREIGN="$TMP/foreign" RS_VALIDATE_STUB="$TMP/stub.sh" \
 	bash "$SCRIPT_DIR/validate-increment.sh" --milestone -j 4 --out "$OUT" \
 	--paths experiments/render-stream/scripts/lib/gate3-checks.ts >"$TMP/validate.log" 2>&1
 vrc=$?

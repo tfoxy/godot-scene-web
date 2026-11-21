@@ -6,6 +6,12 @@
 #     --calibration /abs/path/record.json [--binary /abs/path/linux_release.x86_64] [--out DIR] \
 #     [--legs g6a,g6h,g6l,g6b,g6c,g6z]
 #
+# GPU stress is opt-in: RS_GPU_STRESS=1 enables gpu-heavy (including calibration) and
+# rate-uncapped. Or select just those leaves with --legs gpu-heavy,rate-uncapped;
+# G6C_LEGS=gpu-heavy,rate-uncapped is the equivalent g6c leaf filter. Group --legs g6c
+# alone keeps them SKIPPED (gpu stress: opt-in). Device validation uses RS_DEVICE_LEGS=1
+# or validate-increment.sh --only <g7x run id>.
+#
 # --extension and --calibration are required; without them the runner refuses before doing
 # anything. --binary defaults to the pinned 4.5.1 release template. --out defaults to
 # artifacts/render-stream/gate6/<UTC>/ and must not already hold files. --legs selects leg groups
@@ -187,6 +193,25 @@ BINARY="$(realpath "$BINARY")"
 if [ ! -f "$SCENE_FIXTURE_DIR/project.godot" ]; then
 	echo "run-gate6: $SCENE_FIXTURE_DIR/project.godot is missing" >&2
 	exit 1
+fi
+
+# Explicit stress leaves run through g6c, preserving every assertion of those legs.
+if [ -n "$LEGS_ARG" ]; then
+	leaf_groups=""
+	stress_leaves=""
+	for selection in ${LEGS_ARG//,/ }; do
+		case "$selection" in
+		gpu-heavy | rate-uncapped)
+			stress_leaves+="${stress_leaves:+,}$selection"
+			case ",$leaf_groups," in *,g6c,*) ;; *) leaf_groups+="${leaf_groups:+,}g6c" ;; esac
+			;;
+		*) leaf_groups+="${leaf_groups:+,}$selection" ;;
+		esac
+	done
+	if [ -n "$stress_leaves" ]; then
+		G6C_LEGS="$stress_leaves"
+	fi
+	LEGS_ARG="$leaf_groups"
 fi
 
 GROUPS_RUN=()

@@ -284,7 +284,12 @@ export async function buildGate6Report(out: string): Promise<Gate6Report> {
       evidence: [],
     });
   report.gate_passed =
-    run.length > 0 && report.checks.every((c) => c.status === "pass");
+    run.length > 0 &&
+    report.checks.every(
+      (c) =>
+        c.status === "pass" ||
+        (c.status === "not-run" && c.detail === "gpu stress: opt-in"),
+    );
   return report;
 }
 
@@ -298,7 +303,14 @@ async function main(): Promise<void> {
   );
 
   for (const c of report.checks) {
-    const tag = c.status === "not-run" ? "NOT-RUN" : c.passed ? "PASS" : "FAIL";
+    const tag =
+      c.detail === "gpu stress: opt-in"
+        ? "SKIPPED"
+        : c.status === "not-run"
+          ? "NOT-RUN"
+          : c.passed
+            ? "PASS"
+            : "FAIL";
     console.log(`[${tag}] ${c.id}: ${c.criterion}`);
     if (c.detail) console.log(`       ${c.detail}`);
   }

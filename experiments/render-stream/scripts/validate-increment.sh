@@ -122,6 +122,7 @@ DIFF_BASE_ARGS=()
 [ "$MILESTONE" = 1 ] && [ "$BASE_SET" = 1 ] && PLAN_ARGS+=(--base "$BASE")
 python3 "$SCRIPT_DIR/lib/smoke-plan.py" --map "$SCRIPT_DIR/smoke-map.json" --repo "$REPO_ROOT" \
 	--only "$ONLY" "${PLAN_ARGS[@]}" ${DIFF_BASE_ARGS[@]+"${DIFF_BASE_ARGS[@]}"} --paths-from "$OUT/changed-paths.txt" >"$OUT/plan.json" || exit 2
+python3 "$SCRIPT_DIR/lib/stress-policy.py" plan "$OUT/plan.json" "$ONLY" || exit 2
 python3 - "$OUT/plan.json" "$SCRIPT_DIR/smoke-map.json" <<'PY'
 import json, sys
 p = json.load(open(sys.argv[1]))
@@ -144,6 +145,10 @@ for r in p["runs"]:
             f" of {r['full_legs']}" if r.get("full_legs") else "") + "]"
         smoke += sum(sl.values())
     print(f"  run {r['id']}: [{r['phase']}] {r['kind']} {extra if isinstance(extra, str) else ','.join(extra)}{note}")
+    for leg, state in r.get("gpu_stress", {}).items():
+        print(f"    {leg}: {'RUN (gpu stress: opted in)' if state == 'run' else 'SKIPPED (' + state + ')'}")
+    if r.get("skip_reason"):
+        print(f"    SKIPPED ({r['skip_reason']})")
     if r['id'] in refused_ids:
         print(f"    refused-remote: {refused_ids[r['id']]}")
 print(f"validate-increment: tier {p['tier']}; {smoke} representative legs in filtered runs "
@@ -408,6 +413,9 @@ deferred = []
 for r in p['runs']:
     if only and r['id'] not in only:
         continue
+    if r.get('skip_reason'):
+        deferred.append({'id': r['id'], 'reason': r['skip_reason']})
+        continue
     if r['kind'] == 'macos' and platform.system() != 'Darwin' and not os.environ.get('RS_VALIDATE_STUB'):
         deferred.append({'id': r['id'], 'reason': 'needs scripts/remote-validate.sh --only macos'})
         continue
@@ -447,6 +455,6 @@ summary_path = out / "validate-summary.json"
 summary = json.loads(summary_path.read_text())
 summary["deferred"] = deferred
 summary_path.write_text(json.dumps(summary, indent=2) + "\n")
-print(f"validate-increment: {len(deferred)} runs deferred to native remote validation")
+print(f"validate-increment: {len(deferred)} runs deferred (see reasons above)")
 PY
 exit "$summary_rc"

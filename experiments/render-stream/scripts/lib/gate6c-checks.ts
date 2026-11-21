@@ -1798,6 +1798,34 @@ export async function runGate6c(out: string): Promise<G6cResult> {
     const L = def.leg;
     const ran = legsRun.includes(L);
     const evidence = [ev.dir];
+    const calibrationFailure = await readTextOrUndefined(
+      join(ev.dir, "failed.txt"),
+    );
+    if (calibrationFailure) {
+      checks.push({
+        id: `leg-${L}`,
+        criterion: `g6c leg ${L} ran`,
+        passed: false,
+        status: "fail",
+        detail: calibrationFailure.trim(),
+        evidence,
+      });
+      continue;
+    }
+    const optInSkip = await readTextOrUndefined(
+      join(ev.dir, "skipped-opt-in.txt"),
+    );
+    if (!ran && optInSkip?.trim() === "gpu stress: opt-in") {
+      checks.push({
+        id: `leg-${L}`,
+        criterion: `g6c leg ${L} ran`,
+        passed: false,
+        status: "not-run",
+        detail: "gpu stress: opt-in",
+        evidence,
+      });
+      continue;
+    }
     if (!ran) {
       checks.push({
         id: `leg-${L}`,

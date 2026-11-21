@@ -885,12 +885,12 @@ if [ "$LIVE" = "1" ]; then
 			echo "run-gate7: g7-r @$kind: run-gate6.sh --legs g6c (G6C_LEGS=$g7r_legs) into $run_dir" >&2
 			set +e
 			if [ "$kind" = native ]; then
-				G6C_LEGS="$g7r_legs" \
+				G6C_STRESS_SELECTION="${G7R_LEGS:-}" G6C_LEGS="$g7r_legs" \
 					bash "$SCRIPT_DIR/run-gate6.sh" --extension "$EXTENSION" --calibration "$CALIBRATION" \
 					--binary "$BINARY" --out "$run_dir" --legs g6c >"$OUT/gate6/rates-$kind.log" 2>&1
 			else
 				GATE7_LIVE_KIND="$kind" GATE7_BUNDLE_DIR="$bundle_dir" \
-					GATE7_WEB_FETCH="$WEB_FETCH" GATE7_BROWSER_SPARE=after G6C_LEGS="$g7r_legs" \
+					GATE7_WEB_FETCH="$WEB_FETCH" GATE7_BROWSER_SPARE=after G6C_STRESS_SELECTION="${G7R_LEGS:-}" G6C_LEGS="$g7r_legs" \
 					bash "$SCRIPT_DIR/run-gate6.sh" --extension "$EXTENSION" --calibration "$CALIBRATION" \
 					--binary "$BINARY" --out "$run_dir" --legs g6c >"$OUT/gate6/rates-$kind.log" 2>&1
 			fi

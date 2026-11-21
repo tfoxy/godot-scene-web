@@ -97,6 +97,8 @@ G6C_RECEIVER_TIMEOUT_S=150
 # Q6e: G6c calibrates `iterations` until the receiver's GPU time is about this.
 G6C_TARGET_GPU_MS=40
 G6C_BURN_START=8000
+# About 10x a converged desktop calibration.
+G6C_BURN_CEILING=64000
 G6C_CALIBRATION_ROUNDS=5
 G6C_CALIBRATION_QUIT_FRAME=480
 # The constrained sabotage: ignore-credit from game time ~15 s (after step 9 freed TEXA), and a
@@ -369,7 +371,18 @@ g6c_dev_vp_sweep() {
 	RENDERED_TIMEOUT_S="$rendered_save"
 }
 
+# GPU stress needs the env opt-in or an explicit leaf selection (G6C_LEGS / --legs).
 g6c_wanted() {
+	case "$1" in
+	gpu-heavy | rate-uncapped)
+		if [ "${RS_GPU_STRESS:-0}" != 1 ]; then
+			case ",${G6C_STRESS_SELECTION-${G6C_LEGS:-}}," in
+			*",$1,"*) ;;
+			*) return 1 ;;
+			esac
+		fi
+		;;
+	esac
 	if [ -z "${G6C_LEGS:-}" ]; then
 		case " ${G6C_G7R_LEGS[*]} " in
 		*" $1 "*) return 1 ;;
@@ -689,31 +702,60 @@ g6c_reference() {
 	legs_lock_leave
 }
 
-# g6c_gpu_p50 <perf.json>: the receiver's gpu_render_us and frame_interval_us medians, in ms, as
-# "<gpu> <frame>" ("0 0" when missing).
+# g6c_gpu_p50 <perf.json>: measured GPU and frame medians in ms. Missing, malformed or
+# empty histograms fail; a real zero is returned and must never drive an increase.
 g6c_gpu_p50() {
-	python3 - "$1" <<'PY'
-import json, sys
+	python3 - "$1" <<'PYTIMING'
+import json, math, sys
 
 def p50(h):
-    buckets = (h or {}).get("buckets") or []
+    buckets = h["buckets"]
+    if not buckets or any(not math.isfinite(v) or n < 0 for v, n in buckets):
+        raise ValueError("invalid buckets")
     total = sum(n for _, n in buckets)
-    if total == 0:
-        return 0.0
+    if total <= 0:
+        raise ValueError("zero samples")
     seen = 0
-    for i, (lower, n) in enumerate(buckets):
-        if seen + n >= total / 2:
-            return lower / 1000.0
+    for lower, n in buckets:
         seen += n
-    return 0.0
+        if seen >= total / 2:
+            return lower / 1000.0
+    raise ValueError("no median")
 
 try:
     with open(sys.argv[1]) as f:
-        h = json.load(f).get("histograms", {})
-    print("%.3f %.3f" % (p50(h.get("gpu_render_us")), p50(h.get("frame_interval_us"))))
-except (OSError, ValueError):
-    print("0 0")
-PY
+        h = json.load(f)["histograms"]
+    print("%.6f %.6f" % (p50(h["gpu_render_us"]), p50(h["frame_interval_us"])))
+except (OSError, ValueError, KeyError, TypeError, OverflowError):
+    print("gpu timing unavailable: " + sys.argv[1], file=sys.stderr)
+    sys.exit(1)
+PYTIMING
+}
+
+# Clear any previous choice and preserve a failed leg for the checker, without launching it.
+g6c_calibration_failed() {
+	local reason="$1" receiver="${2:-}" receiver_rc="" receiver_error=""
+	G6C_BURN_ITERATIONS=""
+	if [ -n "$receiver" ]; then
+		receiver_rc="$(cat "$receiver/exit-code.txt" 2>/dev/null || true)"
+		if [ -n "$receiver_rc" ] && [ "$receiver_rc" != 0 ]; then
+			receiver_error="$(python3 - "$receiver/stdout.log" <<'PYERROR'
+import pathlib, sys
+try:
+    lines = pathlib.Path(sys.argv[1]).read_text(errors="replace").splitlines()
+    preferred = next((s for s in lines if "[receiver] error:" in s), None)
+    print(preferred or next((s for s in lines if s.startswith("ERROR:")), "see " + sys.argv[1]))
+except OSError:
+    print("see " + sys.argv[1])
+PYERROR
+)"
+			reason+=" (receiver exited $receiver_rc: $receiver_error)"
+		fi
+	fi
+	mkdir -p "$G6C/gpu-heavy"
+	printf '%s\n' "$reason" >"$G6C/gpu-heavy/failed.txt"
+	echo "run-gate6: g6c: gpu-heavy FAILED: $reason" >&2
+	return 1
 }
 
 # Q6e: `iterations` for the gpu-heavy leg, calibrated until the 1920x1080 receiver's measured GPU
@@ -722,7 +764,12 @@ PY
 # either way). Writes calibration.json and sets G6C_BURN_ITERATIONS.
 g6c_calibrate_gpu_heavy() {
 	local C="$G6C/gpu-heavy-calibration" iterations="$G6C_BURN_START" round gpu frame next chosen="" converged=false
-	local rounds_json="" sep=""
+	local rounds_json="" sep="" timing perf receiver_rc
+	G6C_BURN_ITERATIONS=""
+	if [ "$iterations" -gt "$G6C_BURN_CEILING" ]; then
+		g6c_calibration_failed "gpu calibration iteration ceiling: $G6C_BURN_CEILING"
+		return 1
+	fi
 	mkdir -p "$C"
 	for round in $(seq 1 "$G6C_CALIBRATION_ROUNDS"); do
 		echo "run-gate6: g6c: gpu-heavy calibration round $round (iterations $iterations)"
@@ -732,13 +779,26 @@ g6c_calibrate_gpu_heavy() {
 		g6c_start_receiver "$C/round-$round/receiver" "$G6C_PORT" 60 --resolution 1920x1080
 		g6c_wait_receiver "$C/round-$round/receiver" "$G6C_RECEIVER_PID"
 		g6c_finish_host "$C/round-$round/host"
-		read -r gpu frame < <(g6c_gpu_p50 "$C/round-$round/receiver/perf.json")
+		perf="$C/round-$round/receiver/perf.json"
+		receiver_rc="$(cat "$C/round-$round/receiver/exit-code.txt" 2>/dev/null || true)"
+		if [ -n "$receiver_rc" ] && [ "$receiver_rc" != 0 ]; then
+			g6c_calibration_failed "gpu timing unavailable: $perf" "${perf%/*}"
+			return 1
+		fi
+		if ! timing="$(g6c_gpu_p50 "$perf")"; then
+			g6c_calibration_failed "gpu timing unavailable: $perf" "${perf%/*}"
+			return 1
+		fi
+		read -r gpu frame <<<"$timing"
+		if ! python3 -c 'import sys; sys.exit(not all(float(v) > 0 for v in sys.argv[1:]))' "$gpu" "$frame"; then
+			g6c_calibration_failed "gpu timing unavailable: $perf (nonpositive median)"
+			return 1
+		fi
 		echo "run-gate6: g6c: calibration round $round: gpu p50 ${gpu} ms, frame interval p50 ${frame} ms"
 		rounds_json+="$sep{\"round\":$round,\"iterations\":$iterations,\"gpu_p50_ms\":$gpu,\"frame_interval_p50_ms\":$frame}"
 		sep=","
 		next="$(python3 -c "import sys
 i=int(sys.argv[1]); g=float(sys.argv[2]); t=float(sys.argv[3])
-if g <= 0: print(i*8); sys.exit()
 if abs(g - t) <= 0.15*t: print('ok'); sys.exit()
 print(max(100, min(i*8, max(i//8, round(i*t/g)))))" "$iterations" "$gpu" "$G6C_TARGET_GPU_MS")"
 		if [ "$next" = "ok" ]; then
@@ -746,6 +806,12 @@ print(max(100, min(i*8, max(i//8, round(i*t/g)))))" "$iterations" "$gpu" "$G6C_T
 			converged=true
 			break
 		fi
+		if [ "$next" -gt "$G6C_BURN_CEILING" ]; then
+			g6c_calibration_failed "gpu calibration iteration ceiling: $G6C_BURN_CEILING (requested $next)"
+			return 1
+		fi
+		# Never choose an unmeasured final extrapolation.
+		chosen="$iterations"
 		iterations="$next"
 	done
 	[ -z "$chosen" ] && chosen="$iterations"
@@ -783,6 +849,13 @@ run_g6c() {
 	done
 	g6c_provenance_input
 	: >"$G6C/legs-run.txt"
+	for leg in gpu-heavy rate-uncapped; do
+		if ! g6c_wanted "$leg" && [ "${RS_GPU_STRESS:-0}" != 1 ]; then
+			mkdir -p "$G6C/$leg"
+			echo "gpu stress: opt-in" >"$G6C/$leg/skipped-opt-in.txt"
+			echo "run-gate6: g6c: $leg SKIPPED (gpu stress: opt-in)"
+		fi
+	done
 	for leg in "${G6C_ALL_LEGS[@]}" "${G6C_G7R_LEGS[@]}" $(g6c_dev_legs); do
 		if g6c_wanted "$leg"; then
 			echo "$leg" >>"$G6C/legs-run.txt"
@@ -981,7 +1054,11 @@ run_g6c() {
 		echo "run-gate6: bringing up private gamescope 1920x1080 for g6c gpu-heavy"
 		gs_start 1920 1080 "$OUT/gamescope-g6c-hd"
 		g6c_session_display_proof "$G6C/display-socket-proof-1920x1080.json"
-		g6c_calibrate_gpu_heavy
+		if ! g6c_calibrate_gpu_heavy; then
+			gs_teardown "$OUT/gamescope-g6c-hd"
+			GS_RUN_DIR=""
+			return 0
+		fi
 		echo "run-gate6: g6c: gpu-heavy (gate6-hd gpu-heavy native, iterations $G6C_BURN_ITERATIONS, GRC_PUBLISH_FPS=60, receiver 1920x1080 --max-fps 60)"
 		D="$G6C/gpu-heavy"
 		g6c_start_host "$D/host" "$HD_FIXTURE_DIR" 60 RS_FIXTURE_VARIANT=gpu-heavy RS_FIXTURE_TIMELINE=rate \

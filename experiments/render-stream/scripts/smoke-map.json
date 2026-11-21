@@ -441,6 +441,7 @@
         "experiments/render-stream/scripts/lib/tier-verdict.py",
         "experiments/render-stream/scripts/lib/validate-summary.py",
         "experiments/render-stream/scripts/lib/hc-shadow-scan.py",
+        "experiments/render-stream/scripts/lib/stress-policy.py",
         "experiments/render-stream/scripts/lib/remote-matrix.py",
         "experiments/render-stream/scripts/lib/check-census.py",
         "experiments/render-stream/scripts/lib/self-test-temp.ts",

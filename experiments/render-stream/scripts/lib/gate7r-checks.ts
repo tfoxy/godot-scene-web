@@ -511,7 +511,24 @@ export async function checkG7rKind(
     join(ratesDir, "receiver-kind.json"),
   );
   // G7q: a --credit-window 2 run judges the window-2 leg list.
-  const defs = g7rLegs(kind, rk?.credit_window ?? 1);
+  const defs = g7rLegs(kind, rk?.credit_window ?? 1).filter((def) => {
+    if (
+      (def.leg === "gpu-heavy" || def.leg === "rate-uncapped") &&
+      !legsRun.includes(def.leg) &&
+      readText(join(ratesDir, def.leg, "skipped-opt-in.txt")).trim() ===
+        "gpu stress: opt-in"
+    ) {
+      checks.push({
+        id: at(`gpu-stress-${def.leg}`),
+        criterion: `${def.leg}: gpu stress: opt-in`,
+        passed: false,
+        gating: false,
+        detail: "SKIPPED (gpu stress: opt-in)",
+      });
+      return false;
+    }
+    return true;
+  });
   const runProblems: string[] = [];
   if (!existsSync(ratesDir)) runProblems.push(`no ${ratesDir}`);
   if (rk?.kind !== kind)

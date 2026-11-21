@@ -16,7 +16,8 @@
 #   --no-wait        print the run_key after dispatching and exit; the workflow deletes the branch itself
 #   --collect KEY    wait for / download the run a previous --no-wait printed
 #   --toolchain-smoke  instead of a plan, build the four toolchain outputs on a runner and fetch their sha256s
-#   --and-local      run the refused runs through local validate-increment.sh while the remote run flies
+#   --and-local      run refused local runs; GPU stress needs RS_GPU_STRESS=1 or G6C_LEGS,
+#                    device runs need RS_DEVICE_LEGS=1 or explicit --only <g7x id>
 #   --determinism R,R  repeat every run R times in each of len(R,R) jobs (e.g. 3,1: 3x on one runner,
 #                    1x on another); lib/remote-determinism.ts compares all repeats' shots and dumps,
 #                    and a disagreement fails the wrapper like a failed run
@@ -312,6 +313,10 @@ REFUSED_IDS="$(python3 -c 'import json,sys; print(",".join(x["id"] for x in json
 # runs refused only in some groups: their ids, and the union of those groups (RS_VALIDATE_GROUPS)
 PARTIAL_IDS="$(python3 -c 'import json,sys; print(",".join(x["id"] for x in json.load(open(sys.argv[1]))["refused"] if x.get("groups")))' "$TMP/split.json")"
 PARTIAL_GROUPS="$(python3 -c 'import json,sys; print(",".join(sorted({g for x in json.load(open(sys.argv[1]))["refused"] for g in x.get("groups") or []})))' "$TMP/split.json")"
+if [ "$AND_LOCAL" = 1 ]; then
+	REFUSED_IDS="$(python3 "$REPO/experiments/render-stream/scripts/lib/stress-policy.py" local "$TMP/plan/plan.json" "$ONLY" "$REFUSED_IDS")" || exit 2
+	python3 "$REPO/experiments/render-stream/scripts/lib/stress-policy.py" local "$TMP/plan/plan.json" "$ONLY" "$PARTIAL_IDS" >/dev/null || exit 2
+fi
 RUNS_JSON="$(python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1]))["remote"]))' "$TMP/split.json")"
 REFUSED_JSON="$(python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1]))["refused"]))' "$TMP/split.json")"
 GROUPS_JSON="$(python3 -c 'import json,sys; g=json.load(open(sys.argv[1])).get("groups") or {}; print(json.dumps(g) if g else "")' "$TMP/split.json")"
