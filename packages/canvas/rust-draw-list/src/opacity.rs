@@ -2,11 +2,12 @@
 //! caller can ask whether a texel rectangle is opaque throughout (an atlas region, say).
 //!
 //! Built once per texture from its level-0 bytes ([`Opacity::from_rgba8`]), or on the first
-//! question that needs it ([`Opacity::lazy`]: most textures are never asked about a rectangle,
-//! and whether a texture has an opaque texel, or only opaque ones, is answered by a scan that
-//! stops at the first texel that decides it). The texture is cut into [`BLOCK`]×[`BLOCK`] blocks: a block whose every texel is opaque or
-//! whose every texel is not costs one table word, and only a block holding both keeps one bit per
-//! texel. A query is exact: it reads the table and, for mixed blocks, the bit rows.
+//! question that needs each block ([`Opacity::lazy`]: most textures are never asked about a
+//! rectangle, and whether a texture has an opaque texel, or only opaque ones, is answered by a
+//! scan that stops at the first texel that decides it). The texture is cut into
+//! [`BLOCK`]×[`BLOCK`] blocks: a block whose every texel is opaque or whose every texel is not
+//! needs no bit rows, and only a block holding both keeps one bit per texel. Eager tables use one word per block; demand tables use one initialization cell. A query
+//! is exact: it reads the table and, for mixed blocks, the bit rows.
 
 /// Block edge in texels: one `u32` bit row per block row.
 pub const BLOCK: u32 = 32;
@@ -42,11 +43,20 @@ impl std::fmt::Debug for Opacity {
 
 impl Clone for Opacity {
     fn clone(&self) -> Opacity {
+        // Snapshot the unpublished source under the same lock initialization takes. If it
+        // already took the source, wait for its table rather than cloning an empty revision.
+        let src = self.src.lock().unwrap_or_else(|e| e.into_inner());
+        let mut kind = self.kind.clone();
+        let pixels = src.clone();
+        drop(src);
+        if pixels.is_none() && kind.get().is_none() {
+            kind = self.kind().clone().into();
+        }
         Opacity {
             width: self.width,
             height: self.height,
-            kind: self.kind.clone(),
-            src: std::sync::Mutex::new(self.src_bytes()),
+            kind,
+            src: std::sync::Mutex::new(pixels),
             any: self.any.clone(),
             all: self.all.clone(),
             id: self.id,
@@ -58,7 +68,10 @@ impl Clone for Opacity {
 /// Equal texels, whatever the identity.
 impl PartialEq for Opacity {
     fn eq(&self, o: &Opacity) -> bool {
-        self.width == o.width && self.height == o.height && self.kind() == o.kind()
+        if self.width != o.width || self.height != o.height {
+            return false;
+        }
+        self.canonical() == o.canonical()
     }
 }
 
@@ -80,7 +93,31 @@ enum Kind {
     /// its first bit row in `rows` (`BLOCK` rows, bit `x` of a row = texel `x` of the block is
     /// opaque; texels past the texture's edge read as not opaque).
     Blocks { blocks: Vec<u32>, rows: Vec<u32> },
+    /// A revision's demanded blocks; clones share the cache and its source-byte lifetime.
+    Demand(std::sync::Arc<Demand>),
 }
+
+#[derive(Debug)]
+struct Demand {
+    blocks: Vec<std::sync::OnceLock<Block>>,
+    src: std::sync::Mutex<Option<crate::SharedBytes>>,
+    unresolved: std::sync::atomic::AtomicUsize,
+}
+
+#[derive(Debug)]
+enum Block {
+    All,
+    None,
+    Mixed(Box<[u32; BLOCK as usize]>),
+}
+
+impl PartialEq for Demand {
+    fn eq(&self, other: &Self) -> bool {
+        std::ptr::eq(self, other)
+    }
+}
+
+impl Eq for Demand {}
 
 impl Opacity {
     /// The opacity of a `width × height` straight RGBA8 level 0 (`rgba` holds at least
@@ -98,8 +135,8 @@ impl Opacity {
         }
     }
 
-    /// [`Opacity::from_rgba8`] of `rgba`, built when first needed: until then it holds the
-    /// pixels (shared, not copied).
+    /// [`Opacity::from_rgba8`] of `rgba`, built one queried block at a time. It holds shared
+    /// pixels until every block has been resolved; clones share an initialized block cache.
     pub fn lazy(width: u32, height: u32, rgba: crate::SharedBytes) -> Opacity {
         Opacity {
             width,
@@ -120,18 +157,43 @@ impl Opacity {
     }
 
     fn src_bytes(&self) -> Option<crate::SharedBytes> {
-        self.src.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        self.src
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+            .or_else(|| {
+                if let Some(Kind::Demand(d)) = self.kind.get() {
+                    d.src.lock().unwrap_or_else(|e| e.into_inner()).clone()
+                } else {
+                    None
+                }
+            })
     }
 
-    /// The table, built now if it was not.
+    fn canonical(&self) -> std::borrow::Cow<'_, Kind> {
+        match self.kind() {
+            Kind::Demand(d) => std::borrow::Cow::Owned(d.materialize(self.width, self.height)),
+            k => std::borrow::Cow::Borrowed(k),
+        }
+    }
+
+    /// The table, allocated now if it was not; lazy texels are read per demanded block.
     fn kind(&self) -> &Kind {
         self.kind.get_or_init(|| {
             let px = self.src.lock().unwrap_or_else(|e| e.into_inner()).take();
-            Kind::build(
-                self.width,
-                self.height,
-                px.as_deref().map_or(&[], |v| &v[..]),
-            )
+            let Some(px) = px else {
+                return Kind::None;
+            };
+            let (w, h) = (self.width as usize, self.height as usize);
+            if w == 0 || h == 0 || px.len() < 4 * w * h {
+                return Kind::None;
+            }
+            let n = w.div_ceil(BLOCK as usize) * h.div_ceil(BLOCK as usize);
+            Kind::Demand(std::sync::Arc::new(Demand {
+                blocks: (0..n).map(|_| std::sync::OnceLock::new()).collect(),
+                src: std::sync::Mutex::new(Some(px)),
+                unresolved: std::sync::atomic::AtomicUsize::new(n),
+            }))
         })
     }
 
@@ -144,6 +206,106 @@ impl Opacity {
             return None;
         }
         Some(px[..n].iter().skip(3).step_by(4).copied().any(f))
+    }
+}
+
+impl Demand {
+    fn block(&self, width: u32, height: u32, i: usize) -> &Block {
+        self.blocks[i].get_or_init(|| {
+            let src = self
+                .src
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone()
+                .expect("unresolved opacity block retains source bytes");
+            let bw = width.div_ceil(BLOCK) as usize;
+            let x0 = (i % bw) * BLOCK as usize;
+            let y0 = (i / bw) * BLOCK as usize;
+            let x1 = (x0 + BLOCK as usize).min(width as usize);
+            let y1 = (y0 + BLOCK as usize).min(height as usize);
+            let full = u32::MAX >> (BLOCK as usize - (x1 - x0));
+            let mut rows = [0u32; BLOCK as usize];
+            for y in y0..y1 {
+                let start = 4 * (y * width as usize + x0);
+                let px = &src[start..start + 4 * (x1 - x0)];
+                let mut v = 0;
+                if let Ok(px) = <&[u8; 4 * BLOCK as usize]>::try_from(px) {
+                    for x in 0..BLOCK as usize {
+                        v |= u32::from(px[4 * x + 3] == 255) << x;
+                    }
+                } else {
+                    for (x, p) in px.chunks_exact(4).enumerate() {
+                        v |= u32::from(p[3] == 255) << x;
+                    }
+                }
+                rows[y - y0] = v;
+            }
+            let live = &rows[..y1 - y0];
+            let block = if live.iter().all(|&v| v == full) {
+                Block::All
+            } else if live.iter().all(|&v| v == 0) {
+                Block::None
+            } else {
+                Block::Mixed(Box::new(rows))
+            };
+            // Every initializer already owns its shared bytes before decrementing. The last
+            // initializer can release the cache's source even while another publishes its cell.
+            if self
+                .unresolved
+                .fetch_sub(1, std::sync::atomic::Ordering::AcqRel) == 1
+            {
+                self.src.lock().unwrap_or_else(|e| e.into_inner()).take();
+            }
+            block
+        })
+    }
+
+    fn region(&self, width: u32, height: u32, x0: u32, y0: u32, x1: u32, y1: u32) -> bool {
+        let bw = width.div_ceil(BLOCK);
+        for by in y0 / BLOCK..=y1 / BLOCK {
+            for bx in x0 / BLOCK..=x1 / BLOCK {
+                match self.block(width, height, (by * bw + bx) as usize) {
+                    Block::All => {}
+                    Block::None => return false,
+                    Block::Mixed(rows) => {
+                        let lx0 = x0.max(bx * BLOCK) - bx * BLOCK;
+                        let lx1 = x1.min(bx * BLOCK + BLOCK - 1) - bx * BLOCK;
+                        let mask = (u32::MAX >> (BLOCK - (lx1 - lx0 + 1))) << lx0;
+                        let ly0 = y0.max(by * BLOCK) - by * BLOCK;
+                        let ly1 = y1.min(by * BLOCK + BLOCK - 1) - by * BLOCK;
+                        for ly in ly0..=ly1 {
+                            if rows[ly as usize] & mask != mask {
+                                return false;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        true
+    }
+
+    fn materialize(&self, width: u32, height: u32) -> Kind {
+        let mut blocks = Vec::with_capacity(self.blocks.len());
+        let mut rows = Vec::new();
+        for i in 0..self.blocks.len() {
+            blocks.push(match self.block(width, height, i) {
+                Block::All => ALL,
+                Block::None => NONE,
+                Block::Mixed(bits) => {
+                    let at = rows.len() as u32;
+                    rows.extend_from_slice(&bits[..]);
+                    at
+                }
+            });
+        }
+        if blocks.iter().all(|&b| b == ALL) {
+            Kind::All
+        } else if blocks.iter().all(|&b| b == NONE) {
+            Kind::None
+        } else {
+            Kind::Blocks { blocks, rows }
+        }
     }
 }
 
@@ -241,29 +403,57 @@ impl Opacity {
     /// Every texel is opaque.
     pub fn all(&self) -> bool {
         if let Some(k) = self.kind.get() {
-            return matches!(k, Kind::All);
+            if !matches!(k, Kind::Demand(_)) {
+                return matches!(k, Kind::All);
+            }
         }
         *self.all.get_or_init(|| match self.scan(|a| a != 255) {
             Some(found) => !found,
-            None => matches!(self.kind(), Kind::All),
+            None => match self.kind() {
+                Kind::Demand(d) => (0..d.blocks.len()).all(|i| {
+                    matches!(d.block(self.width, self.height, i), Block::All)
+                }),
+                k => matches!(k, Kind::All),
+            },
         })
     }
 
     /// Some texel is opaque.
     pub fn any(&self) -> bool {
         if let Some(k) = self.kind.get() {
-            return !matches!(k, Kind::None);
+            if !matches!(k, Kind::Demand(_)) {
+                return !matches!(k, Kind::None);
+            }
         }
         *self.any.get_or_init(|| match self.scan(|a| a == 255) {
             Some(found) => found,
-            None => !matches!(self.kind(), Kind::None),
+            None => match self.kind() {
+                Kind::Demand(d) => (0..d.blocks.len()).any(|i| {
+                    !matches!(d.block(self.width, self.height, i), Block::None)
+                }),
+                k => !matches!(k, Kind::None),
+            },
         })
     }
 
-    /// Bytes the table holds beyond the struct itself (none until it is built).
+    /// Bytes allocated by the table beyond this struct (none before the first region query).
+    /// Shared revision caches are reported in full by each clone; shared pixels are excluded.
     pub fn heap_bytes(&self) -> usize {
         match self.kind.get() {
             Some(Kind::Blocks { blocks, rows }) => 4 * (blocks.capacity() + rows.capacity()),
+            Some(Kind::Demand(d)) => {
+                std::mem::size_of::<Demand>()
+                    + 2 * std::mem::size_of::<usize>()
+                    + d.blocks.capacity() * std::mem::size_of::<std::sync::OnceLock<Block>>()
+                    + d.blocks
+                        .iter()
+                        .filter_map(|b| b.get())
+                        .map(|b| match b {
+                            Block::Mixed(_) => 4 * BLOCK as usize,
+                            _ => 0,
+                        })
+                        .sum::<usize>()
+            }
             _ => 0,
         }
     }
@@ -281,6 +471,11 @@ impl Opacity {
             Kind::All => return true,
             Kind::None => return false,
             Kind::Blocks { blocks, rows } => (blocks, rows),
+            Kind::Demand(d) => {
+                return d.region(
+                    self.width, self.height, x0 as u32, y0 as u32, x1 as u32, y1 as u32,
+                );
+            }
         };
         let (x0, y0, x1, y1) = (x0 as u32, y0 as u32, x1 as u32, y1 as u32);
         let bw = self.width.div_ceil(BLOCK);
@@ -328,6 +523,102 @@ mod tests {
             v[(4 * (y * w + x) + 3) as usize] = 254;
         }
         v
+    }
+
+    #[test]
+    fn lazy_regions_retain_pixels_for_unqueried_blocks() {
+        let pixels = std::sync::Arc::new(tex(96, 64, &[(0, 0)]));
+        let weak = std::sync::Arc::downgrade(&pixels);
+        let o = Opacity::lazy(96, 64, pixels);
+        assert!(!o.region(0, 0, 95, 63));
+        assert!(weak.upgrade().is_some(), "unqueried blocks still need pixels");
+        let clone = o.clone();
+        assert_eq!(clone.id(), o.id());
+        drop(o);
+        assert!(clone.region(32, 0, 95, 63));
+        assert!(clone.region(0, 32, 31, 63));
+        assert!(weak.upgrade().is_none(), "all blocks resolved: release pixels");
+        assert!(!clone.all());
+        assert!(clone.any());
+    }
+
+    fn demanded(o: &Opacity) -> &Demand {
+        let Kind::Demand(d) = o.kind.get().expect("queried table") else {
+            panic!("expected demand table");
+        };
+        d
+    }
+
+    #[test]
+    fn lazy_region_stops_at_a_disproving_block_and_caches_the_revision() {
+        let o = Opacity::lazy(96, 64, std::sync::Arc::new(tex(96, 64, &[(0, 0)])));
+        assert!(!o.region(0, 0, 95, 63));
+        let d = demanded(&o);
+        assert!(d.blocks[0].get().is_some());
+        assert!(d.blocks[1..].iter().all(|b| b.get().is_none()));
+        let bytes = o.heap_bytes();
+        for _ in 0..10 {
+            assert!(!o.region(0, 0, 95, 63));
+        }
+        assert_eq!(o.heap_bytes(), bytes);
+        assert_eq!(
+            d.unresolved.load(std::sync::atomic::Ordering::Relaxed),
+            5
+        );
+        let clone = o.clone();
+        assert!(std::sync::Arc::ptr_eq(
+            match o.kind() {
+                Kind::Demand(d) => d,
+                _ => unreachable!(),
+            },
+            match clone.kind() {
+                Kind::Demand(d) => d,
+                _ => unreachable!(),
+            },
+        ));
+        assert_eq!(clone.heap_bytes(), o.heap_bytes());
+        let revision = Opacity::lazy(96, 64, std::sync::Arc::new(tex(96, 64, &[])));
+        assert_ne!(revision.id(), o.id());
+        assert!(revision.region(0, 0, 95, 63));
+        assert!(!clone.texel(0, 0));
+    }
+
+    #[test]
+    fn lazy_edge_masks_and_short_buffers_match_eager() {
+        let (w, h) = (35, 34);
+        let mut px = tex(w, h, &[(32, 32), (34, 33), (31, 31)]);
+        px[(4 * (33 * w + 33) + 3) as usize] = 0;
+        let eager = Opacity::from_rgba8(w, h, &px);
+        let o = Opacity::lazy(w, h, std::sync::Arc::new(px));
+        for y0 in 30..h {
+            for y1 in y0..h {
+                for x0 in 30..w {
+                    for x1 in x0..w {
+                        assert_eq!(
+                            o.region(x0.into(), y0.into(), x1.into(), y1.into()),
+                            eager.region(x0.into(), y0.into(), x1.into(), y1.into())
+                        );
+                    }
+                }
+            }
+        }
+        for r in [
+            (-1, 0, 1, 1),
+            (0, -1, 1, 1),
+            (0, 0, 35, 33),
+            (0, 0, 34, 34),
+            (2, 0, 1, 1),
+            (0, 2, 1, 1),
+        ] {
+            assert!(!o.region(r.0, r.1, r.2, r.3));
+        }
+        let short = Opacity::lazy(
+            w, h, std::sync::Arc::new(vec![255; (4 * w * h - 1) as usize]),
+        );
+        assert!(!short.texel(0, 0));
+        assert!(!short.any());
+        assert!(!short.all());
+        assert_eq!(short.heap_bytes(), 0);
     }
 
     #[test]
