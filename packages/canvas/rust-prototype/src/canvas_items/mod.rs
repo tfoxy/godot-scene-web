@@ -33,8 +33,11 @@
 //! This module also holds the target-independent planning ([`plan_calls`], [`item_upload_rects`])
 //! so it is unit-tested natively.
 use gsw_canvas_draw_list::{
-    BUILTIN_PROGRAM, Blend, DRAW_UNTEXTURED, Draw, DrawList, WHITE_TEXTURE, mergeable, merged,
+    BUILTIN_PROGRAM, Blend, DrawList,
 };
+
+#[cfg(test)]
+use gsw_canvas_draw_list::{DRAW_UNTEXTURED, Draw, WHITE_TEXTURE};
 
 #[cfg(target_arch = "wasm32")]
 mod gl;
@@ -534,122 +537,9 @@ pub const CANVAS_INVERSE_UNIFORM: &str = "gsw_canvas_inverse";
 pub const FIRST_SAMPLER_UNIT: u32 = 3;
 pub const MAX_PROGRAM_SAMPLERS: usize = 13;
 
-/// One `drawElements` call: the state of draw `draw` over a merged index range.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Call {
-    /// Index of the run's first draw in `list.draws` (its state is the call's, but for the
-    /// texture and sampler: `texture_draw`'s).
-    pub draw: u32,
-    pub first_index: u32,
-    pub index_count: u32,
-    /// The draw whose texture and sampler the call binds: the run's first draw that is not
-    /// [`DRAW_UNTEXTURED`], else `draw` (an all-untextured run, which needs no texture of its own).
-    pub texture_draw: u32,
-    /// The run's depth level ([`gsw_canvas_draw_list::depth_level`]): every draw of a run has the
-    /// same; None for draws the list does not depth-test.
-    pub depth: Option<u32>,
-    /// Union of the run's draw bounds in design rows, top-left `[x, y, w, h]`.
-    pub bounds: [i32; 4],
-}
-
-/// What [`plan_calls`] counted besides the calls.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct PlanCounts {
-    pub merged: u32,
-    pub skipped: u32,
-}
-
-/// Whether the executor can draw `draw` at all: a known texture (`known_texture`), a known blend,
-/// the builtin program or a binding slot whose program compiled (`known_binding`, given the
-/// draw's `program`), and an index range inside `index_len`.
-pub fn drawable(
-    draw: &Draw,
-    index_len: usize,
-    known_texture: impl Fn(u32) -> bool,
-    known_binding: impl Fn(u32) -> bool,
-) -> bool {
-    Blend::from_u32(draw.blend).is_some()
-        && (draw.program == BUILTIN_PROGRAM || known_binding(draw.program))
-        && (draw.texture == WHITE_TEXTURE || known_texture(draw.texture))
-        && u64::from(draw.first_index) + u64::from(draw.index_count) <= index_len as u64
-}
-
-/// The draw calls for `list`, in paint order, into `out` (cleared first). Adjacent drawable draws
-/// of one depth level merge when [`mergeable`] allows; an empty draw neither draws nor ends a run (as
-/// [`DrawList::merged_draw_count`] counts); an undrawable one is skipped and ends the run.
-pub fn plan_calls(
-    list: &DrawList,
-    known_texture: impl Fn(u32) -> bool,
-    known_binding: impl Fn(u32) -> bool,
-    out: &mut Vec<Call>,
-) -> PlanCounts {
-    out.clear();
-    let mut counts = PlanCounts::default();
-    // The current run's state (`merged`): its texture and sampler are its first textured draw's.
-    let mut run: Option<Draw> = None;
-    let mut group = None;
-    for (i, draw) in list.draws.iter().enumerate() {
-        if draw.index_count == 0 {
-            continue;
-        }
-        if !drawable(draw, list.indices.len(), &known_texture, &known_binding) {
-            counts.skipped += 1;
-            run = None;
-            continue;
-        }
-        let depth = gsw_canvas_draw_list::depth_level(list, i as u32);
-        // A merged call must stay inside one fact range: its first draw selects depth testing.
-        let next_group = list.group_cells.iter().position(|g| g.draws.contains(&i));
-        if group != next_group {
-            run = None;
-            group = next_group;
-        }
-        run = Some(match (run, out.last_mut()) {
-            (Some(r), Some(call)) if call.depth == depth && mergeable(&r, draw) => {
-                call.index_count += draw.index_count;
-                if r.flags & DRAW_UNTEXTURED != 0 && draw.flags & DRAW_UNTEXTURED == 0 {
-                    call.texture_draw = i as u32;
-                }
-                counts.merged += 1;
-                merged(&r, draw)
-            }
-            _ => {
-                out.push(Call {
-                    draw: i as u32,
-                    first_index: draw.first_index,
-                    index_count: draw.index_count,
-                    texture_draw: i as u32,
-                    depth,
-                    bounds: [0; 4],
-                });
-                *draw
-            }
-        });
-    }
-    counts
-}
-
-/// Fill bounds after planning once, independently of replay regions.
-pub fn call_bounds(list: &DrawList, calls: &mut [Call], facts: &impl gsw_canvas_draw_list::cover::CoverFacts) {
-    use gsw_canvas_draw_list::cover::{PxRect, draw_bounds};
-    for call in calls {
-        let mut bounds = PxRect::EMPTY;
-        let mut left = call.index_count;
-        for d in call.draw as usize..list.draws.len() {
-            if left == 0 { break; }
-            let draw = &list.draws[d];
-            let b = draw_bounds(list, d, facts);
-            if !b.is_empty() {
-                bounds = if bounds.is_empty() { b } else { PxRect {
-                    x0: bounds.x0.min(b.x0), y0: bounds.y0.min(b.y0),
-                    x1: bounds.x1.max(b.x1), y1: bounds.y1.max(b.y1),
-                }};
-            }
-            left -= draw.index_count;
-        }
-        call.bounds = [bounds.x0, bounds.y0, bounds.x1 - bounds.x0, bounds.y1 - bounds.y0];
-    }
-}
+pub use gsw_canvas_draw_list::plan::{
+    Call, PlanCounts, PlanOptions, call_bounds, drawable, plan_calls, plan_calls_with_options,
+};
 
 /// Screen operations and back-buffer producers needed by replayed readers, in plan order.
 /// The back buffer is not retained across frames for correctness: the damage planner sends a
@@ -956,6 +846,13 @@ mod tests {
         }
     }
 
+    fn expected_slots(list: &DrawList, draw: usize) -> [(u32, u32); 4] {
+        let mut slots = [(WHITE_TEXTURE, 0); 4];
+        let d = &list.draws[draw];
+        slots[0] = (d.texture, d.sampler);
+        slots
+    }
+
     #[test]
     fn plan_merges_adjacent_equal_state_only_and_agrees_with_merged_draw_count() {
         let a = draw(0, 6);
@@ -983,6 +880,7 @@ mod tests {
                     texture_draw: 0,
                     depth: None,
                     bounds: [0; 4],
+                    slots: expected_slots(&l, 0),
                 },
                 Call {
                     draw: 2,
@@ -991,6 +889,7 @@ mod tests {
                     texture_draw: 2,
                     depth: None,
                     bounds: [0; 4],
+                    slots: expected_slots(&l, 2),
                 },
                 Call {
                     draw: 4,
@@ -999,6 +898,7 @@ mod tests {
                     texture_draw: 4,
                     depth: None,
                     bounds: [0; 4],
+                    slots: expected_slots(&l, 4),
                 },
             ]
         );
@@ -1006,7 +906,9 @@ mod tests {
             counts,
             PlanCounts {
                 merged: 2,
-                skipped: 0
+                skipped: 0,
+                breaks: gsw_canvas_draw_list::plan::BreakCounts { texture: 2, ..Default::default() },
+                ..Default::default()
             }
         );
     }
@@ -1081,6 +983,7 @@ mod tests {
                 texture_draw: 5,
                 depth: None,
                     bounds: [0; 4],
+                    slots: expected_slots(&l, 5),
             }
         );
     }
@@ -1121,7 +1024,9 @@ mod tests {
             counts,
             PlanCounts {
                 merged: 0,
-                skipped: 4
+                skipped: 4,
+                breaks: gsw_canvas_draw_list::plan::BreakCounts { undrawable: 4, ..Default::default() },
+                ..Default::default()
             }
         );
         assert_eq!(
@@ -1134,6 +1039,7 @@ mod tests {
                     texture_draw: 0,
                     depth: None,
                     bounds: [0; 4],
+                    slots: expected_slots(&l, 0),
                 },
                 Call {
                     draw: 2,
@@ -1142,6 +1048,7 @@ mod tests {
                     texture_draw: 2,
                     depth: None,
                     bounds: [0; 4],
+                    slots: expected_slots(&l, 2),
                 }
             ]
         );
@@ -1176,6 +1083,7 @@ mod tests {
                     texture_draw: 2,
                     depth: None,
                     bounds: [0; 4],
+                    slots: expected_slots(&l, 2),
                 },
                 Call {
                     draw: 5,
@@ -1184,6 +1092,7 @@ mod tests {
                     texture_draw: 5,
                     depth: None,
                     bounds: [0; 4],
+                    slots: expected_slots(&l, 5),
                 },
             ]
         );
@@ -1209,6 +1118,7 @@ mod tests {
                 texture_draw: 0,
                 depth: None,
                     bounds: [0; 4],
+                    slots: expected_slots(&l, 0),
             }]
         );
         assert_eq!(l.merged_draw_count(), 1);
@@ -1322,7 +1232,7 @@ mod tests {
             op(2,ScreenOpKind::Clear), op(4,ScreenOpKind::Clear), op(6,ScreenOpKind::Copy)];
         // Explicit calls isolate the event ordering (screen-op boundaries prevent merged runs).
         let calls: Vec<_> = (0..6).map(|i| Call { draw: i, first_index: i*3, index_count: 3,
-            texture_draw: i, depth: None, bounds: if i < 2 { [0,0,32,32] } else { [64,64,32,32] } }).collect();
+            texture_draw: i, depth: None, slots: [(WHITE_TEXTURE, 0); 4], bounds: if i < 2 { [0,0,32,32] } else { [64,64,32,32] } }).collect();
         let (ops, producers) = partial_back_work(&l, &calls, &[[0,0,32,32]]);
         assert_eq!(ops, [true,true,true,false,false,false]);
         assert_eq!(producers, [true,false,false,false,false,false]);

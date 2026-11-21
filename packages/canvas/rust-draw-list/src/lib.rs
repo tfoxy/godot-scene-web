@@ -1019,6 +1019,7 @@ pub mod alpha;
 pub mod cover;
 pub mod damage;
 pub mod opacity;
+pub mod plan;
 
 /// `PDL1`: a byte dump of one frame's list for tests and evidence. Never on the frame path. It
 /// holds the POD arrays only: [`DrawList::bindings`] are not in it.

@@ -18,6 +18,7 @@
 //!   rs-core-check scissors <recording> [--store <dir>]
 //!   rs-core-check lowered <recording> --seqs 8,18,... [--store <dir>]
 //!   rs-core-check state-dump <recording> --seqs 8,18,... --out <dir>
+//!   rs-core-check calls <recording> [--store <dir>] [--seqs a,b] [--every N] [--slots 1|4]
 //!   rs-core-check fill <recording> [--store <dir>] [--seqs 8,18,...] [--every N] [--cell 8]
 //!                      [--damage <summary.json>] [--damage-every N] [--pin-time] [--draws <dir>] [--cover off] [--noop off] [--tiles off]
 //!   rs-core-check motion <recording> [--store <dir>] [--why]
@@ -66,6 +67,8 @@ use std::time::Instant;
 
 #[path = "rs-core-check/fill.rs"]
 mod fill_cmd;
+#[path = "rs-core-check/calls.rs"]
+mod calls;
 use fill_cmd::cmd_fill;
 #[path = "rs-core-check/apply_digests.rs"]
 mod apply_digests;
@@ -105,6 +108,7 @@ fn usage() -> ExitCode {
          rs-core-check material-diff <recording>... [--store <dir>] [--sabotage mra-skip-changed|mra-skip-binding] [--baseline]\n  \
          rs-core-check client-diff <recording>... [--store <dir>] [--sabotage ph2-skip-body-digest|ph2-skip-dep-texture|ph2-park-stale|ph2-skip-material-textures]\n  \
          rs-core-check draw-skip-diff <recording>... [--store <dir>] [--every N] [--sabotage ph3-drop-pending]\n  \
+         rs-core-check calls <recording> [--store <dir>] [--seqs a,b] [--every N] [--slots 1|4]\n  \
          rs-core-check fill <recording> [--store <dir>] [--seqs a,b] [--every N] [--cell 8] [--damage <summary.json>] [--damage-every N] [--pin-time] [--draws <dir>] [--cover off] [--noop off] [--tiles off] [--group-cells off]\n  \
          rs-core-check motion <recording> [--store <dir>] [--why]\n  \
          rs-core-check live-decode <coded> [--expect <recording>] [--bases keep|none] [--repeats N] [--stats <jsonl>] [--sabotage drop-base|wrong-prefix]"
@@ -180,6 +184,7 @@ fn main() -> ExitCode {
         "lowered" => cmd_lowered(&args),
         "state-dump" => cmd_state_dump(&args),
         "fill" => cmd_fill(&args),
+        "calls" => calls::cmd(&args),
         "motion" => cmd_motion(&args),
         "validate" => cmd_validate(&args),
         "live-decode" => cmd_live_decode(&args),
