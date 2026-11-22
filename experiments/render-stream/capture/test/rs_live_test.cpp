@@ -3491,11 +3491,11 @@ void test_v15_hint_pins_before_first_frame() {
 
 // VS2 (render-stream-16.md "Who speaks /16"; viewport-surfaces-design.md D14): render-stream.16
 // selects /16 (hello `render-stream/16`), and a /16 connection gets hints like a /15 one.
-void test_v16_hints() {
+void test_v16_hints(int version = 16) {
   namespace hints = grc::rs::hints;
   FakeTransport transport;
   Session tmpl = make_template(Delivery::OutOfBand);
-  tmpl.version = ProtocolVersion::V16;
+  tmpl.version = version == 18 ? ProtocolVersion::V18 : version == 17 ? ProtocolVersion::V17 : ProtocolVersion::V16;
   observe_multimesh_features(&tmpl.features);
   Hub hub(&transport, LiveConfig(), tmpl);
   hints::Table table;
@@ -3512,26 +3512,26 @@ void test_v16_hints() {
   hub.set_hints(&table, hints::Sabotage::None);
   std::string hello16 =
       read_file(std::string(GRC_GOLDEN12_DIR) + "/control/valid/hello-native-block.json");
-  hello16.replace(hello16.find("render-stream/12"), 16, "render-stream/16");
-  hub.on_event(opened_with(1, "render-stream.16"), 1);
+  hello16.replace(hello16.find("render-stream/12"), 16, "render-stream/" + std::to_string(version));
+  hub.on_event(opened_with(1, "render-stream." + std::to_string(version)), 1);
   hub.on_event(text(1, hello16), 1);
   std::vector<const hints::Sent *> sinks;
   hub.hint_sinks(&sinks);
-  check(sinks.size() == 1, "V16: an accepted /16 hello has a hint sink");
+  check(sinks.size() == 1, "an accepted /16 or /18 hello has a hint sink");
   hub.on_frame_shared(1, 16000000ULL, w13_state(1), 1, 0);
   hub.sync();
   std::size_t hinted = 0;
   for (const auto &e : hub.take_hint_events()) {
     if (e.connection == 1 && !e.unhint) ++hinted;
   }
-  check(hinted == 1, "V16: the /16 connection is hinted with its first transaction");
+  check(hinted == 1, "the /16 or /18 connection is hinted with its first transaction");
   bool session16 = false;
   for (const Sent &x : transport.of(Sent::Binary)) {
     const std::string b(x.bytes.begin(), x.bytes.end());
     session16 = session16 || (!x.bytes.empty() && x.bytes[0] == 'G' &&
-                              b.find("render-stream/16") != std::string::npos);
+                              b.find("render-stream/" + std::to_string(version)) != std::string::npos);
   }
-  check(session16, "V16: the session is render-stream/16");
+  check(session16, "the session matches the selected /16 or /18 protocol");
   hub.finish(EndReason::Shutdown, 2, 2 * 16000000ULL);
 }
 
@@ -4279,6 +4279,88 @@ void test_tween_lifecycle() {
   }
 }
 
+void test_tween18_lifecycle() {
+  using namespace grc::rs::tweens;
+  FakeTransport transport;
+  LiveConfig config;
+  config.tap_dir = std::string(GRC_TEST_TMP_DIR) + "/tweens18";
+  auto tmpl = template_v6(); tmpl.version = ProtocolVersion::V18;
+  Hub hub(&transport, config, tmpl);
+  const auto open = [&](std::uint32_t id) {
+    hub.on_event(opened_with(id, kSubprotocolV18), 0);
+    hub.on_event(text(id, tween_hello(true, 18)), 0);
+  };
+  open(1);
+  Pose pose; pose.item = 1;
+  Resolve resolve = [&](std::uint64_t, Pose *p) { *p = pose; return std::string(); };
+  const auto begin = [](int id) {
+    return Value::Object{{"tween_id", id}, {"object_id", 7}, {"steps", Value::Array{
+      Value::Object{{"property", "rotation"}, {"to", 2.0}, {"start_ms", 0},
+                    {"duration_ms", 1000}, {"trans", 0}, {"ease", 0}}}}};
+  };
+  const auto frame = [&](int n) {
+    auto snapshot = captured_state(1);
+    snapshot.tweens = std::make_shared<const Frame>(hub.tweens().snapshot(n * 1000, resolve));
+    hub.on_frame(n, n * 1000000ULL, &snapshot, n, 1000);
+  };
+  const auto credit = [&](std::uint32_t id) {
+    for (const auto &s : hub.summaries()) if (s.connection == id)
+      hub.on_event(text(id, ack(s.stream_id, s.transactions, "submitted")), 0);
+  };
+  hub.tweens().begin(begin(1), 1000, resolve);
+  frame(1);
+  // A resync must discard even unsent events; it does not replay an already active tween.
+  hub.tweens().begin(begin(2), 1500, resolve);
+  const auto sid = hub.summaries()[0].stream_id;
+  hub.on_event(text(1, resync(sid, 1)), 1);
+  frame(2);
+  auto wire = of_conn(transport, Sent::Binary, 1);
+  check(wire.size() == 4, "tween resync sends no pending begin or pose");
+  if (wire.size() == 4) check(has(meta_at(wire[3].bytes, 0), "\"encoding\":\"full\"") &&
+    has(meta_at(wire[3].bytes, 0), "\"t_us\":2000"), "tween resync full retains snapshot time");
+  hub.on_event(closed(1, 1000), 2);
+  open(2);
+  frame(3);
+  wire = of_conn(transport, Sent::Binary, 2);
+  check(wire.size() == 2, "reconnect mid-tween sends host state without old events");
+  hub.tweens().begin(begin(3), 3500, resolve);
+  credit(2); frame(4);
+  wire = of_conn(transport, Sent::Binary, 2);
+  check(wire.size() == 4 && has(meta_at(wire[2].bytes, 0), "\"tween_id\":\"3\""),
+    "new announcement after reconnect participates");
+  open(3);
+  credit(2); frame(5);
+  check(of_conn(transport, Sent::Binary, 3).size() == 2, "late granted peer gets no live tween pose");
+  hub.tweens().cancel(3, 5500);
+  credit(2); credit(3); frame(6);
+  wire = of_conn(transport, Sent::Binary, 3);
+  check(wire.size() == 3, "late granted peer gets no unknown cancel");
+  hub.finish(EndReason::Shutdown, 7, 7000000);
+  // The granted tap contains the uncoded session, tween records, transactions and end together.
+  const auto tapped = read_file(config.tap_dir + "/stream-2.rs2");
+  std::string live;
+  for (const auto &m : of_conn(transport, Sent::Binary, 2))
+    live.append(reinterpret_cast<const char *>(m.bytes.data()), m.bytes.size());
+  check(!tapped.empty() && tapped == live, "granted tap equals complete live stream bytes");
+  const std::vector<std::uint8_t> tap_bytes(tapped.begin(), tapped.end());
+  const auto metas = stream_metas(tap_bytes);
+  check(metas.size() == 9 && has(metas[1], "\"t_us\":3000") &&
+    has(metas[2], "\"op\":\"begin\"") && has(metas[7], "\"type\":\"transaction\""),
+    "granted tap preserves tween adjacency and timestamps");
+  if (!metas.empty()) {
+    std::uint64_t before_end = 8;
+    for (std::size_t at = 8; at + 4 < tap_bytes.size();) {
+      const auto next = at + 4 + u32le(tap_bytes, at);
+      if (next == tap_bytes.size()) { before_end = at; break; }
+      at = next;
+    }
+    check(has(metas.back(), "\"bytes_total\":" + std::to_string(before_end)),
+      "tap end counts tween bytes in bytes_total");
+    check(has(metas.back(), "\"transactions\":4") &&
+      has(metas.back(), "\"resource_records\":0"), "tween records do not count as transactions or resources");
+  }
+}
+
 void test_tween_peer_bytes() {
   using namespace grc::rs::tweens;
   using grc::rs::live_coding::Coding;
@@ -4490,6 +4572,38 @@ void test_client_tweens() {
   paced.finish(EndReason::Shutdown,5,310000000);
 }
 
+void test_v18_hello_range() {
+  const auto source = read_file(std::string(GRC_GOLDEN12_DIR) + "/control/valid/hello-native-block.json");
+  for (int version : {16, 17, 18}) {
+    // Reuse the required /12 hello fields, without an optional tween request.
+    for (int window : {0, 1, 2, 3, 8, 9}) {
+      std::string hello = source;
+      hello.replace(hello.find("render-stream/12"), 16, "render-stream/" + std::to_string(version));
+      const auto p = hello.find_first_not_of(" ", hello.find("\"credit_window\":") +
+                                              std::strlen("\"credit_window\":"));
+      hello.replace(p, 1, std::to_string(window));
+      ControlMessage message;
+      std::string error;
+      const bool ok = parse_control(hello, &message, &error,
+          version == 18 ? ProtocolVersion::V18 : version == 17 ? ProtocolVersion::V17 : ProtocolVersion::V16);
+      check(ok == (window >= 1 && window <= (version == 18 ? 8 : 2)),
+            "version-gated hello credit range: /" + std::to_string(version) + " window " + std::to_string(window));
+      Rig rig;
+      rig.hub.on_event(opened_with(1, version == 18 ? kSubprotocolV18 : version == 17 ? kSubprotocolV17 : kSubprotocolV16), 0);
+      rig.hub.on_event(text(1, hello), 0);
+      const auto summary = rig.hub.summaries().at(0);
+      if (ok) {
+        check(summary.credit_window == static_cast<std::uint64_t>(window) &&
+                  summary.error_sent.empty(), "hub grants the version-valid requested window");
+      } else {
+        const auto closes = rig.transport.of(Sent::Close);
+        check(summary.error_sent == "protocol" && closes.size() == 1 && closes[0].code == 1002,
+              "hub refuses the version-invalid window with protocol / close 1002");
+      }
+    }
+  }
+}
+
 int main(int argc, char **argv) {
   grc::rs13::set_verify_meta(true);  // W13p: predict_meta() == the meta JSON
   // HC5: `--formation=thread` runs every hub here through the encode thread (each frame callback
@@ -4501,6 +4615,7 @@ int main(int argc, char **argv) {
   }
   test_client_tweens();
   test_tween_lifecycle();
+  test_tween18_lifecycle();
   test_tween_peer_bytes();
   test_connection_observer();
   test_pm1_multimesh_buffer_f();
@@ -4513,6 +4628,7 @@ int main(int argc, char **argv) {
   test_v7_hello_token();
   test_preflight_attribution();
   test_control_parser();
+  test_v18_hello_range();
   test_v3_hub_and_control();
   test_v4_hub_and_control();
   test_v7_control_parser();
@@ -4547,6 +4663,7 @@ int main(int argc, char **argv) {
   test_w13_connections();
   test_v15_hint_pins_before_first_frame();
   test_v16_hints();
+  test_v16_hints(18);
   test_v15_hints();
   std::printf("rs_live_test: %d checks, %d failures\n", g_checks, g_failures);
   return g_failures == 0 ? 0 : 1;

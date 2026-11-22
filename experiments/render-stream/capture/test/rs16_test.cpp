@@ -493,9 +493,46 @@ void test_plain_encode_and_unsupported() {
         "every is_vN_or_later cascade includes V16");
 }
 
+// /18 changes only the version identifiers and the credit grant; all viewport transaction
+// bytes stay /16's, including predicted full and patch blocks.
+void test_window18() {
+  const auto v18 = ProtocolVersion::V18;
+  check(magic(v18) == std::vector<std::uint8_t>({0x47, 0x52, 0x53, 0x49, 0x0D, 0x0A, 0x1A, 0x0A}),
+        "the /18 magic is GRSI");
+  check(is_v7_or_later(v18) && is_v8_or_later(v18) && is_v9_or_later(v18) &&
+            is_v10_or_later(v18) && is_v11_or_later(v18) && is_v12_or_later(v18) &&
+            is_v13_or_later(v18) && is_v14_or_later(v18) && is_v15_or_later(v18) && is_v16(v18),
+        "all existing feature gates include /18");
+  for (int window : {1, 2, 4, 8}) {
+    Session session = session_at(v18, ViewportsMode::On);
+    session.stream.transport = Transport::Websocket;
+    session.publication.credit_window = window;
+    const Parsed p18 = parse(encode_session(session));
+    check(has(p18.meta, "\"credit_window\":" + std::to_string(window)), "the grant is encoded");
+    session.version = ProtocolVersion::V16;
+    std::string expected = parse(encode_session(session)).meta;
+    expected.replace(expected.find("render-stream/16"), 16, "render-stream/18");
+    check(p18.meta == expected, "the /18 session is /16's except for its protocol");
+  }
+  grc::rs13::Predictor predictor16, predictor18;
+  Snapshot a16 = state_a(ProtocolVersion::V16), b16 = state_b(ProtocolVersion::V16);
+  Snapshot a18 = state_a(v18), b18 = state_b(v18);
+  check(grc::rs13::encode_transaction(make_full(a16), &predictor16) ==
+            grc::rs13::encode_transaction(make_full(a18), &predictor18),
+        "the /18 predicted viewport full is /16's byte for byte");
+  check(grc::rs13::encode_transaction(make_patch(a16, b16), &predictor16) ==
+            grc::rs13::encode_transaction(make_patch(a18, b18), &predictor18),
+        "the /18 predicted viewport patch is /16's byte for byte");
+}
+
 }  // namespace
 
-int main() {
+int main(int argc, char **argv) {
+  if (argc == 2 && std::string(argv[1]) == "--18") {
+    test_window18();
+    std::printf("rs18: %d failures\n", g_failures);
+    return g_failures == 0 ? 0 : 1;
+  }
   test_session_and_magic();
   test_full_and_patch(std::getenv("RS16_TEST_OUT"));
   test_plain_encode_and_unsupported();

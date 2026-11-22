@@ -46,7 +46,7 @@ const api = {
   mount(o: {
     endpoint: RenderStreamEndpoint;
     core: RenderStreamCore;
-    creditWindow: 1 | 2;
+    creditWindow: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
     /** PH3: the client's pacing options (undefined: the package's defaults). */
     creditStage?: "submitted" | "applied";
     applyOn?: "frame" | "message";

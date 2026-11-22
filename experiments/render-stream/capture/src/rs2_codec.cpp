@@ -1014,7 +1014,10 @@ std::vector<std::uint8_t> magic() {
 }
 
 std::vector<std::uint8_t> magic(ProtocolVersion version) {
-  if (version == ProtocolVersion::V17) {
+  if (version == ProtocolVersion::V18) {
+    return std::vector<std::uint8_t>(kMagicV18.begin(), kMagicV18.end());
+  }
+  if (is_v17_or_later(version)) {
     return std::vector<std::uint8_t>(kMagicV17.begin(), kMagicV17.end());
   }
   if (version == ProtocolVersion::V16) {
@@ -1065,8 +1068,10 @@ std::vector<std::uint8_t> encode_session(const Session &session) {
   std::string m;
   m += "{\"type\":\"session\",\"protocol\":";
   const char *protocol =
-      session.version == ProtocolVersion::V17 ? kProtocolV17
-      : session.version == ProtocolVersion::V16
+      session.version == ProtocolVersion::V18
+          ? kProtocolV18
+          : is_v17_or_later(session.version) ? kProtocolV17
+          : session.version == ProtocolVersion::V16
           ? kProtocolV16
           : session.version == ProtocolVersion::V15
           ? kProtocolV15
@@ -1345,7 +1350,7 @@ std::vector<std::uint8_t> encode_session(const Session &session) {
     m += ",\"viewports\":";
     append_json_string(m, to_wire(session.viewports));
   }
-  if (session.version == ProtocolVersion::V17 && session.client_tweens) {
+  if (is_v17_or_later(session.version) && session.client_tweens) {
     m += ",\"client_tweens\":true";
   }
   m += ",";
@@ -1385,7 +1390,7 @@ std::vector<std::uint8_t> encode_transaction(const Transaction &transaction) {
   append_json_int(m, transaction.seq);
   m += ",\"frame\":";
   append_json_int(m, transaction.frame);
-  if (transaction.version == ProtocolVersion::V17 && transaction.t_us) {
+  if (is_v17_or_later(transaction.version) && transaction.t_us) {
     m += ",\"t_us\":";
     append_json_int(m, *transaction.t_us);
   }

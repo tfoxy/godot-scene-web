@@ -544,6 +544,7 @@ endif()
 if(NOT GRC_WINDOWS)
 add_executable(rs_live_window_test
   test/rs_live_window_test.cpp
+  src/rs_gate8_policy.cpp
   src/rs2_codec.cpp
   src/rs2_diff.cpp
   src/rs_canvas_texture_shim.cpp
@@ -563,9 +564,12 @@ add_executable(rs_live_window_test
 target_include_directories(rs_live_window_test PRIVATE src test)
 target_link_libraries(rs_live_window_test PRIVATE grc_warnings grc_codecs grc_platform Threads::Threads)
 target_compile_definitions(rs_live_window_test PRIVATE
+  GRC_WINDOW_TRANSCRIPTS="${CMAKE_CURRENT_SOURCE_DIR}/test/golden/live-window-transcripts.txt"
+  GRC_GOLDEN12_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../protocol/golden-12"
   GRC_WINDOW1_TRANSCRIPTS="${CMAKE_CURRENT_SOURCE_DIR}/test/golden/live-window1-transcripts.txt"
   GRC_TEST_TMP_DIR="${CMAKE_CURRENT_BINARY_DIR}/rs_live_window_test_tmp")
 grc_add_test(NAME rs_live_window COMMAND rs_live_window_test)
+grc_add_test(NAME rs18_availability COMMAND rs_live_window_test --availability-only)
 grc_add_test(NAME rs_live_window_thread COMMAND rs_live_window_test --formation=thread)
 set_tests_properties(rs_live_window rs_live_window_thread PROPERTIES RESOURCE_LOCK rs_live_window_tmp)
 
@@ -796,6 +800,8 @@ add_executable(rs16_test test/rs16_test.cpp src/rs2_codec.cpp src/rs2_diff.cpp
 target_include_directories(rs16_test PRIVATE src test)
 target_link_libraries(rs16_test PRIVATE grc_warnings grc_codecs)
 grc_add_test(NAME rs16 COMMAND rs16_test)
+# /18 shares /16 transaction bytes and widens only the live credit grant.
+grc_add_test(NAME rs18 COMMAND rs16_test --18)
 
 # Gate 8 (G8w): the GRC_STREAM_VERSION / GRC_ADOPT / GRC_TEXTURE_DECODE parsing, the D2 refusal and
 # the live listener's subprotocol offer, plus the two empty seams.

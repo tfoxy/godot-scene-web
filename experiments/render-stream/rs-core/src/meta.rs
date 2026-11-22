@@ -1966,10 +1966,11 @@ fn check_session(
             ));
         }
         if let Some(w) = p.credit_window {
-            if !(1..=2).contains(&w) {
+            let max_window = if version >= 18 { 8 } else { 2 };
+            if !(1..=max_window).contains(&w) {
                 return Err(ck.err(
                     "publication-entry",
-                    "publication.credit_window must be in 1..2",
+                    format!("publication.credit_window must be in 1..{max_window}"),
                 ));
             }
             if w != 1 && stream.transport == "file" {

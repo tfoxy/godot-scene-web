@@ -201,3 +201,36 @@ pub fn regression_resync_recaptures_frozen_tween_from_host() {
     assert_eq!(a.tweens.display[&item].xform[4], 40.);
     assert_eq!(a.display_local(item, &state.items[&item]).xform, host);
 }
+
+#[test]
+#[wasm_bindgen]
+pub fn regression_v18_live_options_keep_tweens() {
+    std::panic::set_hook(Box::new(|p| {
+        web_sys::console::error_1(&p.to_string().into())
+    }));
+    for version in [17, 18] {
+        let options = format!("{{\"live_protocol\":{version},\"client_tweens\":true}}");
+        let parsed = parse_options(&options).unwrap();
+        assert_eq!(parsed.live_protocol, version);
+        assert!(parsed.client_tweens);
+        let original = include_bytes!("../../../protocol/golden-17/full.rs17");
+        let data = render_stream_core::item_meta::restamp(original, 17, version).unwrap();
+        let span = wire::split_records(&data, version).unwrap()[0];
+        let record = span.bytes(&data);
+        let frame = wire::frame(record, span.offset).unwrap();
+        // The shared full-stream vector opts out of tweens. Add the negotiated
+        // grant without requiring a canvas context in this Node regression.
+        let meta = std::str::from_utf8(frame.meta)
+            .unwrap()
+            .replace("\"blocks\":", "\"client_tweens\":true,\"blocks\":");
+        let body = &record[frame.body..];
+        let mut granted = ((4 + meta.len() + body.len()) as u32)
+            .to_le_bytes()
+            .to_vec();
+        granted.extend_from_slice(&(meta.len() as u32).to_le_bytes());
+        granted.extend_from_slice(meta.as_bytes());
+        granted.extend_from_slice(body);
+        let validator = Validator::new(&granted, span.offset, Options::new(version)).unwrap();
+        assert_eq!(parsed.client_tweens, validator.session().client_tweens);
+    }
+}

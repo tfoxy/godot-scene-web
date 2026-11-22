@@ -304,7 +304,7 @@ gs_strip_env_args() {
 	fi
 }
 
-# G7q/G7wd: GATE7_CREDIT_WINDOW=1|2 in a runner's
+# G7q/G7wd: GATE7_CREDIT_WINDOW=1..8 in a runner's
 # environment (never an RS_/GRC_ name: those are stripped) runs its live legs at that credit
 # window. A live host (an env word GRC_LIVE_LISTEN=) gets GRC_LIVE_CREDIT_WINDOW_MAX=<window>
 # unless the leg sets it; browser receivers ask for it (lib/legs.sh run_browser_receiver), and
@@ -315,9 +315,9 @@ if [ -z "${GATE7_CREDIT_WINDOW:-}" ]; then
 	if [ -n "${GATE7_LIVE_KIND:-}" ]; then GATE7_CREDIT_WINDOW=2; else GATE7_CREDIT_WINDOW=1; fi
 fi
 case "$GATE7_CREDIT_WINDOW" in
-1 | 2) ;;
+1 | 2 | 3 | 4 | 5 | 6 | 7 | 8) ;;
 *)
-	echo "GATE7_CREDIT_WINDOW must be 1 or 2 (got $GATE7_CREDIT_WINDOW)" >&2
+	echo "GATE7_CREDIT_WINDOW must be in 1..8 (got $GATE7_CREDIT_WINDOW)" >&2
 	exit 2
 	;;
 esac

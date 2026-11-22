@@ -568,6 +568,25 @@ fn granted_recording_validation_decoding_and_transcode_preserve_host_bytes() {
     assert_eq!(wire::version_of_magic(&data), Some(17));
 }
 #[test]
+fn v18_preserves_v17_granted_tween_records() {
+    use crate::{
+        canon,
+        validate::{validate_recording, Options},
+        wire,
+    };
+    let data = wire_fixture();
+    let widened = crate::item_meta::restamp(&data, 17, 18).unwrap();
+    validate_recording(&widened, Options::new(18)).unwrap();
+    let decoded = canon::decoded_recording(&widened, 18).unwrap();
+    assert_eq!(decoded["schema"], "render-stream-18-decoded/1");
+    let before = wire::split_records(&data, 17).unwrap();
+    let after = wire::split_records(&widened, 18).unwrap();
+    assert_eq!(before.len(), after.len());
+    for (a, b) in before.iter().zip(after.iter()).skip(1) {
+        assert_eq!(a.bytes(&data), b.bytes(&widened));
+    }
+}
+#[test]
 fn golden_invalid_records_report_spec_errors_and_association_is_atomic() {
     use crate::{
         validate::{Accepted, Options, Validator},

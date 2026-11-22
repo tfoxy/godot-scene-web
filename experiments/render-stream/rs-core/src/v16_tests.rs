@@ -713,3 +713,28 @@ fn restamp_across_16_moves_the_session_key_and_the_end_stats() {
     let d15 = crate::item_meta::restamp(&data, 16, 15).unwrap();
     crate::validate::validate_recording(&d15, Options::new(15)).unwrap();
 }
+
+#[test]
+fn v18_credit_window_goldens() {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../protocol/golden-18");
+    let index: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(dir.join("index.json")).unwrap()).unwrap();
+    for entry in index["valid"].as_array().unwrap() {
+        let file = entry["file"].as_str().unwrap();
+        let data = std::fs::read(dir.join(file)).unwrap();
+        crate::validate::validate_recording(&data, Options::new(18))
+            .unwrap_or_else(|e| panic!("{file}: {e}"));
+        assert_eq!(wire::version_of_magic(&data), Some(18));
+    }
+    for entry in index["invalid"].as_array().unwrap() {
+        let file = entry["file"].as_str().unwrap();
+        let data = std::fs::read(dir.join(file)).unwrap();
+        let options = Options::new(entry["version"].as_u64().unwrap() as u8);
+        let error = crate::validate::validate_recording(&data, options).unwrap_err();
+        assert_eq!(
+            error.code,
+            entry["code"].as_str().unwrap(),
+            "{file}: {error}"
+        );
+    }
+}

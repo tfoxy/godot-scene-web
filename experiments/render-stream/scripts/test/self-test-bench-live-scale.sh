@@ -26,5 +26,7 @@ check "a browser receiver without --bundle: exit 2" refuses 2 bash "$B" --extens
 check "no template: exit 2" refuses 2 bash "$B" --extension "$B" --receiver native --binary "$T/none" --out "$T/e"
 check "a word for neither side: exit 2" refuses 2 bash "$B" --extension "$B" --receiver native --binary /bin/true \
 	--calibration "$B" --out "$T/f" -- FOO=1
+check "engine-free mode is documented and accepts --help" bash "$B" --engine-free /bin/true --help
+check "engine-free tap metrics count distinct submitted draws" python3 "$SCRIPT_DIR/lib/bench-live-window.py" --self-test
 echo "self-test-bench-live-scale: $pass passed, $fail failed"
 [ "$fail" = 0 ]

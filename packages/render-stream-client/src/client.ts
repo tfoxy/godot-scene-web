@@ -102,8 +102,9 @@ export interface RenderStreamClientOptions {
    * `[]`: the pure client (no `item_meta` hello key, nothing loaded, one branch per frame). An
    * extension that `wants` identities needs protocol 13 or 14; v2 wants upgrade /13 to /14. */
   extensions?: readonly RenderStreamExtension[];
-  /** The credit window asked in the hello (the session grants it); default 2. */
-  creditWindow?: 1 | 2;
+  /** The credit window asked in the hello (the session grants it): 1..8 at /18, else 1..2.
+   * Default 8 at /18, else 2. */
+  creditWindow?: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
   /** The hello's credit stage, the ack the host's credit waits on; default `applied`. */
   creditStage?: CreditStage;
   /** Where a ready transaction is applied (acked `applied`): the next frame callback (`frame`) or
@@ -136,7 +137,7 @@ export interface RenderStreamClientOptions {
    * Default false: no /15 offer, no table, and the offer, the hello and the core's calls are the
    * client's without the option. Older cores without hint selection keep only the table. */
   resourceHints?: boolean;
-  /** Play announced Godot tweens locally. Opt-in, approximate parity; requires /17. Default false. */
+  /** Play announced Godot tweens locally. Opt-in, approximate parity; requires /17 or later. Default false. */
   clientTweens?: boolean;
   /** Hint GETs at once (default 2). At most 3, reserving a slot for demand; 0 disables prefetch. */
   prefetchMaxInFlight?: number;
@@ -299,9 +300,18 @@ export function createRenderStreamClient(
     throw new TypeError(
       'render-stream client: carrier must be "auto", "websocket" or "webtransport"',
     );
-  const creditWindow = options.creditWindow ?? 2;
-  if (creditWindow !== 1 && creditWindow !== 2)
-    throw new TypeError("render-stream client: creditWindow must be 1 or 2");
+  const endpoint = validateEndpoint(options.endpoint);
+  const creditWindow =
+    options.creditWindow ?? (endpoint.protocol >= 18 ? 8 : 2);
+  const maxWindow = endpoint.protocol >= 18 ? 8 : 2;
+  if (
+    !Number.isInteger(creditWindow) ||
+    creditWindow < 1 ||
+    creditWindow > maxWindow
+  )
+    throw new TypeError(
+      `render-stream client: creditWindow must be in 1..${maxWindow}`,
+    );
   const coreLoadTimeoutMs = options.coreLoadTimeoutMs ?? CORE_LOAD_TIMEOUT_MS;
   // setTimeout fires at once past 2^31 - 1 ms.
   if (
@@ -311,7 +321,6 @@ export function createRenderStreamClient(
     throw new TypeError(
       "render-stream client: coreLoadTimeoutMs must be a positive number of ms (at most 2^31 - 1)",
     );
-  const endpoint = validateEndpoint(options.endpoint);
   const exts = options.extensions ?? [];
   const ids = new Set<string>();
   for (const e of exts) {
@@ -364,14 +373,7 @@ export function createRenderStreamClient(
   frameCapLimits(options.frameCapBounds);
   // Absent the option there is no recorder (and no per-message copy); present, one ring.
   const recorder = options.recorder ? createRecorder(options.recorder) : null;
-  return new Client(
-    options,
-    endpoint,
-    creditWindow,
-    coreLoadTimeoutMs,
-    ext,
-    recorder,
-  );
+  return new Client(options, endpoint, coreLoadTimeoutMs, ext, recorder);
 }
 
 function checkFrameCap(mode: unknown): asserts mode is RenderStreamFrameCap {
@@ -427,7 +429,6 @@ class Client implements RenderStreamClient {
   constructor(
     private readonly o: RenderStreamClientOptions,
     private endpoint: RenderStreamEndpoint,
-    private readonly creditWindow: 1 | 2,
     private readonly coreLoadTimeoutMs: number,
     private readonly ext: ExtensionHost | null,
     private readonly recorder: RenderStreamRecorder | null,
@@ -548,6 +549,10 @@ class Client implements RenderStreamClient {
       this.o.resourceHints,
       this.o.clientTweens,
     );
+    if ((this.o.creditWindow ?? 1) > (next.protocol >= 18 ? 8 : 2))
+      throw new TypeError(
+        "render-stream client: creditWindow exceeds endpoint protocol range",
+      );
     if (sameEndpoint(next, this.endpoint)) return;
     this.endpoint = next;
     this.loop?.setEndpoint(next);
@@ -715,7 +720,7 @@ class Client implements RenderStreamClient {
       core: this.core,
       transport: this.carrierFactory,
       endpoint: this.endpoint,
-      creditWindow: this.creditWindow,
+      creditWindow: this.o.creditWindow,
       creditStage: this.o.creditStage,
       applyOn: this.o.applyOn,
       resourceHoldMs: this.o.resourceHoldMs,

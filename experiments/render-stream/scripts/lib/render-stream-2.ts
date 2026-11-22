@@ -24,7 +24,7 @@
 //
 // render-stream/3 (../../protocol/render-stream-3.md, G4e1), render-stream/4
 // (../../protocol/render-stream-4.md, G5w) and render-stream/5 (../../protocol/render-stream-5.md,
-// G55w) are implemented IN THIS SAME FILE behind an explicit `version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16` parameter
+// G55w) are implemented IN THIS SAME FILE behind an explicit `version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18` parameter
 // on every exported entry point (splitRecords/decodeRecording/validateRecording/
 // resolveRecording), rather than forked render-stream-3.ts/-4.ts/-5.ts modules -- /3 is /2 plus
 // one draw command (add_msdf_texture_rect_region) and one sabotage kind (perturb-glyph), /4 is /3
@@ -1293,6 +1293,13 @@ export const MAGIC_V15: Uint8Array = new Uint8Array([
 export const MAGIC_V16: Uint8Array = new Uint8Array([
   0x47, 0x52, 0x53, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
 ]);
+export const MAGIC_V17 = new Uint8Array([
+  0x47, 0x52, 0x53, 0x48, 0x0d, 0x0a, 0x1a, 0x0a,
+]);
+// render-stream-18.md: /17 grammar with a wider credit range.
+export const MAGIC_V18 = new Uint8Array([
+  0x47, 0x52, 0x53, 0x49, 0x0d, 0x0a, 0x1a, 0x0a,
+]);
 /** G7l: the wire version of a live stream's bytes: 7 when they start with GRS7 (a /7 receiver's
  * received.rs7, or a /7 connection's host tap), 8 when they start with GRS8 (G8w), 9 for GRS9
  * (G8k9), 10 for GRSA (CG1), 11 for GRSB (W11a), 12 for GRSC (PM5), 13 for GRSD (W13d), 14 for GRSE
@@ -1301,7 +1308,7 @@ export const MAGIC_V16: Uint8Array = new Uint8Array([
  * magic still meets the /6 decoder's own refusal, exactly as before. */
 export function wireVersionOf(
   data: Uint8Array | undefined,
-): 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 {
+): 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 {
   if (!data || data.length < MAGIC_V7.length) return 6;
   const startsWith = (magic: Uint8Array) => {
     for (let i = 0; i < magic.length; i++)
@@ -1319,6 +1326,8 @@ export function wireVersionOf(
   if (startsWith(MAGIC_V14)) return 14;
   if (startsWith(MAGIC_V15)) return 15;
   if (startsWith(MAGIC_V16)) return 16;
+  if (startsWith(MAGIC_V17)) return 17;
+  if (startsWith(MAGIC_V18)) return 18;
   return 6;
 }
 /** render-stream-9.md "KTX2 payload": the 12-byte KTX2 file identifier (KTX 2.0 section 2.1). */
@@ -2653,7 +2662,24 @@ function intPair(value: unknown): value is [number, number] {
 function checkResourcesSchema(
   resources: unknown,
   offset: number,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16,
+  version:
+    | 2
+    | 3
+    | 4
+    | 5
+    | 6
+    | 7
+    | 8
+    | 9
+    | 10
+    | 11
+    | 12
+    | 13
+    | 14
+    | 15
+    | 16
+    | 17
+    | 18,
 ): string[] {
   const err = (detail: string) => [
     `meta-schema: record at offset ${offset}: resources ${detail}`,
@@ -2785,7 +2811,24 @@ function checkResourcesSchema(
 function checkSessionSchema(
   meta: Record<string, unknown>,
   offset: number,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16,
+  version:
+    | 2
+    | 3
+    | 4
+    | 5
+    | 6
+    | 7
+    | 8
+    | 9
+    | 10
+    | 11
+    | 12
+    | 13
+    | 14
+    | 15
+    | 16
+    | 17
+    | 18,
 ): string[] {
   const err = (detail: string) => [
     `meta-schema: record at offset ${offset}: ${detail}`,
@@ -3084,9 +3127,10 @@ function checkSessionSchema(
     if (isV7) {
       // render-stream-7.md "Session": credit_window is 1..2, and a "file" stream is always 1.
       const creditWindow = publication.credit_window as number;
-      if (creditWindow < 1 || creditWindow > 2) {
+      const maxWindow = version >= 18 ? 8 : 2;
+      if (creditWindow < 1 || creditWindow > maxWindow) {
         return [
-          `publication-entry: record at offset ${offset}: publication.credit_window is ${creditWindow}, out of range 1..2`,
+          `publication-entry: record at offset ${offset}: publication.credit_window is ${creditWindow}, out of range 1..${maxWindow}`,
         ];
       }
       if (
@@ -3726,7 +3770,24 @@ function checkParticlesEntrySchema(p: unknown): string | null {
 function checkTransactionSchema(
   meta: Record<string, unknown>,
   offset: number,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16,
+  version:
+    | 2
+    | 3
+    | 4
+    | 5
+    | 6
+    | 7
+    | 8
+    | 9
+    | 10
+    | 11
+    | 12
+    | 13
+    | 14
+    | 15
+    | 16
+    | 17
+    | 18,
 ): string[] {
   const err = (detail: string) => [
     `meta-schema: record at offset ${offset}: ${detail}`,
@@ -4913,7 +4974,24 @@ export function itemMetaRowJson(
 function checkMetaSchema(
   meta: unknown,
   offset: number,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16,
+  version:
+    | 2
+    | 3
+    | 4
+    | 5
+    | 6
+    | 7
+    | 8
+    | 9
+    | 10
+    | 11
+    | 12
+    | 13
+    | 14
+    | 15
+    | 16
+    | 17
+    | 18,
 ): string[] {
   if (!isPlainObject(meta))
     return [
@@ -4945,41 +5023,62 @@ export interface RawRecord {
 
 export function splitRecords(
   data: Uint8Array,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 = 6,
+  version:
+    | 2
+    | 3
+    | 4
+    | 5
+    | 6
+    | 7
+    | 8
+    | 9
+    | 10
+    | 11
+    | 12
+    | 13
+    | 14
+    | 15
+    | 16
+    | 17
+    | 18 = 6,
 ): {
   records: RawRecord[];
   errors: string[];
 } {
   const expectedMagic =
-    version === 16
-      ? MAGIC_V16
-      : version === 15
-        ? MAGIC_V15
-        : version === 14
-          ? MAGIC_V14
-          : version === 13
-            ? MAGIC_V13
-            : version === 12
-              ? MAGIC_V12
-              : version === 11
-                ? MAGIC_V11
-                : version === 10
-                  ? MAGIC_V10
-                  : version === 9
-                    ? MAGIC_V9
-                    : version === 8
-                      ? MAGIC_V8
-                      : version === 7
-                        ? MAGIC_V7
-                        : version === 6
-                          ? MAGIC_V6
-                          : version === 5
-                            ? MAGIC_V5
-                            : version === 4
-                              ? MAGIC_V4
-                              : version === 3
-                                ? MAGIC_V3
-                                : MAGIC;
+    version === 18
+      ? MAGIC_V18
+      : version === 17
+        ? MAGIC_V17
+        : version === 16
+          ? MAGIC_V16
+          : version === 15
+            ? MAGIC_V15
+            : version === 14
+              ? MAGIC_V14
+              : version === 13
+                ? MAGIC_V13
+                : version === 12
+                  ? MAGIC_V12
+                  : version === 11
+                    ? MAGIC_V11
+                    : version === 10
+                      ? MAGIC_V10
+                      : version === 9
+                        ? MAGIC_V9
+                        : version === 8
+                          ? MAGIC_V8
+                          : version === 7
+                            ? MAGIC_V7
+                            : version === 6
+                              ? MAGIC_V6
+                              : version === 5
+                                ? MAGIC_V5
+                                : version === 4
+                                  ? MAGIC_V4
+                                  : version === 3
+                                    ? MAGIC_V3
+                                    : MAGIC;
   if (
     data.length < expectedMagic.length ||
     !bytesEqual(data.subarray(0, expectedMagic.length), expectedMagic)
@@ -5080,7 +5179,24 @@ export function withRecordMemo<T>(
 
 export function decodeRecord(
   raw: RawRecord,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 = 6,
+  version:
+    | 2
+    | 3
+    | 4
+    | 5
+    | 6
+    | 7
+    | 8
+    | 9
+    | 10
+    | 11
+    | 12
+    | 13
+    | 14
+    | 15
+    | 16
+    | 17
+    | 18 = 6,
   opts?: DecodeRecordOptions,
 ): DecodeRecordResult {
   const memo = recordMemo;
@@ -5099,7 +5215,24 @@ export function decodeRecord(
 
 function decodeRecordOnce(
   raw: RawRecord,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16,
+  version:
+    | 2
+    | 3
+    | 4
+    | 5
+    | 6
+    | 7
+    | 8
+    | 9
+    | 10
+    | 11
+    | 12
+    | 13
+    | 14
+    | 15
+    | 16
+    | 17
+    | 18,
   opts?: DecodeRecordOptions,
 ): DecodeRecordResult {
   const view = new DataView(
@@ -5271,7 +5404,24 @@ function decodeRecordOnce(
 
 export function decodeRecording(
   data: Uint8Array,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 = 6,
+  version:
+    | 2
+    | 3
+    | 4
+    | 5
+    | 6
+    | 7
+    | 8
+    | 9
+    | 10
+    | 11
+    | 12
+    | 13
+    | 14
+    | 15
+    | 16
+    | 17
+    | 18 = 6,
 ): {
   schema:
     | "render-stream-2-decoded/1"
@@ -5288,7 +5438,9 @@ export function decodeRecording(
     | "render-stream-13-decoded/1"
     | "render-stream-14-decoded/1"
     | "render-stream-15-decoded/1"
-    | "render-stream-16-decoded/1";
+    | "render-stream-16-decoded/1"
+    | "render-stream-17-decoded/1"
+    | "render-stream-18-decoded/1";
   magic: string;
   records: DecodedRecord[];
 } {
@@ -5298,7 +5450,7 @@ export function decodeRecording(
   // blocks, each record's sha256 still the /13 record's own.
   const plain =
     version >= 13
-      ? rs13PlainRecords(split.records, version as 13 | 14 | 15 | 16)
+      ? rs13PlainRecords(split.records, version as 13 | 14 | 15 | 16 | 17 | 18)
       : split.records;
   const records: DecodedRecord[] = [];
   for (let r = 0; r < split.records.length; r++) {
@@ -5321,66 +5473,74 @@ export function decodeRecording(
     );
   }
   const magic =
-    version === 16
-      ? MAGIC_V16
-      : version === 15
-        ? MAGIC_V15
-        : version === 14
-          ? MAGIC_V14
-          : version === 13
-            ? MAGIC_V13
-            : version === 12
-              ? MAGIC_V12
-              : version === 11
-                ? MAGIC_V11
-                : version === 10
-                  ? MAGIC_V10
-                  : version === 9
-                    ? MAGIC_V9
-                    : version === 8
-                      ? MAGIC_V8
-                      : version === 7
-                        ? MAGIC_V7
-                        : version === 6
-                          ? MAGIC_V6
-                          : version === 5
-                            ? MAGIC_V5
-                            : version === 4
-                              ? MAGIC_V4
-                              : version === 3
-                                ? MAGIC_V3
-                                : MAGIC;
+    version === 18
+      ? MAGIC_V18
+      : version === 17
+        ? MAGIC_V17
+        : version === 16
+          ? MAGIC_V16
+          : version === 15
+            ? MAGIC_V15
+            : version === 14
+              ? MAGIC_V14
+              : version === 13
+                ? MAGIC_V13
+                : version === 12
+                  ? MAGIC_V12
+                  : version === 11
+                    ? MAGIC_V11
+                    : version === 10
+                      ? MAGIC_V10
+                      : version === 9
+                        ? MAGIC_V9
+                        : version === 8
+                          ? MAGIC_V8
+                          : version === 7
+                            ? MAGIC_V7
+                            : version === 6
+                              ? MAGIC_V6
+                              : version === 5
+                                ? MAGIC_V5
+                                : version === 4
+                                  ? MAGIC_V4
+                                  : version === 3
+                                    ? MAGIC_V3
+                                    : MAGIC;
   return {
     schema:
-      version === 16
-        ? "render-stream-16-decoded/1"
-        : version === 15
-          ? "render-stream-15-decoded/1"
-          : version === 14
-            ? "render-stream-14-decoded/1"
-            : version === 13
-              ? "render-stream-13-decoded/1"
-              : version === 12
-                ? "render-stream-12-decoded/1"
-                : version === 11
-                  ? "render-stream-11-decoded/1"
-                  : version === 10
-                    ? "render-stream-10-decoded/1"
-                    : version === 9
-                      ? "render-stream-9-decoded/1"
-                      : version === 8
-                        ? "render-stream-8-decoded/1"
-                        : version === 7
-                          ? "render-stream-7-decoded/1"
-                          : version === 6
-                            ? "render-stream-6-decoded/1"
-                            : version === 5
-                              ? "render-stream-5-decoded/1"
-                              : version === 4
-                                ? "render-stream-4-decoded/1"
-                                : version === 3
-                                  ? "render-stream-3-decoded/1"
-                                  : "render-stream-2-decoded/1",
+      version === 18
+        ? "render-stream-18-decoded/1"
+        : version === 17
+          ? "render-stream-17-decoded/1"
+          : version === 16
+            ? "render-stream-16-decoded/1"
+            : version === 15
+              ? "render-stream-15-decoded/1"
+              : version === 14
+                ? "render-stream-14-decoded/1"
+                : version === 13
+                  ? "render-stream-13-decoded/1"
+                  : version === 12
+                    ? "render-stream-12-decoded/1"
+                    : version === 11
+                      ? "render-stream-11-decoded/1"
+                      : version === 10
+                        ? "render-stream-10-decoded/1"
+                        : version === 9
+                          ? "render-stream-9-decoded/1"
+                          : version === 8
+                            ? "render-stream-8-decoded/1"
+                            : version === 7
+                              ? "render-stream-7-decoded/1"
+                              : version === 6
+                                ? "render-stream-6-decoded/1"
+                                : version === 5
+                                  ? "render-stream-5-decoded/1"
+                                  : version === 4
+                                    ? "render-stream-4-decoded/1"
+                                    : version === 3
+                                      ? "render-stream-3-decoded/1"
+                                      : "render-stream-2-decoded/1",
     magic: toHex(magic),
     records,
   };
@@ -6735,7 +6895,7 @@ export function createRs13Unpredictor(
  * blocks in the /13 framing); throws the first decode, meta or predict-check error. */
 export function rs13PlainRecords(
   records: RawRecord[],
-  version: 13 | 14 | 15 | 16 = 13,
+  version: 13 | 14 | 15 | 16 | 17 | 18 = 13,
 ): RawRecord[] {
   const unpredictor = createRs13Unpredictor();
   return records.map((raw) => {
@@ -10558,7 +10718,24 @@ export function setValidatorPhaseTimer(
 
 export function createRecordingValidator(
   records: RawRecord[],
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 = 6,
+  version:
+    | 2
+    | 3
+    | 4
+    | 5
+    | 6
+    | 7
+    | 8
+    | 9
+    | 10
+    | 11
+    | 12
+    | 13
+    | 14
+    | 15
+    | 16
+    | 17
+    | 18 = 6,
   options?: RecordingValidatorOptions,
 ): RecordingValidator {
   const recordDigest = options?.recordDigest ?? "inline";
@@ -11859,7 +12036,24 @@ export function createRecordingValidator(
 /** Whole-file validation: `createRecordingValidator` over every record of `data`, in order. */
 export function validateRecording(
   data: Uint8Array,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 = 6,
+  version:
+    | 2
+    | 3
+    | 4
+    | 5
+    | 6
+    | 7
+    | 8
+    | 9
+    | 10
+    | 11
+    | 12
+    | 13
+    | 14
+    | 15
+    | 16
+    | 17
+    | 18 = 6,
   options?: RecordingValidatorOptions,
 ): string[] {
   const split = splitRecords(data, version);
@@ -12192,7 +12386,9 @@ export interface ResolvedRecording {
     | "render-stream-13-resolved/1"
     | "render-stream-14-resolved/1"
     | "render-stream-15-resolved/1"
-    | "render-stream-16-resolved/1";
+    | "render-stream-16-resolved/1"
+    | "render-stream-17-resolved/1"
+    | "render-stream-18-resolved/1";
   session_id: string;
   stream_id: string;
   transactions: ResolvedTransaction[];
@@ -12201,7 +12397,24 @@ export interface ResolvedRecording {
 
 export function resolveRecording(
   data: Uint8Array,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 = 6,
+  version:
+    | 2
+    | 3
+    | 4
+    | 5
+    | 6
+    | 7
+    | 8
+    | 9
+    | 10
+    | 11
+    | 12
+    | 13
+    | 14
+    | 15
+    | 16
+    | 17
+    | 18 = 6,
 ): ResolvedRecording {
   const decoded = decodeRecording(data, version);
   const sessionRecord = decoded.records[0];
@@ -12213,7 +12426,9 @@ export function resolveRecording(
   // /13 its reconstructed /12 block.
   const raws = isV11 ? splitRecords(data, version).records : [];
   const plainRaws =
-    version >= 13 ? rs13PlainRecords(raws, version as 13 | 14 | 15 | 16) : raws;
+    version >= 13
+      ? rs13PlainRecords(raws, version as 13 | 14 | 15 | 16 | 17 | 18)
+      : raws;
 
   let state = emptyResolvedState();
   const transactions: ResolvedTransaction[] = [];
@@ -12283,35 +12498,39 @@ export function resolveRecording(
   }
   return {
     schema:
-      version === 16
-        ? "render-stream-16-resolved/1"
-        : version === 15
-          ? "render-stream-15-resolved/1"
-          : version === 14
-            ? "render-stream-14-resolved/1"
-            : version === 13
-              ? "render-stream-13-resolved/1"
-              : version === 12
-                ? "render-stream-12-resolved/1"
-                : version === 11
-                  ? "render-stream-11-resolved/1"
-                  : version === 10
-                    ? "render-stream-10-resolved/1"
-                    : version === 9
-                      ? "render-stream-9-resolved/1"
-                      : version === 8
-                        ? "render-stream-8-resolved/1"
-                        : version === 7
-                          ? "render-stream-7-resolved/1"
-                          : version === 6
-                            ? "render-stream-6-resolved/1"
-                            : version === 5
-                              ? "render-stream-5-resolved/1"
-                              : version === 4
-                                ? "render-stream-4-resolved/1"
-                                : version === 3
-                                  ? "render-stream-3-resolved/1"
-                                  : "render-stream-2-resolved/1",
+      version === 18
+        ? "render-stream-18-resolved/1"
+        : version === 17
+          ? "render-stream-17-resolved/1"
+          : version === 16
+            ? "render-stream-16-resolved/1"
+            : version === 15
+              ? "render-stream-15-resolved/1"
+              : version === 14
+                ? "render-stream-14-resolved/1"
+                : version === 13
+                  ? "render-stream-13-resolved/1"
+                  : version === 12
+                    ? "render-stream-12-resolved/1"
+                    : version === 11
+                      ? "render-stream-11-resolved/1"
+                      : version === 10
+                        ? "render-stream-10-resolved/1"
+                        : version === 9
+                          ? "render-stream-9-resolved/1"
+                          : version === 8
+                            ? "render-stream-8-resolved/1"
+                            : version === 7
+                              ? "render-stream-7-resolved/1"
+                              : version === 6
+                                ? "render-stream-6-resolved/1"
+                                : version === 5
+                                  ? "render-stream-5-resolved/1"
+                                  : version === 4
+                                    ? "render-stream-4-resolved/1"
+                                    : version === 3
+                                      ? "render-stream-3-resolved/1"
+                                      : "render-stream-2-resolved/1",
     session_id: sessionMeta.session_id,
     stream_id: sessionMeta.stream.stream_id,
     transactions,

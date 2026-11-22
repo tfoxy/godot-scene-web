@@ -158,7 +158,7 @@ void test_v9_policy() {
   check(parse("9", nullptr, nullptr, nullptr, &p, &error) &&
             p.file_version == ProtocolVersion::V9 && !p.any() && p.speaks_v8() && p.speaks_v9(),
         "GRC_STREAM_VERSION=9 is a /9 file sink without a policy (G8k9)");
-  check(!parse("7", nullptr, nullptr, nullptr, &p, &error) && error.find("6, 8, 9, 10, 11, 12, 13, 14, 15, 16 or 17") != std::string::npos,
+  check(!parse("7", nullptr, nullptr, nullptr, &p, &error) && error.find("6, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17 or 18") != std::string::npos,
         "GRC_STREAM_VERSION=7 is still invalid");
   check(parse("8", nullptr, nullptr, nullptr, &p, &error) && !p.speaks_v9(), "/8 does not speak /9");
   Gate8Policy policy;
@@ -248,9 +248,9 @@ void test_v10_policy() {
         "GRC_STREAM_VERSION=10 is a /10 file sink without a policy, speaking /8 and /9's keys");
   check(parse("9", nullptr, nullptr, nullptr, &p, &error) && !p.speaks_v10(),
         "/9 does not speak /10");
-  check(!parse("18", nullptr, nullptr, nullptr, &p, &error) &&
-            error.find("6, 8, 9, 10, 11, 12, 13, 14, 15, 16 or 17") != std::string::npos,
-        "GRC_STREAM_VERSION=18 is invalid, and the error lists 17");
+  check(!parse("19", nullptr, nullptr, nullptr, &p, &error) &&
+            error.find("6, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17 or 18") != std::string::npos,
+        "GRC_STREAM_VERSION=19 is invalid, and the error lists 18");
   // render-stream-15.md "Who speaks /15": .15 first, then /13's list; /15 speaks every /14 key.
   check(parse("15", nullptr, nullptr, nullptr, &p, &error) &&
             p.file_version == ProtocolVersion::V15 && p.speaks_v15() && p.speaks_v14() &&
@@ -649,6 +649,21 @@ void test_seams() {
 
 }  // namespace
 
+void test_v18_policy() {
+  grc::rs::Gate8Policy policy;
+  std::string error;
+  check(grc::rs::parse_gate8_policy("18", nullptr, nullptr, nullptr, &policy, &error),
+        "GRC_STREAM_VERSION=18 parses");
+  check(policy.speaks_v18() && policy.speaks_v16() && policy.speaks_v15() && policy.speaks_v13(),
+        "/18 retains all previous features");
+  const std::vector<std::string> expected = {"render-stream.18", "render-stream.17", "render-stream.16"};
+  check(grc::rs::gate8_live_subprotocols(policy) == expected,
+        "/18 offers itself first and preserves /17 and /16 availability");
+  check(grc::rs::parse_gate8_policy("18", "arm", nullptr, nullptr, &policy, &error) &&
+            grc::rs::gate8_live_subprotocols(policy) == expected,
+        "/18 preserves /17 and /16 availability under a gate 8 policy");
+}
+
 int main() {
   test_defaults();
   test_values();
@@ -660,6 +675,7 @@ int main() {
   test_v12_policy();
   test_v13_policy();
   test_v16_policy();
+  test_v18_policy();
   test_v11_policy();
   test_delivery_seam();
   test_subprotocols();

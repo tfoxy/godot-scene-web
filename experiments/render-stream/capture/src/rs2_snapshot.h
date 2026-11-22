@@ -191,8 +191,13 @@ inline constexpr std::array<std::uint8_t, 8> kMagicV17 = {0x47, 0x52, 0x53, 0x48
                                                            0x0D, 0x0A, 0x1A, 0x0A};
 inline constexpr const char *kProtocolV17 = "render-stream/17";
 
+// /18 widens only the live credit window; every /17 feature remains available.
+inline constexpr std::array<std::uint8_t, 8> kMagicV18 = {0x47, 0x52, 0x53, 0x49,
+                                                       0x0D, 0x0A, 0x1A, 0x0A};
+inline constexpr const char *kProtocolV18 = "render-stream/18";
+
 enum class ProtocolVersion : std::uint8_t {
-  V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17
+  V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18
 };
 
 // True for /7 to /11, the versions whose live transport is the /7 one (token hello, credit
@@ -203,7 +208,7 @@ inline constexpr bool is_v7_or_later(ProtocolVersion v) {
          v == ProtocolVersion::V10 || v == ProtocolVersion::V11 || v == ProtocolVersion::V12 ||
          v == ProtocolVersion::V13 ||
          v == ProtocolVersion::V14 || v == ProtocolVersion::V15 ||
-         v == ProtocolVersion::V16 || v == ProtocolVersion::V17;
+         v == ProtocolVersion::V16 || v == ProtocolVersion::V17 || v == ProtocolVersion::V18;
 }
 
 // True for /8 to /11: the versions that carry render-stream-8.md's keys.
@@ -211,7 +216,7 @@ inline constexpr bool is_v8_or_later(ProtocolVersion v) {
   return v == ProtocolVersion::V8 || v == ProtocolVersion::V9 || v == ProtocolVersion::V10 ||
          v == ProtocolVersion::V11 || v == ProtocolVersion::V12 || v == ProtocolVersion::V13 ||
          v == ProtocolVersion::V14 || v == ProtocolVersion::V15 ||
-         v == ProtocolVersion::V16 || v == ProtocolVersion::V17;
+         v == ProtocolVersion::V16 || v == ProtocolVersion::V17 || v == ProtocolVersion::V18;
 }
 
 // True for /9 to /11: the versions that carry render-stream-9.md's keys.
@@ -219,7 +224,7 @@ inline constexpr bool is_v9_or_later(ProtocolVersion v) {
   return v == ProtocolVersion::V9 || v == ProtocolVersion::V10 || v == ProtocolVersion::V11 ||
          v == ProtocolVersion::V12 || v == ProtocolVersion::V13 ||
          v == ProtocolVersion::V14 || v == ProtocolVersion::V15 ||
-         v == ProtocolVersion::V16 || v == ProtocolVersion::V17;
+         v == ProtocolVersion::V16 || v == ProtocolVersion::V17 || v == ProtocolVersion::V18;
 }
 
 // True for /10 and /11: the versions that carry render-stream-10.md's keys.
@@ -227,7 +232,7 @@ inline constexpr bool is_v10_or_later(ProtocolVersion v) {
   return v == ProtocolVersion::V10 || v == ProtocolVersion::V11 || v == ProtocolVersion::V12 ||
          v == ProtocolVersion::V13 ||
          v == ProtocolVersion::V14 || v == ProtocolVersion::V15 ||
-         v == ProtocolVersion::V16 || v == ProtocolVersion::V17;
+         v == ProtocolVersion::V16 || v == ProtocolVersion::V17 || v == ProtocolVersion::V18;
 }
 
 // True for /11 and /12: the versions that carry render-stream-11.md's keys (PM5: every "/11"
@@ -235,36 +240,39 @@ inline constexpr bool is_v10_or_later(ProtocolVersion v) {
 inline constexpr bool is_v11_or_later(ProtocolVersion v) {
   return v == ProtocolVersion::V11 || v == ProtocolVersion::V12 || v == ProtocolVersion::V13 ||
          v == ProtocolVersion::V14 || v == ProtocolVersion::V15 ||
-         v == ProtocolVersion::V16 || v == ProtocolVersion::V17;
+         v == ProtocolVersion::V16 || v == ProtocolVersion::V17 || v == ProtocolVersion::V18;
 }
 
 // True for /12: the versions that carry render-stream-12.md's keys.
 inline constexpr bool is_v12_or_later(ProtocolVersion v) {
   return v == ProtocolVersion::V12 || v == ProtocolVersion::V13 ||
          v == ProtocolVersion::V14 || v == ProtocolVersion::V15 ||
-         v == ProtocolVersion::V16 || v == ProtocolVersion::V17;
+         v == ProtocolVersion::V16 || v == ProtocolVersion::V17 || v == ProtocolVersion::V18;
 }
 
 // ID3: /13 to /16, the versions whose transactions are predicted (rs13_predict.h) and whose
 // hello may carry `item_meta`.
 inline constexpr bool is_v13_or_later(ProtocolVersion v) {
   return v == ProtocolVersion::V13 || v == ProtocolVersion::V14 || v == ProtocolVersion::V15 ||
-         v == ProtocolVersion::V16 || v == ProtocolVersion::V17;
+         v == ProtocolVersion::V16 || v == ProtocolVersion::V17 || v == ProtocolVersion::V18;
 }
 
 // /14 to /16: the versions whose item_meta may carry the v2 fields (render-stream-14.md).
 inline constexpr bool is_v14_or_later(ProtocolVersion v) {
   return v == ProtocolVersion::V14 || v == ProtocolVersion::V15 ||
-         v == ProtocolVersion::V16 || v == ProtocolVersion::V17;
+         v == ProtocolVersion::V16 || v == ProtocolVersion::V17 || v == ProtocolVersion::V18;
 }
 
 // /15 and /16: the versions that carry render-stream-15.md's keys (`size_override`).
 inline constexpr bool is_v15_or_later(ProtocolVersion v) {
-  return v == ProtocolVersion::V15 || v == ProtocolVersion::V16 || v == ProtocolVersion::V17;
+  return v == ProtocolVersion::V15 || v == ProtocolVersion::V16 || v == ProtocolVersion::V17 || v == ProtocolVersion::V18;
 }
 
-// /16 (render-stream-16.md): the viewport table, `viewport_f32` and the two texture kinds.
-inline constexpr bool is_v16(ProtocolVersion v) { return v == ProtocolVersion::V16 || v == ProtocolVersion::V17; }
+// /16 or later (render-stream-16.md): the viewport table, `viewport_f32` and the two texture kinds.
+inline constexpr bool is_v16(ProtocolVersion v) { return v == ProtocolVersion::V16 || v == ProtocolVersion::V17 || v == ProtocolVersion::V18; }
+
+inline constexpr bool is_v17_or_later(ProtocolVersion v) { return v == ProtocolVersion::V17 || v == ProtocolVersion::V18; }
+inline constexpr bool is_v18_or_later(ProtocolVersion v) { return v == ProtocolVersion::V18; }
 
 // Floats per entry in the transaction blocks (render-stream-2.md "Transaction record"). Item and
 // canvas float layouts are unchanged from /1; texture entries carry no floats at all.

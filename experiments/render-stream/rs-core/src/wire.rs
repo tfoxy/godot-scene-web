@@ -35,7 +35,7 @@ impl std::error::Error for Error {}
 pub const MAGIC_LEN: usize = 8;
 
 /// The newest render-stream version this crate decodes.
-pub const LATEST: u8 = 17;
+pub const LATEST: u8 = 18;
 
 /// `render-stream/<version>`.
 pub fn protocol(version: u8) -> String {
@@ -433,7 +433,7 @@ mod tests {
 
     #[test]
     fn magic_round_trip() {
-        for v in 2..=17 {
+        for v in 2..=LATEST {
             assert_eq!(version_of_magic(&magic(v)), Some(v));
         }
         assert_eq!(&magic(10)[..4], b"GRSA");
@@ -448,8 +448,9 @@ mod tests {
         assert_eq!(magic(16), [0x47, 0x52, 0x53, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
         assert_eq!(&magic(16)[..4], b"GRSG");
         assert_eq!(protocol(16), "render-stream/16");
-        assert_eq!(version_of_magic(&magic(18)), None);
+        assert_eq!(version_of_magic(&magic(19)), None);
         assert_eq!(version_of_magic(b"GRSH\r\n\x1a\n"), Some(17));
+        assert_eq!(version_of_magic(b"GRSI\r\n\x1a\n"), Some(18));
         assert_eq!(version_of_magic(b"GRS6"), None);
     }
 

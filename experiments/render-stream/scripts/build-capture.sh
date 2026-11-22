@@ -36,7 +36,7 @@ if [ "$TARGET" = macos ]; then
 	# The Linux default above is intentionally unchanged.
 	[ "$CMAKE" != /snap/bin/cmake ] || CMAKE=cmake
 	B="$CAPTURE/build/macos"
-	JOBS="$(sysctl -n hw.ncpu)"
+	JOBS="${CMAKE_BUILD_PARALLEL_LEVEL:-$(sysctl -n hw.ncpu)}"
 	for arch in arm64 x86_64; do
 		minimum=10.15
 		[ "$arch" != arm64 ] || minimum=11.0
@@ -95,7 +95,7 @@ if [ "$TARGET" = linux-libcxx ]; then
 	"${CMAKE}" -S "$CAPTURE" -B "$B" \
 		-DCMAKE_TOOLCHAIN_FILE="$CAPTURE/cmake/clang-libcxx-linux.cmake" \
 		-DCMAKE_BUILD_TYPE="$BUILD_TYPE"
-	"${CMAKE}" --build "$B" -j"$(nproc)"
+	"${CMAKE}" --build "$B" -j"${CMAKE_BUILD_PARALLEL_LEVEL:-$(nproc)}"
 	(cd "$B" && ctest --output-on-failure)
 	exit 0
 fi
@@ -108,7 +108,7 @@ if [ "$TARGET" = windows ]; then
 		-DCMAKE_TOOLCHAIN_FILE="$CAPTURE/cmake/llvm-mingw-x86_64.cmake" \
 		-DGRC_LLVM_MINGW_ROOT="$LLVM_MINGW_ROOT" \
 		-DCMAKE_BUILD_TYPE="$BUILD_TYPE"
-	"${CMAKE}" --build "$B" -j"$(nproc)"
+	"${CMAKE}" --build "$B" -j"${CMAKE_BUILD_PARALLEL_LEVEL:-$(nproc)}"
 	rm -rf "$B/bundle"
 	python3 -I - "$B" "$HERE/.." "$LLVM_MINGW_ROOT/bin/llvm-strip" <<'PYBUNDLE'
 import hashlib, json, shutil, subprocess, sys
@@ -223,7 +223,7 @@ PYCOUNT
 fi
 
 "${CMAKE}" -S "${CAPTURE}" -B "${CAPTURE}/build" -DCMAKE_BUILD_TYPE="${BUILD_TYPE}"
-"${CMAKE}" --build "${CAPTURE}/build" -j"$(nproc)"
+"${CMAKE}" --build "${CAPTURE}/build" -j"${CMAKE_BUILD_PARALLEL_LEVEL:-$(nproc)}"
 (cd "${CAPTURE}/build" && ctest --output-on-failure)
 # G8sha: which SHA-256 path this CPU dispatches to (payload hashes are bit-identical on both).
 "${CAPTURE}/build/rs_sha256_bench" --which

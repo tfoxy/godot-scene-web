@@ -9,7 +9,7 @@
 // Configuration is read from the same environment variables entry.cpp reads, with the same
 // rules, so the sabotage cases exercise the same switches:
 //   GRC_LIVE_ALLOWED_ORIGINS    comma list (rs_ws.h parse_allowed_origins); invalid -> exit 2
-//   GRC_LIVE_CREDIT_WINDOW_MAX  1 or 2 (default 2); invalid -> exit 2
+//   GRC_LIVE_CREDIT_WINDOW_MAX  1..8 (default 8); invalid -> exit 2
 //   GRC_SABOTAGE                no-cors | accept-any-origin | token-ignored (anything else -> 2)
 //   GRC_LIVE_EXPOSE             CAR2: loopback (default) | lan; with --token and
 //                               GRC_LIVE_ALLOWED_ORIGINS it follows entry.cpp's refusals
@@ -18,6 +18,10 @@
 //                               host needs GRC_LIVE_EXPOSE=lan unless loopback (non-loopback; 2)
 //   GRC_LIVE_WT_LISTEN          CAR2: the same for `wt` (default 127.0.0.1 and --wt-port)
 // and from flags:
+//   --benchmark=16|18 engine-free animated scene, anchored 60 Hz callbacks (default: old fixture)
+//   --items=N         benchmark rectangle count (default 1024)
+//   --frames=N        stop after N callbacks (default 0: until signal)
+//                     benchmark summaries also write PATH.timeline.jsonl once per second
 //   --port=N          0 (default) binds an ephemeral port
 //   --token=VALUE     a bearer session: VALUE is required on /6 upgrades and on GETs, and in a
 //                     /7 hello's `token`
@@ -318,13 +322,27 @@ int main(int argc, char **argv) {
   bool track_echo = false;
   std::string track_caps;
   unsigned long big_resource_mib = 0;
+  int benchmark = 0;
+  unsigned long item_count = 1024;
+  unsigned long frames = 0;
   for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
     const auto value_of = [&](const char *flag) -> const char * {
       const std::size_t n = std::strlen(flag);
       return arg.rfind(flag, 0) == 0 && arg.size() > n && arg[n] == '=' ? arg.c_str() + n + 1 : nullptr;
     };
-    if (const char *v = value_of("--port")) {
+    if (const char *v = value_of("--benchmark")) {
+      if (std::string(v) != "16" && std::string(v) != "18") {
+        std::fprintf(stderr, "rs_live_host: --benchmark must be 16 or 18\n");
+        return 2;
+      }
+      benchmark = std::atoi(v);
+    } else if (const char *v = value_of("--items")) {
+      item_count = std::strtoul(v, nullptr, 10);
+      if (item_count < 1 || item_count > 32768) return 2;
+    } else if (const char *v = value_of("--frames")) {
+      frames = std::strtoul(v, nullptr, 10);
+    } else if (const char *v = value_of("--port")) {
       server_config.port = static_cast<std::uint16_t>(std::strtoul(v, nullptr, 10));
     } else if (const char *v = value_of("--token")) {
       token = v;
@@ -451,11 +469,11 @@ int main(int argc, char **argv) {
   const char *window = std::getenv("GRC_LIVE_CREDIT_WINDOW_MAX");
   if (window != nullptr && *window != '\0') {
     const std::string w(window);
-    if (w != "1" && w != "2") {
-      std::fprintf(stderr, "rs_live_host: invalid GRC_LIVE_CREDIT_WINDOW_MAX (1 or 2)\n");
+    if (w.size() != 1 || w[0] < '1' || w[0] > '8') {
+      std::fprintf(stderr, "rs_live_host: invalid GRC_LIVE_CREDIT_WINDOW_MAX (1..8)\n");
       return 2;
     }
-    live_config.credit_window_max = w == "2" ? 2 : 1;
+    live_config.credit_window_max = static_cast<std::uint64_t>(w[0] - '0');
   }
   const char *sabotage_env = std::getenv("GRC_SABOTAGE");
   const std::string sabotage = sabotage_env != nullptr ? sabotage_env : "";
@@ -541,6 +559,11 @@ int main(int argc, char **argv) {
   }
   server_config.subprotocols = {kSubprotocolV7, "render-stream.6"};
   server_config.hello_token_subprotocols = {kSubprotocolV7};
+  if (benchmark != 0) {
+    const char *subprotocol = benchmark == 18 ? kSubprotocolV18 : kSubprotocolV16;
+    server_config.subprotocols = {subprotocol};
+    server_config.hello_token_subprotocols = {subprotocol};
+  }
   server_config.auth_token = token;
   server_config.enforce_origins = sabotage != "accept-any-origin";
   server_config.cors_headers = sabotage != "no-cors";
@@ -567,6 +590,10 @@ int main(int argc, char **argv) {
   services.config["path"] = server_config.path;
   services.config["subprotocols"] = "render-stream.7,render-stream.6";
   services.config["hello_token_subprotocols"] = "render-stream.7";
+  if (benchmark != 0) {
+    services.config["subprotocols"] = server_config.subprotocols.front();
+    services.config["hello_token_subprotocols"] = server_config.subprotocols.front();
+  }
   services.config["max_inbound_text"] = std::to_string(server_config.max_inbound_text);
   services.config["max_queued_bytes"] = std::to_string(server_config.max_queued_bytes);
   services.config["wt_listen"] =
@@ -729,6 +756,11 @@ int main(int argc, char **argv) {
   const bool has_ws = transport.started(grc::live::kCarrierWs);
   if (any_ext) register_mem("late", "late");  // after live started: carrier-late, -1
   Session tmpl = golden::golden_session_v6(Encoding::Patch, std::string(), generate_id(), Delivery::OutOfBand);
+  if (benchmark != 0) {
+    tmpl.version = benchmark == 18 ? ProtocolVersion::V18 : ProtocolVersion::V16;
+    tmpl.viewport.logical_size = {1920, 1080};
+    tmpl.viewport.presentation_size = {1920, 1080};
+  }
   tmpl.stream = StreamInfo();
   ResourcePolicy policy;
   policy.permitted_formats = {"L8", "LA8", "R8", "RG8", "RGB8", "RGBA8"};
@@ -785,7 +817,23 @@ int main(int argc, char **argv) {
     }
     write_tracks_json();
   }
-  const grc::rs::Captured snapshot = scene();
+  grc::rs::Captured snapshot = scene();
+  if (benchmark != 0) {
+    snapshot.state.version = tmpl.version;
+    const ItemState prototype = snapshot.state.items.front();
+    snapshot.state.items.clear();
+    CanvasState canvas = snapshot.state.canvases.front();
+    canvas.items.clear();
+    for (std::uint32_t id = 1; id <= item_count; ++id) {
+      ItemState item = prototype;
+      item.id = id;
+      item.xform[4] = static_cast<float>(((id - 1) % 64) * 28);
+      item.xform[5] = static_cast<float>(((id - 1) / 64) * 28);
+      snapshot.state.items.set(std::move(item));
+      canvas.items.push_back(id);
+    }
+    snapshot.state.canvases.set(std::move(canvas));
+  }
   print("RS_LIVE_HOST_PORT " + std::to_string(has_ws ? ws->port() : 0));
   if (wt != nullptr) {
     const grc::live::CarrierInfo info = wt->info();
@@ -856,14 +904,40 @@ int main(int argc, char **argv) {
     tracks->tick(now_ns());
     if (tracks->take_changed()) write_tracks_json();
   };
-  while (!g_stop) {
+  const auto start = std::chrono::steady_clock::now();
+  std::uint64_t timeline_at = now_ns();
+  std::FILE *timeline = benchmark != 0 && !summary_path.empty()
+      ? std::fopen((summary_path + ".timeline.jsonl").c_str(), "wb") : nullptr;
+  while (!g_stop && (frames == 0 || frame < frames)) {
     ++frame;
     drain();
     track_tick();
     const std::uint64_t now = now_ns();
-    hub.on_frame(frame, now, hub.wants_snapshot(frame, now) ? &snapshot : nullptr, 1, 0);
-    std::this_thread::sleep_for(std::chrono::milliseconds(16));
+    if (benchmark != 0) {
+      // Every offered frame changes appearance, so a skipped send cannot hide behind an idle scene.
+      for (std::uint32_t id = 1; id <= item_count; ++id) {
+        ItemState item = *snapshot.state.items.find(id);
+        item.xform[4] = static_cast<float>(((id - 1) % 64) * 28 + frame % 16);
+        snapshot.state.items.set(std::move(item));
+      }
+    }
+    hub.on_frame(frame, now, hub.wants_snapshot(frame, now) ? &snapshot : nullptr,
+                 benchmark != 0 ? frame : 1, 0);
+    if (timeline != nullptr && now >= timeline_at) {
+      std::fprintf(timeline, "{\"frame\":%llu,\"t_us\":%llu,\"summary\":%s}\n",
+                   static_cast<unsigned long long>(frame), static_cast<unsigned long long>(now / 1000),
+                   hub.summary_json(&serving).c_str());
+      std::fflush(timeline);
+      timeline_at = now + 1000000000ull;
+    }
+    if (benchmark != 0) {
+      std::this_thread::sleep_until(start + std::chrono::nanoseconds(frame * 1000000000ull / 60));
+    } else {
+      std::this_thread::sleep_for(std::chrono::milliseconds(16));
+    }
   }
+
+  if (timeline != nullptr) std::fclose(timeline);
 
   // entry.cpp's shutdown: the end record, a linger for the receivers to close, then the rest.
   // Everything the I/O thread already answered reaches the hub before the end records go out.

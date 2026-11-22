@@ -14,6 +14,8 @@
 // 2. Window 2 (G7q): the grant, two in flight, the window's credit per seq, a resync of the
 //    earlier seq discarding the later one, pins over every in-flight transaction, the receiver
 //    applying both in one frame, and the window-overrun sabotage.
+// 3. /18 windows 4 and 8: pinned seeded transcripts, RTT adaptation at several host cadences,
+//    shrinkage below the outstanding count, stale repetition and both LF1 hold phases.
 // Driven through a fake transport: no socket, no engine.
 
 #include <algorithm>
@@ -33,6 +35,7 @@
 #include "rs2_diff.h"
 #include "rs2_golden_states.h"
 #include "rs2_snapshot.h"
+#include "rs_gate8_policy.h"
 #include "rs_live.h"
 #include "rs_publish.h"
 #include "rs_sha256.h"
@@ -178,6 +181,14 @@ std::string resync(const std::string &stream_id, std::uint64_t seq) {
 }
 
 std::string hello(int version, const char *stage, int window) {
+  if (version >= 16) {
+    std::string h = read_file(std::string(GRC_GOLDEN12_DIR) + "/control/valid/hello-native-block.json");
+    h.replace(h.find("render-stream/12"), 16, "render-stream/" + std::to_string(version));
+    const auto pos = h.find_first_not_of(" ", h.find("\"credit_window\":") + 16);
+    h.replace(pos, 1, std::to_string(window));
+    h.replace(h.find("submitted"), 9, stage);
+    return h;
+  }
   if (version == 7) {
     return std::string(
                R"({"type":"hello","protocol":"render-stream/7","receiver":"model","receiver_kind":"gsw-canvas","credit_stage":")") +
@@ -240,8 +251,7 @@ struct ConnSpec {
   std::uint64_t close_frame = 0;  // the receiver closes at this frame (0: at the end)
 };
 
-// G7wd: LiveConfig's credit_window_max defaults to 2 now; the scenarios (the window-1 transcripts)
-// pin window 1 explicitly, so none of their hubs changes.
+// The legacy window-1 transcripts pin window 1 explicitly, independent of the host default.
 LiveConfig window1_config() {
   LiveConfig config;
   config.credit_window_max = 1;
@@ -376,7 +386,9 @@ void run_scenario(const Scenario &sc, Outcome *out) {
         continue;
       }
       if (frame == m.spec.open_frame) {
-        hub.on_event(opened(m.id, m.spec.version == 7 ? kSubprotocolV7 : "", now - 1000), frame);
+        const char *subprotocol = m.spec.version == 18 ? kSubprotocolV18
+                                  : m.spec.version == 7 ? kSubprotocolV7 : "";
+        hub.on_event(opened(m.id, subprotocol, now - 1000), frame);
         for (const ConnectionSummary &s : hub.summaries()) {
           if (s.connection == static_cast<std::uint32_t>(&m - conns.data() + 1)) {
             m.sid = s.stream_id;
@@ -956,23 +968,23 @@ void test_window2_stale_coalesce_held() {
                                            std::to_string(rig.summary().stale_sent) + ")");
 }
 
-// Seeded window-2 runs of the modelled receiver: never more than two in flight, every patch
-// against the previous one sent, and no protocol error.
-void test_window2_model() {
+// Seeded receiver runs: the outstanding count stays within the grant, every patch bases on
+// the previous send, and resyncs and stalls preserve the pinned transcript.
+void test_window_model(int version, int window) {
   for (std::uint64_t seed = 31; seed < 37; ++seed) {
     Scenario s;
-    s.name = "w2-model-" + std::to_string(seed);
+    s.name = "w" + std::to_string(window) + "-model-" + std::to_string(seed);
     s.seed = seed;
-    s.template_version = ProtocolVersion::V6;
-    s.config.credit_window_max = 2;
+    s.template_version = version == 18 ? ProtocolVersion::V18 : ProtocolVersion::V6;
+    s.config.credit_window_max = window;
     if (seed % 2 == 0) {
       s.config.publish_period_ns = 1000000000ULL / 60;
       s.config.publish_target_fps = 60;
     }
     s.payloads = seed % 3 == 0;
     ConnSpec c;
-    c.version = 7;
-    c.window = 2;
+    c.version = version;
+    c.window = window;
     c.stage = seed % 3 == 1 ? "applied" : "submitted";
     s.conns = {c};
     s.max_delay = 1 + static_cast<std::uint32_t>(seed % 4);
@@ -982,10 +994,21 @@ void test_window2_model() {
     s.stall_frames = 20;
     Outcome o;
     run_scenario(s, &o);
+    const std::string digest = grc::sha256_hex(o.transcript.data(), o.transcript.size());
+    std::ofstream(std::string(GRC_TEST_TMP_DIR) + "/window/" + s.name + ".txt") << o.transcript;
+    if (std::getenv("GRC_WRITE_TRANSCRIPTS") != nullptr ||
+        (window > 2 && std::getenv("GRC_WRITE_WIDE_TRANSCRIPTS") != nullptr)) {
+      std::printf("%s %s\n", s.name.c_str(), digest.c_str());
+    } else {
+      const std::string pins = read_file(GRC_WINDOW_TRANSCRIPTS);
+      check(has(pins, s.name + " " + digest), s.name + ": window transcript unchanged");
+    }
     const ConnectionSummary sum = o.summaries.at(0);
-    check(sum.credit_window == 2 && sum.max_in_flight <= 2 && sum.max_in_flight == 2 &&
+    check(sum.credit_window == static_cast<std::uint64_t>(window) &&
+              sum.max_in_flight <= static_cast<std::uint64_t>(window) &&
+              sum.max_in_flight >= static_cast<std::uint64_t>(std::min(2, window)) &&
               sum.error_sent.empty() && sum.sent_without_credit == 0,
-          s.name + ": window 2 held (max_in_flight " + std::to_string(sum.max_in_flight) +
+          s.name + ": granted window held (max_in_flight " + std::to_string(sum.max_in_flight) +
               ", error " + sum.error_sent + ")");
     std::uint64_t previous = 0;
     bool chained = true;
@@ -1005,6 +1028,383 @@ void test_window2_model() {
       }
     }
     check(chained, s.name + ": every patch is against the previous transaction sent");
+  }
+}
+
+// /18 rig: exact host-clock event times, independent of wall time or the receiver's t_us.
+struct WideRig {
+  FakeTransport transport;
+  Hub hub;
+  std::uint64_t frame = 0;
+  std::uint64_t now = 0;
+  std::string sid;
+  explicit WideRig(int window, LiveConfig config = LiveConfig(), int version = 18,
+                   const char *stage = "submitted")
+      : hub(&transport, std::move(config),
+            make_template(version == 18 ? ProtocolVersion::V18
+                          : version == 17 ? ProtocolVersion::V17 : ProtocolVersion::V16,
+                          Delivery::OutOfBand)) {
+    hub.on_event(opened(1, version == 18 ? kSubprotocolV18 : version == 17 ? kSubprotocolV17 : kSubprotocolV16, 0), 0);
+    hub.on_event(text(1, hello(version, stage, window), 0), 0);
+    sid = hub.summaries().at(0).stream_id;
+  }
+  void step(std::uint64_t interval = kHostPeriodNs) {
+    now += interval;
+    ++frame;
+    const Captured snapshot = state_at(1 + static_cast<int>(frame % 8), ProtocolVersion::V18, false);
+    hub.on_frame(frame, now, hub.wants_snapshot(frame, now) ? &snapshot : nullptr, frame, 0);
+  }
+  void credit(std::uint64_t seq, std::uint64_t at) {
+    hub.on_event(text(1, ack(sid, seq, "submitted", at / 1000), at), frame);
+  }
+  ConnectionSummary summary() const { return hub.summaries().at(0); }
+};
+
+void test_v18_availability() {
+  grc::rs::Gate8Policy policy;
+  std::string error;
+  check(grc::rs::parse_gate8_policy("18", nullptr, nullptr, nullptr, &policy, &error),
+        "availability: /18 host policy parses");
+  const auto protocols = grc::rs::gate8_live_subprotocols(policy);
+  check(protocols == std::vector<std::string>{kSubprotocolV18, kSubprotocolV17, kSubprotocolV16},
+        "availability: /18 host prefers .18 and keeps .17 and .16");
+  FakeTransport transport;
+  LiveConfig config;
+  config.credit_window_max = 8;
+  Hub hub(&transport, config, make_template(policy.file_version, Delivery::OutOfBand));
+  for (int version : {17, 16}) {
+    const std::string protocol = "render-stream." + std::to_string(version);
+    const bool offered = std::find(protocols.begin(), protocols.end(), protocol) != protocols.end();
+    check(offered, "availability: /" + std::to_string(version) + " client can select its protocol");
+    if (!offered) continue;
+    const auto id = static_cast<std::uint32_t>(version);
+    hub.on_event(opened(id, protocol, 0), 0);
+    hub.on_event(text(id, hello(version, "submitted", 2), 0), 0);
+    // A /18-enabled host still refuses the widened range on older connections.
+    hub.on_event(opened(id + 100, protocol, 0), 0);
+    hub.on_event(text(id + 100, hello(version, "submitted", 3), 0), 0);
+  }
+  check(hub.summaries().size() == 4, "availability: both older clients reach the /18 host");
+  std::map<std::uint64_t, std::uint64_t> acked;
+  for (std::uint64_t frame = 1; frame <= 180; ++frame) {
+    const auto now = frame * kHostPeriodNs;
+    const Captured snapshot = state_at(1 + static_cast<int>(frame % 8), ProtocolVersion::V18, false);
+    hub.on_frame(frame, now, &snapshot, frame, 0);
+    if (frame % 2 == 0) {
+      for (const auto &s : hub.summaries()) {
+        if (!s.error_sent.empty()) continue;
+        // Two sequences share each draw timestamp, enough to trigger /18 pacing.
+        while (acked[s.connection] < s.sent) {
+          hub.on_event(text(static_cast<std::uint32_t>(s.version), ack(s.stream_id, ++acked[s.connection],
+                           "submitted", 1000000 + now / 1000), now + 1), frame);
+        }
+      }
+    }
+  }
+  for (const auto &s : hub.summaries()) {
+    if (!s.error_sent.empty()) {
+      check(s.error_sent == "protocol" && s.sent == 0,
+            "availability: older hello window 3 is refused before sending");
+      continue;
+    }
+    check(s.error_sent.empty() && s.credit_window == 2 && s.max_in_flight == 2,
+          "availability: older hello is accepted with at most two in flight");
+    check(s.sent == 180 && s.pace_period_us == 0 && s.draws_per_s == 0,
+          "availability: older client draws never pace the /18-enabled host");
+    const auto first = std::find_if(transport.sent.begin(), transport.sent.end(), [&](const Sent &sent) {
+      return sent.kind == Sent::Binary && sent.conn == static_cast<std::uint32_t>(s.version);
+    });
+    check(first != transport.sent.end(), "availability: older client receives a session");
+    if (first != transport.sent.end()) {
+      const auto records = message_records(first->bytes);
+      check(!records.empty() && has(records.front().meta,
+                "\"protocol\":\"render-stream/" + std::to_string(s.version) + "\"") &&
+                has(records.front().meta, "\"credit_window\":2"),
+            "availability: session uses the client's version and grant");
+    }
+  }
+  check(!has(hub.summary_json(), "\"pace_period_us\"") &&
+            !has(hub.summary_json(), "\"coalesced_share\""),
+        "availability: older connections retain their telemetry shape");
+}
+
+void test_wide_window_adapts_and_sustains() {
+  for (int grant : {4, 8}) {
+    WideRig rig(grant);
+    rig.step();
+    rig.step();
+    rig.step();
+    check(rig.summary().credit_window == static_cast<std::uint64_t>(grant), "wide: requested grant");
+    check(rig.summary().sent == 2, "wide: before the first RTT only two in flight");
+    // seq 1 returns 48 ms after sending, between callbacks 3 and 4.
+    rig.credit(1, kHostPeriodNs + 48000000);
+    rig.step();
+    check(rig.summary().sent == 3, "wide: 48 ms credit opens a third send");
+    // Deliver exact 48 ms RTTs, always before the next callback, for two host seconds.
+    std::map<std::uint64_t, std::uint64_t> due;
+    due.emplace(2 * kHostPeriodNs + 48000000, 2);
+    due.emplace(4 * kHostPeriodNs + 48000000, 3);
+    std::uint64_t last_sent = 3;
+    const std::uint64_t before = rig.summary().sent;
+    for (int n = 0; n < 120; ++n) {
+      const auto end = due.upper_bound(rig.now + kHostPeriodNs);
+      for (auto it = due.begin(); it != end; ++it) rig.credit(it->second, it->first);
+      due.erase(due.begin(), end);
+      rig.step();
+      const auto sent = rig.summary().sent;
+      if (sent > last_sent) due.emplace(rig.now + 48000000, sent);
+      last_sent = sent;
+    }
+    const auto s = rig.summary();
+    check(s.sent - before == 120, "wide: sustained one send per host callback at RTT 48 ms");
+    check(s.max_in_flight == 3 && s.sent_without_credit == 0,
+          "wide: three outstanding at sampled 48 ms RTT, no send without credit");
+    const auto json = rig.hub.summary_json();
+    check(has(json, "\"w_eff\": 4") && has(json, "\"srtt_us\": 48000"),
+          "wide: effective window 4 and measured srtt in summary");
+  }
+}
+
+void test_wide_window_measures_callback_period() {
+  for (const auto period : {33333333ULL, 8333333ULL}) {
+    WideRig rig(8);
+    rig.step(period);
+    rig.step(period);
+    const auto ack_at = period + 48000000;
+    while (rig.now + period < ack_at) rig.step(period);
+    rig.credit(1, ack_at);
+    rig.step(period);
+    check(rig.summary().w_eff == (period == 33333333ULL ? 3 : 7),
+          "wide: window uses measured 30/120 Hz callbacks rather than assuming 60 Hz");
+    rig.credit(2, 2 * period + 96000000);
+    check(rig.summary().srtt_us == 54000, "wide: RTT EWMA weights the next sample by 1/8");
+  }
+}
+
+void test_wide_stale_coalesce_repeats() {
+  LiveConfig config;
+  config.stale_coalesce_frame = 1;
+  WideRig rig(8, config);
+  rig.step();
+  rig.step();
+  rig.step();  // first missed snapshot: frame 3
+  rig.credit(1, kHostPeriodNs + 48000000);
+  rig.step();  // stale seq 3
+  rig.credit(2, 2 * kHostPeriodNs + 48000000);
+  rig.step();  // repeats while seq 3 holds its slot
+  rig.step();
+  rig.step();
+  check(rig.summary().stale_sent == 4, "wide stale: every send repeats the held stale snapshot");
+  rig.credit(3, rig.now + 1);
+  rig.step();
+  check(rig.summary().stale_sent == 4, "wide stale: after its credit the newest snapshot is sent");
+}
+
+void test_wide_window_caps_and_shrinks() {
+  WideRig rig(8);
+  for (int i = 0; i < 8; ++i) rig.step();
+  rig.credit(1, rig.now);  // 7 host periods -> clamp to granted 8
+  for (int i = 0; i < 7; ++i) rig.step();
+  check(rig.summary().sent == 9 && rig.summary().max_in_flight == 8,
+        "wide: high RTT fills all eight slots and then stops");
+  rig.step();
+  check(rig.summary().sent == 9, "wide: ninth outstanding waits");
+  // Slow host callback intervals lower w_eff beneath the outstanding count.
+  rig.step(1000000000);
+  const auto before = rig.summary().sent;
+  rig.credit(2, rig.now);  // still seven outstanding after this credit
+  rig.step(1000000000);
+  check(rig.summary().sent == before, "wide: shrinking below in-flight does not reopen a slot");
+  for (std::uint64_t seq = 3; seq <= 9; ++seq) rig.credit(seq, rig.now);
+  rig.step(1000000000);
+  check(rig.summary().sent == before + 1, "wide: sending resumes after the shrunken window drains");
+}
+
+void test_wide_window_hold_and_sabotages() {
+  WideRig held(8);
+  for (int n = 0; n < 8; ++n) held.step();
+  held.credit(1, held.now);
+  for (int n = 0; n < 7; ++n) held.step();
+  held.credit(2, held.now);  // seven outstanding; the cached window still has a free slot
+  const auto after_hold = held.now + 1000000000;
+  check(held.hub.hold_view(held.frame + 1).blocked == 0,
+        "wide hold: cached window has credit before the long hold");
+  check(!held.hub.wants_snapshot(held.frame + 1, after_hold),
+        "wide hold: long interval would shrink the next callback window");
+  check(held.hub.hold_view(held.frame + 1, after_hold).blocked == 1,
+        "wide hold: phase 1 previews the shrunken callback window");
+  for (std::uint64_t seq = 3; seq <= 9; ++seq) held.credit(seq, after_hold);
+  check(held.hub.hold_view(held.frame + 1, after_hold).blocked == 0,
+        "wide hold: draining the window permits the held callback");
+  held.step(1000000000);
+  check(held.hub.hold_view(held.frame).lagging == 1,
+        "wide hold: after publishing, phase 2 still waits for the held frame");
+  held.credit(10, held.now + 1);
+  check(held.hub.hold_view(held.frame).lagging == 0,
+        "wide hold: the held callback's own ack releases phase 2");
+
+  // LF1: once adaptation opens the window, the pre-publish credit phase can finish while the
+  // viewer still lags. The post-publish phase must wait for a frame inside the shot window.
+  WideRig rig(8);
+  rig.step();
+  rig.step();
+  rig.step();
+  rig.credit(1, kHostPeriodNs + 48000000);
+  auto hold = rig.hub.hold_view(4);
+  check(hold.blocked == 0 && hold.lagging == 1,
+        "wide hold: phase 1 has credit but phase 2 must still wait");
+  rig.step();  // seq 3 at frame 4
+  check(rig.hub.hold_view(4).lagging == 1, "wide hold: publish alone does not release phase 2");
+  rig.credit(2, rig.now + 1);
+  check(rig.hub.hold_view(4).lagging == 1, "wide hold: ack before the window cannot release it");
+  rig.credit(3, rig.now + 2);
+  check(rig.hub.hold_view(4).lagging == 0, "wide hold: ack inside the window releases phase 2");
+
+  LiveConfig config;
+  config.window_overrun_frame = 1;
+  WideRig overrun(8, config);
+  for (int n = 0; n < 10; ++n) overrun.step();
+  check(overrun.summary().sent == 10 && overrun.summary().sent_without_credit == 8,
+        "wide overrun: sabotage sends past effective window 2, before granted window 8 fills");
+}
+
+// A draw acknowledges all transactions since the preceding draw with one receiver timestamp.
+void draw_pending(WideRig &rig, std::uint64_t &acked, const char *stage = "submitted",
+                  bool duplicate = false) {
+  const auto last = rig.summary().sent;
+  for (; acked < last;) {
+    ++acked;
+    const auto event = text(1, ack(rig.sid, acked, stage, 1000000 + rig.now / 1000), rig.now + 1);
+    rig.hub.on_event(event, rig.frame);
+    if (duplicate) rig.hub.on_event(event, rig.frame);
+  }
+}
+
+void test_draw_pacing_settles_and_recovers() {
+  WideRig rig(8);
+  std::uint64_t acked = 0;
+  for (int n = 0; n < 120; ++n) {
+    rig.step();
+    if (n % 2 == 1) draw_pending(rig, acked);
+  }
+  auto summary = rig.summary();
+  check(summary.pace_period_us >= 30000 && summary.pace_period_us <= 37000,
+        "pace: every-second-frame draws settle to about two host periods within two seconds");
+  const auto before = summary.sent;
+  for (int n = 0; n < 60; ++n) {
+    rig.step();
+    if (n % 2 == 1) draw_pending(rig, acked);
+  }
+  check(rig.summary().sent - before >= 28 && rig.summary().sent - before <= 32,
+        "pace: settled publication follows about thirty draws per second");
+  check(rig.summary().coalesced_share < 0.1,
+        "pace: settled coalesced share is below ten percent");
+  // The client now draws every host frame. Reductions happen only after two clean seconds.
+  // Make the recovery origin explicit, independent of the preceding settling phase.
+  for (int n = 0; n < 4; ++n) rig.step();
+  draw_pending(rig, acked);
+  const auto cap = rig.summary().pace_period_us;
+  for (int n = 0; n < 60; ++n) {
+    rig.step();
+    draw_pending(rig, acked);
+  }
+  check(rig.summary().pace_period_us == cap,
+        "pace: one clean second cannot shorten the cap");
+  for (int n = 0; n < 120; ++n) {
+    rig.step();
+    draw_pending(rig, acked);
+  }
+  const auto shortened = rig.summary().pace_period_us;
+  check(shortened >= cap * 9 / 10 - 1 && shortened <= cap * 9 / 10 + 1,
+        "pace: two clean seconds shorten the cap by exactly ten percent");
+  for (int n = 0; n < 960; ++n) {
+    rig.step();
+    draw_pending(rig, acked);
+  }
+  check(rig.summary().pace_period_us == 0,
+        "pace: clean draws eventually restore uncapped publication");
+  const auto recovered = rig.summary().sent;
+  for (int n = 0; n < 60; ++n) {
+    rig.step();
+    draw_pending(rig, acked);
+  }
+  check(rig.summary().sent - recovered == 60, "pace: recovered host sends every frame");
+  check(has(rig.hub.summary_json(), "\"pace_period_us\": 0") &&
+            has(rig.hub.summary_json(), "\"coalesced_share\": 0"),
+        "pace: /18 summary exposes pacing metrics");
+}
+
+void test_draw_pacing_is_per_connection() {
+  WideRig rig(8);
+  rig.hub.on_event(opened(2, kSubprotocolV18, 0), 0);
+  rig.hub.on_event(text(2, hello(18, "submitted", 8), 0), 0);
+  const auto sid2 = rig.hub.summaries().at(1).stream_id;
+  std::uint64_t slow_ack = 0;
+  std::uint64_t fast_ack = 0;
+  for (int n = 0; n < 120; ++n) {
+    rig.step();
+    if (n % 2 == 1) draw_pending(rig, slow_ack);
+    const auto fast_sent = rig.hub.summaries().at(1).sent;
+    while (fast_ack < fast_sent) {
+      rig.hub.on_event(text(2, ack(sid2, ++fast_ack, "submitted", rig.now / 1000), rig.now + 1),
+                       rig.frame);
+    }
+    if (n == 59) check(rig.summary().pace_period_us == 0,
+                       "pace: a partial observation second cannot activate pacing");
+  }
+  const auto summaries = rig.hub.summaries();
+  check(summaries.at(0).pace_period_us >= 30000 &&
+            summaries.at(1).pace_period_us == 0 && summaries.at(1).sent == 120,
+        "pace: a slow viewer does not pace a fast connection on the same hub");
+}
+
+void test_draw_pacing_floor_and_ack_rules() {
+  LiveConfig config;
+  config.publish_period_ns = 25000000;
+  config.publish_target_fps = 40;
+  WideRig floor(8, config);
+  std::uint64_t acked = 0;
+  bool respected = true;
+  for (int n = 0; n < 1200; ++n) {
+    floor.step();
+    if (n < 120 ? n % 2 == 1 : true) draw_pending(floor, acked);
+    respected = respected && floor.summary().pace_period_us >= 25000;
+  }
+  check(respected && floor.summary().pace_period_us == 25000,
+        "pace: recovery never exceeds the explicit GRC_PUBLISH_FPS rate");
+  check(has(floor.hub.summary_json(), "\"target_fps\": 40"),
+        "pace: session publication and host declaration retain the explicit target");
+
+  WideRig applied(8, LiveConfig(), 18, "applied");
+  acked = 0;
+  for (int n = 0; n < 180; ++n) {
+    applied.step();
+    if (n % 2 == 1) draw_pending(applied, acked, "applied");
+  }
+  check(applied.summary().pace_period_us == 0 && applied.summary().draws_per_s == 0,
+        "pace: no submitted acks means no draw pacing");
+
+  WideRig duplicate(8);
+  acked = 0;
+  for (int n = 0; n < 180; ++n) {
+    duplicate.step();
+    draw_pending(duplicate, acked, "submitted", true);
+  }
+  check(duplicate.summary().pace_period_us == 0 && duplicate.summary().coalesced_share == 0,
+        "pace: duplicate submitted acks cannot create coalesced draws");
+
+  for (int version : {16, 17}) {
+  WideRig older(2, LiveConfig(), version);
+  acked = 0;
+  for (int n = 0; n < 180; ++n) {
+    older.step();
+    if (n % 2 == 1) draw_pending(older, acked);
+  }
+  check(older.summary().pace_period_us == 0 && older.summary().sent == 180 &&
+            !has(older.hub.summary_json(), "\"pace_period_us\"") &&
+            !has(older.hub.summary_json(), "\"draws_per_s\"") &&
+            !has(older.hub.summary_json(), "\"coalesced_share\""),
+        "pace: /16 and /17 remain unpaced with no new telemetry");
   }
 }
 
@@ -1060,6 +1460,11 @@ void test_backlog_sent_frames() {
 }
 
 int main(int argc, char **argv) {
+  if (argc == 2 && std::string(argv[1]) == "--availability-only") {
+    test_v18_availability();
+    std::printf("rs18_availability: %d checks, %d failures\n", g_checks, g_failures);
+    return g_failures == 0 ? 0 : 1;
+  }
   // HC5: `--formation=thread` runs every hub here through the encode thread (each frame callback
   // waiting for its own jobs, so the fake transport is read as before): the same checks hold.
   for (int i = 1; i < argc; ++i) {
@@ -1069,12 +1474,22 @@ int main(int argc, char **argv) {
   }
   grc::make_directories(std::string(GRC_TEST_TMP_DIR) + "/window");
   grc::make_directories(std::string(GRC_TEST_TMP_DIR) + "/w2");
+  test_draw_pacing_settles_and_recovers();
+  test_draw_pacing_floor_and_ack_rules();
+  test_draw_pacing_is_per_connection();
+  test_wide_window_adapts_and_sustains();
+  test_wide_window_measures_callback_period();
+  test_wide_stale_coalesce_repeats();
+  test_wide_window_caps_and_shrinks();
+  test_wide_window_hold_and_sabotages();
   test_window1_transcripts();
   test_window2_grant_and_two_in_flight();
   test_window2_resync_earlier_seq();
   test_window2_pins_every_in_flight();
   test_window_overrun_sabotage();
-  test_window2_model();
+  test_window_model(7, 2);
+  test_window_model(18, 4);
+  test_window_model(18, 8);
   test_window2_stale_coalesce_held();
   test_hold_view();
   test_backlog_sent_frames();

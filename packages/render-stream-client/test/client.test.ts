@@ -48,6 +48,32 @@ const core = {
 };
 
 describe("createRenderStreamClient", () => {
+  it("accepts /18 windows 1..8 and rejects invalid windows or an explicit large downgrade", () => {
+    const canvas = document.createElement("canvas");
+    for (const creditWindow of [1, 2, 3, 4, 5, 6, 7, 8] as const) {
+      const client = createRenderStreamClient({
+        canvas,
+        core,
+        endpoint: { ...endpoint, protocol: 18 },
+        creditWindow,
+      });
+      if (creditWindow > 2)
+        expect(() => client.setEndpoint({ ...endpoint, protocol: 16 })).toThrow(
+          /creditWindow/,
+        );
+      client.dispose();
+    }
+    for (const creditWindow of [0, 9, 1.5, NaN, Infinity])
+      expect(() =>
+        createRenderStreamClient({
+          canvas,
+          core,
+          endpoint: { ...endpoint, protocol: 18 },
+          creditWindow: creditWindow as never,
+        }),
+      ).toThrow(/creditWindow/);
+  });
+
   it("refuses bad extensions (TAG2), a bad credit window and a bad descriptor", () => {
     const canvas = document.createElement("canvas");
     // An extension that wants identities needs /13; ids are unique and non-empty.
@@ -486,6 +512,8 @@ describe("endpoint protocol changes", () => {
     [13, 14, false, [13, 14]],
     [13, 14, true, [14]],
     [14, 13, false, [14, 13]],
+    [16, 18, false, [16, 18]],
+    [18, 16, false, [18, 16]],
   ] as const)("switches /%i to /%i (v2 wants: %s) at the connection boundary", async (from, to, wants, built) => {
     const h = mount(
       from,
@@ -504,6 +532,7 @@ describe("endpoint protocol changes", () => {
     const conn = h.open();
     expect(JSON.parse(conn.send.mock.calls[0][0])).toMatchObject({
       protocol: `render-stream/${to}`,
+      credit_window: to >= 18 ? 8 : 2,
     });
     expect(h.instances[0].free).toHaveBeenCalledTimes(built.length - 1);
     expect(h.instances.every((g) => g.canvas === h.canvas)).toBe(true);
@@ -524,6 +553,9 @@ describe("endpoint protocol changes", () => {
     [16, undefined, 16],
     [16, false, 16],
     [16, true, 16],
+    [18, undefined, 18],
+    [18, false, 18],
+    [18, true, 18],
   ] as const)("endpoint /%i with resourceHints %s offers, builds and says /%i", async (protocol, hints, spoken) => {
     const h = mount(protocol, [], hints);
     h.c.connect();
@@ -535,6 +567,9 @@ describe("endpoint protocol changes", () => {
     const conn = h.open();
     expect(JSON.parse(conn.send.mock.calls[0][0]).protocol).toBe(
       `render-stream/${spoken}`,
+    );
+    expect(JSON.parse(conn.send.mock.calls[0][0]).credit_window).toBe(
+      spoken >= 18 ? 8 : 2,
     );
     expect(h.c.hints()).toEqual([]);
     const st = h.c.stats();

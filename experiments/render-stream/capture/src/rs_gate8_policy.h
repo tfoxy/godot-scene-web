@@ -3,7 +3,7 @@
 // Pure C++17, no engine types, so it is unit-testable without a Godot process (the ctest
 // rs_gate8_policy_test). The environment variables it reads:
 //
-//   GRC_STREAM_VERSION    6 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17, default 6. The wire version of FILE sinks only (render-stream-8.md
+//   GRC_STREAM_VERSION    6 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18, default 6. The wire version of FILE sinks only (render-stream-8.md
 //                         "Which sinks speak /8"); the live listener negotiates per connection.
 //                         9 (G8k9, render-stream-9.md) is /8 plus the texture-delivery wire; it is the
 //                         only way `render-stream.9` is ever offered. 10 (CG1, render-stream-10.md)
@@ -40,7 +40,7 @@ namespace grc {
 namespace rs {
 
 struct Gate8Policy {
-  // GRC_STREAM_VERSION: the wire version of file sinks. V6 (the default), V8 to V17.
+  // GRC_STREAM_VERSION: the wire version of file sinks. V6 (the default), V8 to V18.
   rs2::ProtocolVersion file_version = rs2::ProtocolVersion::V6;
   bool stream_version_set = false;  // GRC_STREAM_VERSION was present and non-empty
   bool adopt = false;               // GRC_ADOPT=arm
@@ -91,6 +91,8 @@ struct Gate8Policy {
   // Whether the stream speaks /16: GRC_STREAM_VERSION=16 (render-stream-16.md "Who speaks /16"):
   // file sinks write /16 and the live listener lists only render-stream.16.
   bool speaks_v16() const { return rs2::is_v16(file_version); }
+  // /18 selects only render-stream.18 and widens the live credit-window range.
+  bool speaks_v18() const { return file_version == rs2::ProtocolVersion::V18; }
 };
 
 // VS2 (viewport-surfaces-design.md D3; render-stream-16.md "Session: viewports"), read at load:

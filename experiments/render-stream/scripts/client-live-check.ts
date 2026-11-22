@@ -5,7 +5,7 @@
 //
 //   tsx --conditions=development experiments/render-stream/scripts/client-live-check.ts \
 //     --dir <out> --port <page port> --ws ws://127.0.0.1:<p>/render-stream --http http://127.0.0.1:<p> \
-//     [--token-file <evidence>/live-token] [--protocol 11|12|13|14|15|16] [--viewports on|off] [--window 1|2] [--credit-stage submitted|applied] [--apply-on frame|message] [--core <build-web.sh out>] \
+//     [--token-file <evidence>/live-token] [--protocol 11|12|13|14|15|16|18] [--viewports on|off] [--window 1..8] [--credit-stage submitted|applied] [--apply-on frame|message] [--core <build-web.sh out>] \
 //     [--mounts 5] [--first-s 20] [--cycle-s 8] [--rss-tolerance 0.15]
 //
 // Run it as bench-live-scale.sh's host-only receiver (`--receiver host-only --rx-cmd ...`), which
@@ -26,6 +26,9 @@
 //                      ~220 MiB of [anon:partition_alloc] that the first stream leaves in the
 //                      renderer and that never grows
 // --core: build-web.sh's output; built into <dir>/core when absent.
+// --measure-s N: one uninterrupted throughput mount (no context loss or memory probes).
+// Requires a prebuilt --core; --cpu-throttle N uses CDP Emulation.setCPUThrottlingRate.
+// Records per-second client stats and a screenshot presence check in client-check.json.
 
 import { execFileSync } from "node:child_process";
 import {
@@ -38,6 +41,7 @@ import {
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
+import sharp from "../../../packages/test-harness/node_modules/sharp/lib/index.js";
 import {
   BACKGROUND_THROTTLING_ARGS,
   BROWSER_LAUNCH_ARGS,
@@ -128,12 +132,41 @@ async function main(): Promise<number> {
   const firstS = Number(a["first-s"] ?? 20);
   const cycleS = Number(a["cycle-s"] ?? 8);
   const tolerance = Number(a["rss-tolerance"] ?? 0.15);
-  const protocol = Number(a.protocol ?? 12) as 11 | 12 | 13 | 14 | 15 | 16;
+  const protocol = Number(a.protocol ?? 12) as 11 | 12 | 13 | 14 | 15 | 16 | 18;
+  if (![11, 12, 13, 14, 15, 16, 18].includes(protocol))
+    throw new Error("client-live-check: --protocol must be 11..18");
+  const measureS = Number(a["measure-s"] ?? 0);
+  const cpuThrottle = Number(a["cpu-throttle"] ?? 1);
+  if (
+    !Number.isFinite(measureS) ||
+    measureS < 0 ||
+    !Number.isFinite(cpuThrottle) ||
+    cpuThrottle < 1
+  )
+    throw new Error(
+      "client-live-check: invalid measurement duration or CPU throttle",
+    );
   // VS4: the client's `viewports` option (on is the package's default; only a /16 stream has surfaces).
   const viewports = a.viewports ?? "on";
   if (viewports !== "on" && viewports !== "off")
     throw new Error("client-live-check: --viewports must be on or off");
-  const creditWindow = Number(a.window ?? 2) as 1 | 2;
+  const creditWindow = Number(a.window ?? (protocol >= 18 ? 8 : 2)) as
+    | 1
+    | 2
+    | 3
+    | 4
+    | 5
+    | 6
+    | 7
+    | 8;
+  if (
+    !Number.isInteger(creditWindow) ||
+    creditWindow < 1 ||
+    creditWindow > (protocol >= 18 ? 8 : 2)
+  )
+    throw new Error(
+      "client-live-check: --window must be 1..8 at /18, else 1..2",
+    );
   // PH3: the client's pacing options (omitted: the package's defaults).
   const creditStage = a["credit-stage"] as "submitted" | "applied" | undefined;
   const applyOn = a["apply-on"] as "frame" | "message" | undefined;
@@ -142,6 +175,10 @@ async function main(): Promise<number> {
 
   // The core: build-web.sh's three files.
   let coreDir = a.core ? resolve(a.core) : join(dir, "core");
+  if (measureS > 0 && (!a.core || !existsSync(join(coreDir, "build.json"))))
+    throw new Error(
+      "client-live-check: --measure-s requires a prebuilt --core",
+    );
   if (!existsSync(join(coreDir, "build.json"))) {
     coreDir = join(dir, "core");
     execFileSync(
@@ -239,6 +276,93 @@ async function main(): Promise<number> {
       renderer: prov.renderer,
     };
     const cdp = await page.context().newCDPSession(page);
+    if (measureS > 0) {
+      await cdp.send("Emulation.setCPUThrottlingRate", { rate: cpuThrottle });
+      const token = a["token-file"]
+        ? readFileSync(a["token-file"], "utf8").trim()
+        : null;
+      await page.evaluate(
+        (o) =>
+          (
+            window as unknown as { __rsc: { mount(o: unknown): void } }
+          ).__rsc.mount(o),
+        {
+          endpoint: {
+            url: a.ws,
+            resourceBase: a.http,
+            token,
+            protocol,
+            presentation: [1920, 1080],
+          },
+          core: {
+            glueUrl: "/core/rs_gsw_wasm_client.js",
+            wasmUrl: "/core/rs_gsw_wasm_bg.wasm",
+            expectedTree,
+          },
+          creditWindow,
+          creditStage,
+          applyOn,
+          ...(viewports === "off" ? { viewports: false } : {}),
+        },
+      );
+      await page.waitForFunction(
+        () =>
+          (
+            window as unknown as {
+              __rsc: { statuses: { kind: string; firstFrame?: boolean }[] };
+            }
+          ).__rsc.statuses.some((s) => s.kind === "streaming" && s.firstFrame),
+        undefined,
+        { timeout: 30_000 },
+      );
+      const timeline: { t_ms: number; stats: Stats | null }[] = [];
+      const start = Date.now();
+      while (Date.now() - start < measureS * 1000) {
+        const stats = await page.evaluate(() =>
+          (
+            window as unknown as { __rsc: { stats(): Stats | null } }
+          ).__rsc.stats(),
+        );
+        timeline.push({ t_ms: Date.now() - start, stats });
+        await sleep(1000);
+      }
+      const shot = await page.screenshot({ path: join(dir, "presence.png") });
+      const { data, info } = await sharp(shot)
+        .removeAlpha()
+        .raw()
+        .toBuffer({ resolveWithObject: true });
+      let nonBlack = 0;
+      for (let i = 0; i < data.length; i += info.channels)
+        if (data[i] > 16 || data[i + 1] > 16 || data[i + 2] > 16) nonBlack++;
+      const statuses = await page.evaluate(
+        () =>
+          (window as unknown as { __rsc: { statuses: unknown[] } }).__rsc
+            .statuses,
+      );
+      const checks = [
+        { id: "browser-provenance", passed: prov.ok, detail: prov.reasons },
+        { id: "page-is-package-only", passed: harnessInputs.length === 0 },
+        {
+          id: "streaming",
+          passed: !statuses.some(
+            (s) => (s as { kind: string }).kind === "failed",
+          ),
+        },
+        { id: "presence", passed: nonBlack > 100, non_black_pixels: nonBlack },
+      ];
+      report.measurement = {
+        seconds: measureS,
+        cpu_throttle: cpuThrottle,
+        timeline,
+        statuses,
+      };
+      report.checks = checks;
+      await page.evaluate(() =>
+        (window as unknown as { __rsc: { dispose(): void } }).__rsc.dispose(),
+      );
+      console.log(`client-live-check: throughput ${JSON.stringify(checks)}`);
+      return checks.every((c) => c.passed) ? 0 : 1;
+    }
     const gc = async () => {
       await cdp.send("HeapProfiler.collectGarbage");
       await sleep(500);

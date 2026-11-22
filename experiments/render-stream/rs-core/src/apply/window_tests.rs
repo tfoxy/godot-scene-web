@@ -1,4 +1,4 @@
-//! G7q (credit window 2): a receiver may accept
+//! Windowed credit (up to 8 at /18): a receiver may accept
 //! several transactions before one apply, drawing only the last. The applier is delta-driven, so
 //! `prepare` merges every prepared transaction's delta (`TxDelta::merge`). This checks the
 //! result against applying each transaction on its own: after every grouped apply the painted
@@ -41,7 +41,10 @@ fn compare_grouped(name: &str, data: &[u8], group: usize) -> usize {
     let mut in_group = 0usize;
     let mut compared = 0usize;
     for span in &spans[1..] {
-        if !matches!(v.accept(span.bytes(data), span.offset), Ok(Accepted::Transaction)) {
+        if !matches!(
+            v.accept(span.bytes(data), span.offset),
+            Ok(Accepted::Transaction)
+        ) {
             continue;
         }
         seq_applier.prepare(v.state(), v.delta());
@@ -61,14 +64,22 @@ fn compare_grouped(name: &str, data: &[u8], group: usize) -> usize {
             seq_applier.paint_digest(),
             "{name}: seq {seq}, groups of {group}: the grouped apply paints what applying each did"
         );
-        assert_eq!(grouped.scissors(), seq_applier.scissors(), "{name}: seq {seq} scissors");
+        assert_eq!(
+            grouped.scissors(),
+            seq_applier.scissors(),
+            "{name}: seq {seq} scissors"
+        );
         let lowered = |a: &Applier| {
             a.lowered_items()
                 .into_iter()
                 .map(|(id, l)| format!("{id:?} {l:?}"))
                 .collect::<Vec<_>>()
         };
-        assert_eq!(lowered(&grouped), lowered(&seq_applier), "{name}: seq {seq} lowered");
+        assert_eq!(
+            lowered(&grouped),
+            lowered(&seq_applier),
+            "{name}: seq {seq} lowered"
+        );
         compared += 1;
     }
     compared
@@ -96,6 +107,20 @@ fn grouped_apply_matches_sequential_on_goldens() {
         }
     }
     assert!(compared > 0, "no golden recording was compared");
+}
+
+/// /18 may deliver eight transactions before one draw. Delta merging and the based-coding
+/// decoder are ordered per transaction; neither retention bound grows with the credit grant.
+#[test]
+fn group_of_eight_matches_sequential() {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../protocol");
+    for rel in ["golden-6/patch.rs6", "golden-18/window8.rs18"] {
+        let data = std::fs::read(dir.join(rel)).expect("window recording");
+        assert!(
+            compare_grouped(rel, &data, 8) > 0,
+            "{rel}: an entire group of eight applied"
+        );
+    }
 }
 
 #[test]

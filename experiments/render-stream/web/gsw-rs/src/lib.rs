@@ -403,7 +403,9 @@ fn parse_options(json: &str) -> Result<Opts, String> {
     }
     o.summary_log = json.contains("\"log\":\"summary\"");
     o.client_tweens = json.contains("\"client_tweens\":true");
-    o.live_protocol = if json.contains("\"live_protocol\":17") {
+    o.live_protocol = if json.contains("\"live_protocol\":18") {
+        18
+    } else if json.contains("\"live_protocol\":17") {
         17
     } else if json.contains("\"live_protocol\":16") {
         16

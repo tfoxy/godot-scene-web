@@ -5,9 +5,15 @@
 # keeps up.
 #
 #   bash experiments/render-stream/scripts/bench-live-scale.sh --extension EXT --receiver KIND
-#     [--window 1|2] [--protocol 8|9|10|11|12|13|14|15|16] [--bundle DIR] [--out DIR] [--frames N] [--binary PATH]
+#     [--window 1..8] [--protocol 8|9|10|11|12|13|14|15|16|18] [--bundle DIR] [--out DIR] [--frames N] [--binary PATH]
 #     [--calibration PATH] [--min-rate R] [--max-credit-rtt-ms MS] [--viewers N] [--perf]
 #     [--rx-cmd CMD] [-- NAME=value ...]
+#
+# Engine-free: put --engine-free /abs/path/capture/build/rs_live_host FIRST, then
+# --receiver host-only --protocol 16|18 --window 1..8 --out DIR --rx-cmd CMD.
+# Additional options: --items 1024 --frames 3600 --delay-ms 24 --page-port 13832.
+# CMD uses client-live-check.ts --measure-s N --core PREBUILT_DIR (no build in the leg).
+# This path uses the production hub with an animated rectangle scene at 60 Hz; no Godot.
 #
 # --viewers N (1..4, P3-SP) subscribes N receivers of KIND at once (GRC_LIVE_MAX_CONNECTIONS=N, one
 # page port each for a browser kind): their directories are <out>/rx1 .. rxN instead of <out>/rx,
@@ -49,6 +55,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 EXPERIMENT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 REPO_ROOT="$(cd "$EXPERIMENT_DIR/../.." && pwd)"
 FIXTURE="$EXPERIMENT_DIR/fixtures/capture-scale"
+if [ "${1:-}" = --engine-free ]; then
+	exec python3 "$SCRIPT_DIR/lib/bench-live-window.py" "$@"
+fi
 
 EXTENSION="" OUT="" KIND="" WINDOW=2 PROTOCOL=8 BUNDLE="" FRAMES=1200 RX_CMD=""
 BINARY="$HOME/.cache/godot-render-stream/templates/4.5.1-stable/linux_release.x86_64"
@@ -80,8 +89,9 @@ done
 [ -f "$EXTENSION" ] || { echo "bench-live-scale: pass --extension /abs/path/render_stream_capture.gdextension" >&2; exit 2; }
 case "$KIND" in native | gsw | web | null | host-only) ;; *) echo "bench-live-scale: --receiver native|gsw|web|null|host-only" >&2 && exit 2 ;; esac
 [ -z "$RX_CMD" ] || [ "$KIND" = host-only ] || { echo "bench-live-scale: --rx-cmd needs --receiver host-only" >&2; exit 2; }
-case "$WINDOW" in 1 | 2) ;; *) echo "bench-live-scale: --window 1|2" >&2 && exit 2 ;; esac
-case "$PROTOCOL" in 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16) ;; *) echo "bench-live-scale: --protocol 8|9|10|11|12|13|14|15|16" >&2 && exit 2 ;; esac
+case "$WINDOW" in 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8) ;; *) echo "bench-live-scale: --window 1..8" >&2 && exit 2 ;; esac
+case "$PROTOCOL" in 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 18) ;; *) echo "bench-live-scale: --protocol 8|9|10|11|12|13|14|15|16|18" >&2 && exit 2 ;; esac
+[ "$PROTOCOL" = 18 ] || [ "$WINDOW" -le 2 ] || { echo "bench-live-scale: below /18 --window 1|2" >&2; exit 2; }
 case "$VIEWERS" in 1 | 2 | 3 | 4) ;; *) echo "bench-live-scale: --viewers 1..4" >&2 && exit 2 ;; esac
 case "$KIND" in native | null | host-only) ;; *) [ -d "$BUNDLE" ] || { echo "bench-live-scale: --receiver $KIND needs --bundle DIR" >&2; exit 2; } ;; esac
 [ -x "$BINARY" ] || { echo "bench-live-scale: no template at $BINARY" >&2; exit 2; }

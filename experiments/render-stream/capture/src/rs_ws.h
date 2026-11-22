@@ -48,8 +48,8 @@
 //   - max_queued_bytes is a safety net against an unresponsive peer: an
 //     enqueue that would exceed it is refused and the connection is closed
 //     with 1008. Real traffic under credit-based delivery
-//     never approaches it; a sabotage that ignores credit is
-//     expected to.
+//     is bounded by the granted window (up to 8 at /18) and the negotiated message limit;
+//     a sabotage that ignores credit can grow beyond it.
 //   - Bind is loopback-only: ServerConfig::host must be exactly "127.0.0.1"
 //     or "::1"; start() refuses (error "non-loopback") for anything else, unless
 //     ServerConfig::allow_non_loopback also admits an IPv4 or

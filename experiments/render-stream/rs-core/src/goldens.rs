@@ -1406,14 +1406,40 @@ pub fn run_golden(version: u8, read: ReadFn, opts: GoldenOptions) -> Vec<Check> 
                     }
                 }
             }
-            suite.run(&index)
+            if version == 18 {
+                for entry in index["valid"].as_array().into_iter().flatten() {
+                    let file = entry["file"].as_str().unwrap();
+                    if let Some(data) = suite.bytes(file) {
+                        let result = validate_recording(&data, suite.opts());
+                        suite.ok(
+                            result.is_ok(),
+                            format!("validateRecording({file}) is []"),
+                            result.err().map(|e| e.to_string()).unwrap_or_default(),
+                        );
+                    }
+                }
+                for entry in index["invalid"].as_array().into_iter().flatten() {
+                    let options = Options {
+                        version: entry["version"].as_u64().unwrap() as u8,
+                        ..suite.opts()
+                    };
+                    suite.expect_code_opts(
+                        entry["file"].as_str().unwrap(),
+                        entry["code"].as_str().unwrap(),
+                        "validateRecording",
+                        options,
+                    );
+                }
+            } else {
+                suite.run(&index)
+            }
         }
         None => suite.ok(false, "index.json is readable", ""),
     }
     suite.checks
 }
 
-/// golden-2 to golden-16 (or one of them), plus the cross-version `bad-magic` checks.
+/// golden-2 to golden-18 (or one of them), plus the cross-version `bad-magic` checks.
 pub fn run_all(read: ReadFn, only: Option<u8>, opts: GoldenOptions) -> Vec<Check> {
     let mut checks = Vec::new();
     for v in 2..=wire::LATEST {

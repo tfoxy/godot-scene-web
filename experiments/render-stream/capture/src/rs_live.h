@@ -104,9 +104,9 @@
 //                   send after its credit patches to the newest state.
 //   window-overrun  (G7q, a listener sabotage: entry.cpp, LiveConfig::window_overrun_frame) from
 //                   the sabotage frame on, a connection whose window is full still sends at every
-//                   due tick (rate control still applies, unlike ignore-credit): the third in
-//                   flight at window 2, and every one after. Each such send counts in
-//                   sent_without_credit and takes the newest window slot from the oldest seq.
+//                   due tick past w_eff (rate control still applies, unlike ignore-credit).
+//                   Each such send counts in sent_without_credit; once the grant is full it
+//                   takes the newest window slot from the oldest seq.
 //
 // Files, when a tap directory is configured (GRC_LIVE_TAP_DIR):
 //   stream-<connection>.rs2   the exact bytes of every binary message formed for that connection
@@ -129,15 +129,17 @@
 //     (LiveConfig::token_ignored) skips the refusal; `token_ok` still records the comparison.
 //   - window: the host grants w = min(credit_window, LiveConfig::credit_window_max,
 //     kHostCreditWindow) and declares it as the session's `publication.credit_window`.
-//     GRC_LIVE_CREDIT_WINDOW_MAX defaults to 2 (fork F1 resolved, G7wd); window 1 is explicit.
+//     GRC_LIVE_CREDIT_WINDOW_MAX defaults to 8; below /18 hellos still ask at most 2.
 //   - window w (G7q; render-stream-7.md "Credit with window w"): up to w sent transactions hold a
-//     window slot each; a callback with a free slot (and, under rate control, a due tick) sends.
+//     window slot each; a callback below the effective window (and, under rate control, due) sends.
+//     At /18 the effective window is ceil(srtt / host period) + 1, clamped to [min(2,w),w].
+//     Both measurements use EWMA alpha 1/8. Before a credit RTT sample it is min(2,w).
 //     Each transaction is still a patch against the last one sent, so a receiver applies them in
 //     order, possibly several in one frame. Each slot returns on its own seq's credit-stage ack
 //     (acks are per seq, as at window 1), or on a resync for it, which also frees every later
 //     slot (the receiver ignores patches until the full transaction the resync forces; the live
 //     log's resync line lists them as `discarded`). Pins cover every in-flight transaction's
-//     payloads (base_payloads), not only the last sent's. A window-2 connection's frame lines
+//     payloads (base_payloads), not only the last sent's. A windowed connection's frame lines
 //     add `in_flight_seqs` (every slot, oldest first; `in_flight` stays the newest). Window 1 is
 //     byte for byte the delivery above (test/rs_live_window_test.cpp's pinned transcripts).
 // A /6 connection is byte for byte what it was before G7n.
@@ -299,9 +301,9 @@ class ServerTransport : public LiveTransport {
 
 // ----------------------------------------------------------------------------- hub
 
-// The largest credit window the host implements (render-stream-7.md "Publication"; G7q, fork F1).
-// The grant is also capped by GRC_LIVE_CREDIT_WINDOW_MAX, default 2 (G7wd); a hello asking 1 is still granted 1.
-inline constexpr std::uint64_t kHostCreditWindow = 2;
+// The largest /18 credit window. Older hellos remain limited to 1..2.
+// GRC_LIVE_CREDIT_WINDOW_MAX caps the grant (default 8); a hello asking 1 is still granted 1.
+inline constexpr std::uint64_t kHostCreditWindow = 8;
 
 // The subprotocol that makes a connection /7 (render-stream-7.md "Live transport").
 inline constexpr const char *kSubprotocolV7 = "render-stream.7";
@@ -334,6 +336,8 @@ inline constexpr const char *kSubprotocolV15 = "render-stream.15";
 // (viewport surfaces). Opt-in (GRC_STREAM_VERSION=16), listed alone.
 inline constexpr const char *kSubprotocolV16 = "render-stream.16";
 inline constexpr const char *kSubprotocolV17 = "render-stream.17";
+// /18 retains /16 grammar and widens only the credit-window range.
+inline constexpr const char *kSubprotocolV18 = "render-stream.18";
 
 // HC5: where a frame callback's formation jobs run (rs_live.h header, "Formation").
 enum class Formation : std::uint8_t { Inline, Thread };
@@ -386,9 +390,9 @@ struct LiveConfig {
   // GRC_ITEM_META_SABOTAGE's formation half: in-shared, skip-full or id-off-by-one.
   std::uint32_t item_meta_grant = 0;
   std::string item_meta_sabotage;
-  // G7n: GRC_LIVE_CREDIT_WINDOW_MAX (1..2, default 2); every grant is also capped at
+  // GRC_LIVE_CREDIT_WINDOW_MAX (1..8, default 8); every grant is also capped at
   // kHostCreditWindow.
-  std::uint64_t credit_window_max = 2;
+  std::uint64_t credit_window_max = kHostCreditWindow;
   // G7n: the session's bearer token (GRC_LIVE_AUTH=token), checked against a /7 hello's `token`;
   // empty: no session auth, a /7 hello's token is not checked (`token_ok` null).
   std::string auth_token;
@@ -484,9 +488,14 @@ struct ConnectionSummary {
   // (stale-coalesce). Both stay 0 without the sabotage.
   std::uint64_t sent_without_credit = 0;
   std::uint64_t stale_sent = 0;
+  std::uint64_t w_eff = 1;  // current effective credit window
+  std::uint64_t srtt_us = 0;  // EWMA of host-clock credit RTT, 0 before the first sample
+  std::uint64_t pace_period_us = 0;  // /18 connection period including the explicit rate floor
+  std::uint64_t draws_per_s = 0;  // distinct submitted timestamps in the last host-clock second
+  double coalesced_share = 0;  // share of those draws acknowledging at least two distinct seqs
   std::uint64_t max_in_flight = 0;  // sent seqs whose credit-stage ack had not arrived
   std::uint64_t max_queued_bytes = 0;
-  // Rate-control counters (D8, Q3c, G6r); all 0 under the default GRC_PUBLISH_FPS=uncapped.
+  // Rate-control counters; 0 when neither an explicit rate nor /18 draw pacing is active.
   std::uint64_t ticks_due = 0;             // callbacks where the schedule had a tick due
   std::uint64_t ticks_sent = 0;             // due ticks that sent (a subset of `sent`)
   std::uint64_t ticks_credit_blocked = 0;   // due ticks with no credit
@@ -715,12 +724,13 @@ class Hub {
   std::size_t open_connections() const;
   // LF1 (the window hold, entry.cpp GRC_LIVE_HOLD_WINDOWS): of the streaming connections, those
   // whose newest applied or submitted ack names a host frame before `from` (`lagging`), and how
-  // many of those have no free credit slot (`blocked`).
+  // many of those have no free credit slot (`blocked`). With now_ns, preview the next callback's
+  // adaptive window: a long hold can lower it before that callback publishes.
   struct HoldView {
     std::size_t lagging = 0;
     std::size_t blocked = 0;
   };
-  HoldView hold_view(std::uint64_t from) const;
+  HoldView hold_view(std::uint64_t from, std::uint64_t now_ns = 0) const;
   // LF1 (the recovery hold, entry.cpp GRC_LIVE_HOLD_RECOVERY_FRAMES): the longest pending episode,
   // in host frames, that a send of the last frame callback ended (0: no send ended one).
   std::uint64_t backlog_sent_frames() const { return backlog_sent_frames_; }
@@ -802,11 +812,11 @@ class Hub {
   void close_files(Conn &c);
 
   // Returns true when `now_ns` is at or past a connection's next due tick (G6r); always true
-  // under GRC_PUBLISH_FPS=uncapped (config_.publish_period_ns == 0) or before its schedule has
+  // with no explicit period or /18 draw cap, or before its schedule has
   // started (its very first send, right after the hello, is never rate-gated).
   bool tick_due(const Conn &c, std::uint64_t now_ns) const;
   // Starts (first send) or advances (every later send) a connection's schedule after it sends at
-  // `now_ns`. No-op under GRC_PUBLISH_FPS=uncapped.
+  // `now_ns`. An uncapped connection only records its last publication time.
   void advance_schedule(Conn &c, std::uint64_t now_ns);
 
   // P3-SP: one frame callback's shared work. HC5: the formation memo is the job runner's.

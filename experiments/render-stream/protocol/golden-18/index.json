@@ -1,0 +1,94 @@
+{
+  "schema": "render-stream-18-golden-index/1",
+  "protocol": "render-stream/18",
+  "valid": [
+    {
+      "file": "window1.rs18",
+      "sha256": "0fcae9e6aa5b4ab33ab8ba28c19a68264c1d96b00ccb4d3913b6ac58b29693ad"
+    },
+    {
+      "file": "window2.rs18",
+      "sha256": "cfa97e9f866304d02582e7b42e1beb295f0ed96b074c7691f5931e041d2bd99c"
+    },
+    {
+      "file": "window4.rs18",
+      "sha256": "bcb59abc0022a9915cdeb923f3b9baf4bfed85d47e5c10933cba9252b4cd6b16"
+    },
+    {
+      "file": "window8.rs18",
+      "sha256": "9890e8dd2492fc6de629a17f31d5139be638e67d9295952aa92b85ae9a59bd94"
+    }
+  ],
+  "invalid": [
+    {
+      "file": "invalid/window0.rs18",
+      "version": 18,
+      "code": "publication-entry"
+    },
+    {
+      "file": "invalid/window9.rs18",
+      "version": 18,
+      "code": "publication-entry"
+    },
+    {
+      "file": "invalid/file-window8.rs18",
+      "version": 18,
+      "code": "publication-entry"
+    },
+    {
+      "file": "invalid/window3.rs7",
+      "version": 7,
+      "code": "publication-entry"
+    },
+    {
+      "file": "invalid/window3.rs8",
+      "version": 8,
+      "code": "publication-entry"
+    },
+    {
+      "file": "invalid/window3.rs9",
+      "version": 9,
+      "code": "publication-entry"
+    },
+    {
+      "file": "invalid/window3.rs10",
+      "version": 10,
+      "code": "publication-entry"
+    },
+    {
+      "file": "invalid/window3.rs11",
+      "version": 11,
+      "code": "publication-entry"
+    },
+    {
+      "file": "invalid/window3.rs12",
+      "version": 12,
+      "code": "publication-entry"
+    },
+    {
+      "file": "invalid/window3.rs13",
+      "version": 13,
+      "code": "publication-entry"
+    },
+    {
+      "file": "invalid/window3.rs14",
+      "version": 14,
+      "code": "publication-entry"
+    },
+    {
+      "file": "invalid/window3.rs15",
+      "version": 15,
+      "code": "publication-entry"
+    },
+    {
+      "file": "invalid/window3.rs16",
+      "version": 16,
+      "code": "publication-entry"
+    },
+    {
+      "file": "invalid/window3.rs17",
+      "version": 17,
+      "code": "publication-entry"
+    }
+  ]
+}

@@ -169,13 +169,13 @@
 // request carrying any other Origin gets 403 on every route, logged to stdout.log as
 // `live: 403 origin <origin> ...` (an OriginRejected event), and an allowed origin's resource
 // GETs and preflights speak CORS. A preflight is an http-get hook-log line with
-// "method":"OPTIONS". GRC_LIVE_CREDIT_WINDOW_MAX (1..2, default 2) caps the hello's window
-// (G7q implements window 2, fork F1, opt-in). Listener sabotages (GRC_SABOTAGE, all need
+// "method":"OPTIONS". GRC_LIVE_CREDIT_WINDOW_MAX (1..8, default 8) caps the hello's window
+// (/18 accepts up to 8; older hellos remain limited to 2). Listener sabotages (GRC_SABOTAGE, all need
 // GRC_LIVE_LISTEN): no-cors (no Access-Control-* header at all), accept-any-origin (the
 // allowlist is ignored), token-ignored (a wrong /7 hello token is not refused; needs
 // GRC_LIVE_AUTH=token) and window-overrun (G7q: from GRC_SABOTAGE_FRAME on, default 1, every
-// connection keeps publishing at each due tick past a full credit window, the third in flight
-// at window 2 and every one after), and coding-wrong-prefix (W11t: needs GRC_STREAM_VERSION=11
+// connection keeps publishing at each due tick past its effective credit window), and
+// coding-wrong-prefix (W11t: needs GRC_STREAM_VERSION=11
 // and GRC_LIVE_CODING=zstd-base; from GRC_SABOTAGE_FRAME on, default 1, the first based /11
 // transaction is coded against its base plus one byte, render-stream-11.md "As built (W11t)"),
 // and predict-stale (W13b: needs GRC_STREAM_VERSION=13; from GRC_SABOTAGE_FRAME on, default 1,
@@ -485,7 +485,7 @@ struct Live {
   std::vector<std::string> allowed_origins;
   // GRC_LIVE_EXPOSE. Recorded in live-carriers.json only.
   live::Expose expose = live::Expose::Loopback;
-  uint64_t credit_window_max = 2;
+  uint64_t credit_window_max = rs2::kHostCreditWindow;
   std::string listener_sabotage;
   std::string live_coding = "zstd-base";  // W11t: GRC_LIVE_CODING (what /11 hellos may get)
   // G8kz: GRC_HTTP_ENCODING (default zstd,gzip): the codings the host offers on resource
@@ -984,8 +984,9 @@ std::string result_json() {
   if (g_stream.gate8.speaks_v8()) {
     json.key("gate8").object_begin();
     json.field("file_stream_version", static_cast<int64_t>(
-                   g_stream.gate8.file_version == rs2::ProtocolVersion::V17 ? 17
-                   : g_stream.gate8.speaks_v16()   ? 16
+                   g_stream.gate8.speaks_v18()   ? 18
+                   : g_stream.gate8.file_version == rs2::ProtocolVersion::V17 ? 17
+                   : g_stream.gate8.speaks_v16() ? 16
                    : g_stream.gate8.speaks_v15() ? 15
                    : g_stream.gate8.speaks_v14() ? 14
                    : g_stream.gate8.speaks_v13() ? 13
@@ -1656,6 +1657,12 @@ void perf_timeline_tick(uint64_t now_ns) {
               // credit round trip's running totals (a window's mean RTT, in us and host frames).
               ",\"acks\":[" + std::to_string(s.acks[0]) + "," + std::to_string(s.acks[1]) + "," +
               std::to_string(s.acks[2]) + "]" +
+              (s.version >= 18 ? ",\"w_eff\":" + std::to_string(s.w_eff) +
+                                     ",\"srtt_us\":" + std::to_string(s.srtt_us) +
+                                     ",\"pace_period_us\":" + std::to_string(s.pace_period_us) +
+                                     ",\"draws_per_s\":" + std::to_string(s.draws_per_s) +
+                                     ",\"coalesced_share\":" + std::to_string(s.coalesced_share)
+                               : std::string()) +
               ",\"max_in_flight\":" + std::to_string(s.max_in_flight) +
               ",\"max_queued_bytes\":" + std::to_string(s.max_queued_bytes) +
               ",\"credit_rtt_count\":" + std::to_string(s.credit_rtt_count) +
@@ -1669,7 +1676,7 @@ void perf_timeline_tick(uint64_t now_ns) {
               // P3-SP: transactions re-stamped from another connection's encode (shared
               // publication); 0 for a lone connection.
               ",\"shared_sends\":" + std::to_string(s.shared_sends) +
-              // G7q: a window-2 connection's grant (credit capacity is w / RTT); absent at 1.
+              // A windowed connection's grant (credit capacity is w / RTT); absent at 1.
               (s.credit_window > 1 ? ",\"credit_window\":" + std::to_string(s.credit_window)
                                    : std::string()) +
               "}";
@@ -2951,10 +2958,11 @@ void stream_start() {
     } else if (!live_carriers_ok(&why)) {
       // only `ws` is built in; `wt` loads from the net module and registered carriers from the registry.
       live_ok = false;
-    } else if (!env_positive("GRC_LIVE_CREDIT_WINDOW_MAX", 2, &live_config.credit_window_max) ||
-               live_config.credit_window_max > 2) {
+    } else if (!env_positive("GRC_LIVE_CREDIT_WINDOW_MAX", rs2::kHostCreditWindow,
+                             &live_config.credit_window_max) ||
+               live_config.credit_window_max > rs2::kHostCreditWindow) {
       live_ok = false;
-      why = "invalid GRC_LIVE_CREDIT_WINDOW_MAX (1 or 2)";
+      why = "invalid GRC_LIVE_CREDIT_WINDOW_MAX (1..8)";
     } else if (!parse_http_encoding(grc::rs::env("GRC_HTTP_ENCODING"), &g_live.http_codings,
                                     &why)) {
       live_ok = false;
@@ -3176,8 +3184,9 @@ void stream_start() {
   // ID3: GRC_STREAM_VERSION=14 selects /14 (render-stream-14.md): /13 plus item_meta v2.
   // GRC_STREAM_VERSION=15 selects /15 (render-stream-15.md): /14 plus hints and size_override.
   // VS2: GRC_STREAM_VERSION=16 selects /16 (render-stream-16.md): /15 plus viewport surfaces.
-  session.version = g_stream.gate8.file_version == rs2::ProtocolVersion::V17 ? rs2::ProtocolVersion::V17
-                    : g_stream.gate8.speaks_v16()   ? rs2::ProtocolVersion::V16
+  session.version = g_stream.gate8.speaks_v18()   ? rs2::ProtocolVersion::V18
+                    : g_stream.gate8.file_version == rs2::ProtocolVersion::V17 ? rs2::ProtocolVersion::V17
+                    : g_stream.gate8.speaks_v16() ? rs2::ProtocolVersion::V16
                     : g_stream.gate8.speaks_v15() ? rs2::ProtocolVersion::V15
                     : g_stream.gate8.speaks_v14() ? rs2::ProtocolVersion::V14
                     : g_stream.gate8.speaks_v13() ? rs2::ProtocolVersion::V13
@@ -3718,7 +3727,8 @@ void stream_start() {
                                                    rs2::kSubprotocolV9, rs2::kSubprotocolV10,
                                                    rs2::kSubprotocolV11, rs2::kSubprotocolV12,
                                                    rs2::kSubprotocolV13, rs2::kSubprotocolV14,
-                                                   rs2::kSubprotocolV15, rs2::kSubprotocolV16, rs2::kSubprotocolV17};
+                                                   rs2::kSubprotocolV15, rs2::kSubprotocolV16,
+                                                   rs2::kSubprotocolV17, rs2::kSubprotocolV18};
     {
       // ID3: the list itself, for the pure-path check (identical without a v2 grant).
       std::string names;
@@ -4594,7 +4604,9 @@ void live_await_first_hello(uint64_t frame) {
 // every streaming connection has applied (or submitted) a transaction from inside the window.
 // Sends happen only in the frame callback, so the hold has two phases: before this frame's publish,
 // until each lagging connection has a free credit slot; after it, until each one's newest
-// applied or submitted ack names a frame >= `from`. A receiver that kept up acked one before `to`,
+// applied or submitted ack names a frame >= `from`. At wider windows the credit phase may
+// finish immediately while the viewer still lags: phase 2 must run independently of phase 1.
+// A receiver that kept up acked one before `to`,
 // so for it the hold is a no-op; a slow one can no longer fold past a window, nor see the host run
 // through one with no transaction in it. A `<q>-<q>` window marks the timeline's last frame q
 // (the fixture's quit) and holds it until every receiver applied q itself. GRC_LIVE_HOLD_MS caps each phase (default 10000); a cap that runs out
@@ -4602,7 +4614,7 @@ void live_await_first_hello(uint64_t frame) {
 // host is byte for byte what it was.
 // GRC_LIVE_HOLD_RECOVERY_FRAMES=<n> (a stall leg's knob beside it) holds, after the publish, a
 // callback whose send ended a pending episode of at least n frames (a receiver stall's recovery)
-// until every receiver applied it: a stall leaves both credit slots of window 2 free at once, so
+// until every receiver applied it: a stall can leave several credit slots free at once, so
 // without it the next frame's send can arrive before the recovery is applied and fold it away,
 // and the post-stall shot shows that later send instead (a stale-coalesce sabotage then looks
 // one frame stale, or not stale at all).
@@ -4710,7 +4722,7 @@ uint64_t live_hold_after_publish(uint64_t frame) {
 // drain at `frame` follows.
 void live_hold_phase(uint64_t frame, uint64_t from, bool credit, uint64_t drain_frame) {
   const auto done = [&]() {
-    const rs2::Hub::HoldView v = g_live.hub->hold_view(from);
+    const rs2::Hub::HoldView v = g_live.hub->hold_view(from, monotonic_ns());
     return credit ? v.blocked == 0 : v.lagging == 0;
   };
   if (done()) {

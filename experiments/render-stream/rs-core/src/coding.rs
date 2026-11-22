@@ -19,7 +19,9 @@
 //!
 //! The host's base for T is the last transaction it sent on the connection, so the decoder keeps
 //! the uncoded message of each transaction it decoded until a later message's base moves past it:
-//! one at window 1, two at window 2, never more than [`MAX_BASES`].
+//! the current message and its predecessor, regardless of the credit window (including /18's
+//! window 8). Decoding is ordered even when several transactions precede one apply. The bound
+//! remains [`MAX_BASES`].
 //!
 //! [`seq`]: LiveDecoder::seq
 
@@ -32,8 +34,8 @@ pub const ENVELOPE_MAGIC: u32 = 0x184D_2A5B;
 pub const ZSTD_MAGIC: u32 = 0xFD2F_B528;
 /// The envelope's length: magic, u32 content length (16), seq, base_seq.
 pub const ENVELOPE_LEN: usize = 24;
-/// The most bases a decoder keeps (window 2 needs two; one more absorbs a host that is a message
-/// ahead of the receiver's retention at a resync).
+/// The most bases a decoder keeps: a last-sent-base chain needs only the current message and
+/// its predecessor, even at window 8. One spare bounds retention across a resync.
 pub const MAX_BASES: usize = 3;
 
 /// The `live_coding` hello value of a receiver that keeps bases (its preference order).
@@ -638,6 +640,29 @@ mod tests {
             assert_eq!(d.coded(), Some(true));
             assert_eq!(d.stats.prefixed > 0, name == "patch", "{name}");
         }
+    }
+
+    #[test]
+    fn eight_unapplied_messages_need_only_the_last_sent_bases() {
+        let (coded, expected) = golden("patch");
+        let messages = split_messages(&coded).unwrap();
+        let mut decoder = LiveDecoder::new(true, 1 << 24);
+        let mut groups = 0;
+        for (g, batch) in messages.chunks(8).enumerate() {
+            for (i, message) in batch.iter().enumerate() {
+                assert_eq!(decoder.decode(message).unwrap(), Outcome::Decoded);
+                assert_eq!(decoder.output(), expected[g * 8 + i]);
+                assert!(
+                    decoder.retained().len() <= 2,
+                    "credit does not govern coding retention"
+                );
+            }
+            groups += usize::from(batch.len() == 8);
+        }
+        assert!(
+            groups > 0,
+            "decoded a complete window without an intervening apply"
+        );
     }
 
     #[test]

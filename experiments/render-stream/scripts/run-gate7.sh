@@ -198,7 +198,7 @@
 #             per kind (lib/gate7p-checks.ts, report-gate7.ts) and, with G7P_DEVICE_EVIDENCE (a CSV of
 #             G7v run directories), the g31 rows from G7v's run.
 #
-# --credit-window 1|2 (G7q; the default is 2,
+# --credit-window 1..8 (G7q; the default is 2,
 # window 1 is explicit; `--live` only): exports
 # GATE7_CREDIT_WINDOW to the gate runners, so every live host's GRC_LIVE_CREDIT_WINDOW_MAX and
 # every live browser receiver's hello ask for that window (lib/gamescope.sh, lib/legs.sh), and

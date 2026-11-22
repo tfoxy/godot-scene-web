@@ -288,7 +288,7 @@ export interface LoopOptions {
   core: StreamCore;
   transport: RenderStreamTransportFactory;
   endpoint: RenderStreamEndpoint;
-  creditWindow: 1 | 2;
+  creditWindow?: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
   /** The hello's credit stage: the ack the host waits on. Default `applied`. */
   creditStage?: CreditStage;
   /** Where a transaction with every payload in is applied (acked `applied`): `frame` (the next
@@ -786,7 +786,7 @@ export class StreamLoop {
     this.send(
       clientHello({
         protocol: this.protocol(),
-        creditWindow: this.o.creditWindow,
+        creditWindow: this.o.creditWindow ?? (this.protocol() >= 18 ? 8 : 2),
         creditStage: this.creditStage,
         token: this.endpoint.token,
         backing: c.backing,
@@ -982,7 +982,7 @@ export class StreamLoop {
       full: m.full,
       needed: m.needed,
     };
-    if (this.pending !== null && this.windowTwo()) {
+    if (this.pending !== null && this.windowed()) {
       this.foldIntoPending(this.pending, item);
       return;
     }
@@ -1414,8 +1414,8 @@ export class StreamLoop {
 
   // ----------------------------------------------------------------------- transactions
 
-  /** The session granted credit window 2. */
-  private windowTwo(): boolean {
+  /** The session granted multiple in-flight transactions. */
+  private windowed(): boolean {
     return this.grantedWindow >= 2;
   }
 
@@ -1455,7 +1455,7 @@ export class StreamLoop {
     this.queue = [];
     const item = queued[queued.length - 1];
     const firstNeeder = new Map<string, number>();
-    if (this.windowTwo()) {
+    if (this.windowed()) {
       for (const q of queued)
         for (const n of q.needed)
           if (!firstNeeder.has(n.hash)) firstNeeder.set(n.hash, q.seq);
@@ -1632,7 +1632,7 @@ export class StreamLoop {
    * one the state no longer names). */
   private folding(): boolean {
     const f = this.fetcher;
-    if (f === null || !this.windowTwo()) return false;
+    if (f === null || !this.windowed()) return false;
     if (
       this.deferred.size === 0 &&
       this.stale.size === 0 &&

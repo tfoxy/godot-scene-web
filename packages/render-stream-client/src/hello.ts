@@ -58,7 +58,8 @@ export function helloV9(
     | "render-stream/14"
     | "render-stream/15"
     | "render-stream/16"
-    | "render-stream/17" = "render-stream/9",
+    | "render-stream/17"
+    | "render-stream/18" = "render-stream/9",
   liveCoding = "",
 ): Record<string, unknown> {
   return {
@@ -111,7 +112,7 @@ export function coreStartOptions(
 export interface ClientHelloFacts {
   clientTweens?: boolean;
   protocol: RenderStreamProtocol;
-  creditWindow: 1 | 2;
+  creditWindow: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
   /** The credit stage; default `submitted`. */
   creditStage?: "submitted" | "applied";
   token: string | null;
@@ -146,14 +147,16 @@ export function clientProtocol(
   resourceHints = false,
   clientTweens = false,
 ): RenderStreamProtocol {
-  if (clientTweens && protocol !== 17)
-    throw new TypeError("render-stream client: clientTweens needs protocol 17");
-  if (protocol === 17) return 17;
+  if (clientTweens && protocol < 17)
+    throw new TypeError(
+      "render-stream client: clientTweens needs protocol 17 or later",
+    );
+  if (protocol >= 17) return protocol;
   if (itemMeta && protocol < 13)
     throw new TypeError(
       "render-stream client: item_meta (an extension's wants) needs protocol 13 or later",
     );
-  if (protocol === 16) return 16;
+  if (protocol >= 16) return protocol;
   if (resourceHints) {
     if (protocol < 13)
       throw new TypeError(
@@ -178,6 +181,15 @@ function hasV2(itemMeta: ClientHelloFacts["itemMeta"]): boolean {
  * carries the KTX2 transcoder), no manifest, and the
  * `zstd-base,zstd` live coding offer last. */
 export function clientHello(f: ClientHelloFacts): Record<string, unknown> {
+  const maxWindow = f.protocol >= 18 ? 8 : 2;
+  if (
+    !Number.isInteger(f.creditWindow) ||
+    f.creditWindow < 1 ||
+    f.creditWindow > maxWindow
+  )
+    throw new TypeError(
+      `render-stream client: creditWindow must be in 1..${maxWindow}`,
+    );
   const hello = helloV9(
     {
       type: "hello",
@@ -218,9 +230,9 @@ export function clientHello(f: ClientHelloFacts): Record<string, unknown> {
     };
   }
   if (f.clientTweens) {
-    if (f.protocol !== 17)
+    if (f.protocol < 17)
       throw new TypeError(
-        "render-stream client: clientTweens needs protocol 17",
+        "render-stream client: clientTweens needs protocol 17 or later",
       );
     hello.client_tweens = true;
   }
