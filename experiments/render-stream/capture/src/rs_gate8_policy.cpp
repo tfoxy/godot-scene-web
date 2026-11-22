@@ -43,6 +43,21 @@ bool sabotage_needs_v12(rs2::SabotageKind kind) {
          kind == rs2::SabotageKind::FreezeSendPositions;
 }
 
+HookVersionPlan hook_version_plan(const char *stream_version) {
+  HookVersionPlan plan;
+  if (stream_version == nullptr || stream_version[0] == '\0') return plan;
+  int version = 0;
+  for (const char *c = stream_version; *c != '\0'; ++c) {
+    if (*c < '0' || *c > '9' || version > 1000) return plan;
+    version = version * 10 + (*c - '0');
+  }
+  plan.backbuffer = version >= 10;
+  plan.multimesh = version >= 11;
+  plan.particles = version >= 12;
+  plan.size_override = version >= 15;
+  return plan;
+}
+
 bool sabotage_needs_v11(rs2::SabotageKind kind) {
   return kind == rs2::SabotageKind::CvChurn || kind == rs2::SabotageKind::StaleDynamic ||
          kind == rs2::SabotageKind::KeepCarried || kind == rs2::SabotageKind::PerturbInstance ||

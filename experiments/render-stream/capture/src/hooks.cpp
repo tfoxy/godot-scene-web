@@ -20,6 +20,7 @@
 #include "report.h"
 #include "rs_canvas_texture_shim.h"
 #include "rs_mesh_payload.h"
+#include "rs_gate8_policy.h"
 #include "rs_mirror.h"
 #include "rs_standby.h"
 #include "rs_particles_shim.h"
@@ -6898,28 +6899,13 @@ bool hooks_plan(const Calibration &calib, HookPlan *plan) {
   // CG1: the back-buffer hooks exist for /10's item keys only (GRC_STREAM_VERSION=10; W11b: and
   // /11, which carries them too).
   const char *stream_version = grc::rs::env("GRC_STREAM_VERSION");
-  // PM5: /12 installs /10's and /11's conditional hooks too, plus the 33 particles hooks.
-  // W13b: /13 is /12 with predicted blocks: the same hooks. /14 and /15 are /13 plus records
-  // that need none of these hooks, so they install the same set.
-  // VS2: /16 is /15 plus viewport surfaces, so it installs /15's set too.
-  const bool v12_wanted =
-      stream_version != nullptr &&
-      (std::strcmp(stream_version, "12") == 0 || std::strcmp(stream_version, "13") == 0 ||
-       std::strcmp(stream_version, "14") == 0 || std::strcmp(stream_version, "15") == 0 ||
-       std::strcmp(stream_version, "16") == 0);
-  // render-stream-15.md "Size override": texture_set_size_override is /15's (its key and its
-  // version bump are /15's; /16 carries them too), so below /15 it is neither planned nor omitted.
-  const bool v15_wanted = stream_version != nullptr && (std::strcmp(stream_version, "15") == 0 ||
-                                                        std::strcmp(stream_version, "16") == 0);
-  const bool backbuffer_hooks_wanted =
-      stream_version != nullptr &&
-      (std::strcmp(stream_version, "10") == 0 || std::strcmp(stream_version, "11") == 0 ||
-       v12_wanted);
-  // PM1: the twelve multimesh hooks exist for /11's multimesh table only (GRC_STREAM_VERSION=11;
-  // PM5: and /12).
-  const bool multimesh_hooks_wanted =
-      stream_version != nullptr && (std::strcmp(stream_version, "11") == 0 || v12_wanted);
-  const bool particles_hooks_wanted = v12_wanted;
+  // PM5: /12 installs /10's and /11's conditional hooks too, plus the 33 particles hooks; /15 adds
+  // texture_set_size_override. Every later version carries them (hook_version_plan's thresholds).
+  const grc::rs::HookVersionPlan version_plan = grc::rs::hook_version_plan(stream_version);
+  const bool v15_wanted = version_plan.size_override;
+  const bool backbuffer_hooks_wanted = version_plan.backbuffer;
+  const bool multimesh_hooks_wanted = version_plan.multimesh;
+  const bool particles_hooks_wanted = version_plan.particles;
   g_canvas_group_mode_invalid.store(0);
   for (size_t i = 0; i < kHookCount; ++i) {
     g_mm_seen[i].store(0);

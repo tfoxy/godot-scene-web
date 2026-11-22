@@ -122,6 +122,19 @@ bool parse_resource_hints(const char *value, bool *on, std::string *error);
 bool parse_gate8_policy(const char *stream_version, const char *adopt, const char *texture_decode,
                         const char *resource_formats, Gate8Policy *out, std::string *error);
 
+// The conditional hook families a GRC_STREAM_VERSION installs. Every version from /12 on is a
+// superset of /12's wire (later versions add records, blocks or keys that need no further hook),
+// so the families are thresholds, not a list of known versions: a list silently dropped particles,
+// multimesh and back-buffer hooks the first time a version was added without editing it.
+struct HookVersionPlan {
+  bool backbuffer = false;     // /10 and /11's item keys, carried from /12 on
+  bool multimesh = false;      // /11's multimesh table, carried from /12 on
+  bool particles = false;      // /12's GPU particles
+  bool size_override = false;  // /15's texture_set_size_override
+};
+// Null, empty or non-numeric means no conditional hooks (a /6 stream).
+HookVersionPlan hook_version_plan(const char *stream_version);
+
 // True for the seven sabotage kinds new at /8 (render-stream-8.md "Sabotage kinds").
 bool sabotage_needs_v8(rs2::SabotageKind kind);
 

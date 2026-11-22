@@ -664,6 +664,32 @@ void test_v18_policy() {
         "/18 preserves /17 and /16 availability under a gate 8 policy");
 }
 
+void test_hook_version_plan() {
+  using grc::rs::hook_version_plan;
+  for (const char *none : {static_cast<const char *>(nullptr), "", "6", "8", "9", "x", "1x", "-12"}) {
+    const auto plan = hook_version_plan(none);
+    check(!plan.backbuffer && !plan.multimesh && !plan.particles && !plan.size_override,
+          "versions below /10 and unparsable values install no conditional hooks");
+  }
+  auto plan = hook_version_plan("10");
+  check(plan.backbuffer && !plan.multimesh && !plan.particles && !plan.size_override,
+        "/10 installs only the back-buffer hooks");
+  plan = hook_version_plan("11");
+  check(plan.backbuffer && plan.multimesh && !plan.particles && !plan.size_override,
+        "/11 adds the multimesh hooks");
+  for (const char *v : {"12", "13", "14"}) {
+    plan = hook_version_plan(v);
+    check(plan.backbuffer && plan.multimesh && plan.particles && !plan.size_override,
+          "/12 to /14 add the particles hooks");
+  }
+  // Every version from /15 on, including ones newer than this test, keeps all four families.
+  for (const char *v : {"15", "16", "17", "18", "19", "25"}) {
+    plan = hook_version_plan(v);
+    check(plan.backbuffer && plan.multimesh && plan.particles && plan.size_override,
+          "/15 and every later version install all four conditional hook families");
+  }
+}
+
 int main() {
   test_defaults();
   test_values();
@@ -680,6 +706,7 @@ int main() {
   test_delivery_seam();
   test_subprotocols();
   test_seams();
+  test_hook_version_plan();
   if (g_failures != 0) {
     std::fprintf(stderr, "%d failure(s)\n", g_failures);
     return 1;
