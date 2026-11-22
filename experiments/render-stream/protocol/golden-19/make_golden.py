@@ -129,7 +129,8 @@ def downgrade(data):
 def build():
     outputs = {}
     index = dict(schema='render-stream-19-golden-index/1', protocol='render-stream/19', valid=[], invalid=[])
-    old = g17.build()
+    # Inherit the original /17 vectors; associated recordings are added per version below.
+    old = g17.build(include_associated=False)
     old_index = json.loads(old['index.json'])
     for group in ('valid', 'invalid'):
         for entry in old_index[group]:
@@ -198,6 +199,14 @@ def build():
         file = 'invalid/'+name+'.rs19'
         outputs[file] = associated(m, v, bad=name)
         index['invalid'].append(dict(file=file, error='tween-entry'))
+    for name, code, kwargs in [
+        ('tween-without-grant', 'meta-schema', {'grant': False}),
+        ('client-tweens-key-order', 'meta-schema', {'bad': 'client-tweens-key-order'}),
+        ('missing-t-us', 'tween-association', {'bad': 'missing-t-us'}),
+    ]:
+        file = 'invalid/'+name+'.rs19'
+        outputs[file] = g17.node_recording(19, **kwargs)
+        index['invalid'].append(dict(file=file, error=code))
     outputs['index.json'] = (json.dumps(index, indent=2)+'\n').encode()
     return outputs
 

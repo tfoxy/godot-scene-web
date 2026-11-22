@@ -1507,7 +1507,7 @@ pub fn run_golden(version: u8, read: ReadFn, opts: GoldenOptions) -> Vec<Check> 
                         &file,
                         "recording validation",
                     );
-                    if let Some(old) = suite.bytes(entry["rs16"].as_str().unwrap_or_default()) {
+                    if let Some(old) = entry["rs16"].as_str().and_then(|name| suite.bytes(name)) {
                         let down = crate::item_meta::restamp(&bytes, 17, 16);
                         suite.ok(
                             down.as_ref().is_ok_and(|d| *d == old),
@@ -1516,6 +1516,44 @@ pub fn run_golden(version: u8, read: ReadFn, opts: GoldenOptions) -> Vec<Check> 
                         );
                     }
                 }
+            }
+            for entry in index["invalid"].as_array().into_iter().flatten() {
+                let file = entry["file"].as_str().unwrap();
+                let Some(data) = suite.bytes(file) else {
+                    suite.ok(false, file, "missing");
+                    continue;
+                };
+                let version = entry["version"].as_u64().unwrap_or(17) as u8;
+                let result = if entry["record_only"] == true {
+                    crate::tweens::decode_version(&data, 0, version, &mut Default::default())
+                        .and_then(|r| {
+                            let a = &entry["association"];
+                            if a.is_object()
+                                && (a["seq"] != r.seq
+                                    || a["frame"] != r.frame
+                                    || a["t_us"] != r.time)
+                            {
+                                Err(Error::new(
+                                    "tween-association",
+                                    "golden associated picture mismatch",
+                                ))
+                            } else {
+                                Ok(())
+                            }
+                        })
+                } else {
+                    validate_recording(&data, Options::new(version))
+                };
+                suite.ok(
+                    result
+                        .as_ref()
+                        .is_err_and(|e| e.code == entry["error"].as_str().unwrap()),
+                    file,
+                    result
+                        .err()
+                        .map(|e| e.to_string())
+                        .unwrap_or_else(|| "accepted invalid vector".into()),
+                );
             }
         }
         Some(mut index) => {

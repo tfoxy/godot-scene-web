@@ -1,5 +1,5 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
-// Self-test for the render-stream/2, /3, /4, /5 AND /6 TypeScript decoder/validator/resolver
+// Self-test for the render-stream/2 through /19 TypeScript decoder/validator/resolver
 // (lib/render-stream-2.ts) against the golden vectors they share with the C++ codec/diff and the
 // Rust core (until G7gd also a GDScript decoder) (protocol/golden-2/, render-stream-2.md; protocol/golden-3/,
 // render-stream-3.md; protocol/golden-4/, render-stream-4.md; protocol/golden-5/,
@@ -72,6 +72,15 @@
 //     patch.rs15 re-stamped /16 for the session key, the table and its patches, viewport_f32 after
 //     pt_f32 and alone, the two kinds, the three reasons, the derived entry through a proxy, the
 //     resolved form, each new code, and the below-/16 and "viewports":"off" gates.
+//   - version17SessionCases(): hand-made /17-/19 streams for the client_tweens grant,
+//     transaction timestamps, their ordered keys and version gates, and /19's credit range.
+//   - version17TweenCases(): node/material record placement, association, offsets, timing,
+//     resolved baselines and live tween IDs/precedence across transactions.
+//   - golden-17/-18/-19 (render-stream-17.md, render-stream-18.md, render-stream-19.md):
+//     runTweenSuite(): every valid entry's sha256 and validation; record_only entries decode
+//     to their companion's meta and tween_f32; every invalid entry fails with its exact error
+//     or code at its listed version, respecting association/grant/items; /19's listed to18
+//     companion validates at /18.
 //
 // Exits non-zero if any assertion fails.
 
@@ -114,6 +123,7 @@ import {
   transactionParticleEmits,
   transactionParticles,
   validateRecording,
+  validateTweenRecord,
   wireVersionOf,
   xxh64Hex,
 } from "../lib/render-stream-2";
@@ -246,6 +256,23 @@ interface IndependentLeg {
   sha256: string;
   resolved: string;
 }
+
+type TweenGoldenEntry = {
+  file: string;
+  sha256?: string;
+  decoded?: string;
+  to18?: string;
+  error?: string;
+  code?: string;
+} & (
+  | ({ record_only: true; version?: 17 | 18 | 19 } & NonNullable<
+      Parameters<typeof validateTweenRecord>[2]
+    >)
+  | {
+      record_only?: false;
+      version?: NonNullable<Parameters<typeof validateRecording>[1]>;
+    }
+);
 
 let failures = 0;
 
@@ -747,6 +774,69 @@ async function runSuite(
   }
 }
 
+// /17-/19 use smaller indexes than the shared /2-/16 resolved-scene suites, with
+// standalone tween records as well as recordings and two error-code key spellings.
+async function runTweenSuite(version: 17 | 18 | 19): Promise<void> {
+  const goldenDir = resolve(SCRIPT_DIR, `../../protocol/golden-${version}`);
+  const label = `golden-${version}`;
+  const index = JSON.parse(
+    await readFile(join(goldenDir, "index.json"), "utf8"),
+  ) as { valid: TweenGoldenEntry[]; invalid: TweenGoldenEntry[] };
+
+  for (const kind of ["valid", "invalid"] as const) {
+    for (const entry of index[kind]) {
+      const bytes = await readBytes(goldenDir, entry.file);
+      const raw = { bytes, offset: 0, byte_length: bytes.length };
+      const errors = entry.record_only
+        ? validateTweenRecord(raw, entry.version ?? version, entry)
+        : validateRecording(bytes, entry.version ?? version);
+      if (kind === "invalid") {
+        const expected = entry.error ?? entry.code;
+        ok(
+          expected !== undefined &&
+            errors.length === 1 &&
+            errors[0].split(":")[0] === expected,
+          `${label}: ${entry.file} rejected with ${expected} (got ${JSON.stringify(errors)})`,
+        );
+        continue;
+      }
+
+      ok(
+        createHash("sha256").update(bytes).digest("hex") === entry.sha256,
+        `${label}: ${entry.file} sha256`,
+      );
+      ok(
+        errors.length === 0,
+        `${label}: ${entry.file} validates (got ${JSON.stringify(errors)})`,
+      );
+      if (entry.record_only && entry.decoded) {
+        const decoded = decodeRecord(raw, entry.version ?? version);
+        const expected = JSON.parse(
+          await readFile(join(goldenDir, entry.decoded), "utf8"),
+        );
+        ok(
+          decoded.errors.length === 0 &&
+            decoded.record !== undefined &&
+            isDeepStrictEqual(decoded.record.meta, expected.meta) &&
+            isDeepStrictEqual(
+              decoded.record.blocks[0] ?? [],
+              expected.tween_f32,
+            ),
+          `${label}: ${entry.file} decodes to ${entry.decoded}`,
+        );
+      }
+      if (entry.to18) {
+        const down = await readBytes(goldenDir, entry.to18);
+        const downErrors = validateRecording(down, 18);
+        ok(
+          downErrors.length === 0,
+          `${label}: ${entry.to18} validates at /18 (got ${JSON.stringify(downErrors)})`,
+        );
+      }
+    }
+  }
+}
+
 async function main(): Promise<void> {
   await runSuite(GOLDEN2_DIR, 2);
   await runSuite(GOLDEN3_DIR, 3);
@@ -980,6 +1070,11 @@ async function main(): Promise<void> {
     await golden16Cases();
   }
   await version16Cases();
+  await version17SessionCases();
+  await version17TweenCases();
+  await runTweenSuite(17);
+  await runTweenSuite(18);
+  await runTweenSuite(19);
 
   unknownItemCases();
   await helloCases();
@@ -3024,6 +3119,782 @@ async function version15Cases(): Promise<void> {
       code(data) === "texture-version" && errorSeq(data, 15, errors[0]) === 5,
       `golden-15: a size_override that appears at an unchanged version is texture-version at seq 5 (got ${JSON.stringify(errors)})`,
     );
+  }
+}
+
+// Placement, resolved references and wire lifetime checks that isolated records cannot exercise.
+async function version17TweenCases(): Promise<void> {
+  const dir = resolve(SCRIPT_DIR, "../../protocol/golden-19");
+  const mixed = await readBytes(dir, "mixed.rs19");
+  const node = await readBytes(dir, "mixed.to18.rs18");
+  const endpoints = JSON.parse(
+    await readFile(join(dir, "mixed.decoded.json"), "utf8"),
+  ).tween_f32 as number[];
+  const encodeTween = (meta: Meta, floats: number[]) => {
+    const text = Buffer.from(JSON.stringify(meta), "latin1");
+    const body = Buffer.alloc(
+      4 + (floats.length === 0 ? 0 : 4 + floats.length * 4),
+    );
+    body.writeUInt32LE(floats.length === 0 ? 0 : 1, 0);
+    if (floats.length > 0) {
+      body.writeUInt32LE(floats.length * 4, 4);
+      floats.forEach((v, i) => {
+        body.writeFloatLE(v, 8 + 4 * i);
+      });
+    }
+    const head = Buffer.alloc(8);
+    head.writeUInt32LE(4 + text.length + body.length, 0);
+    head.writeUInt32LE(text.length, 4);
+    return new Uint8Array(Buffer.concat([head, text, body]));
+  };
+  const replace = (
+    frames: Uint8Array[],
+    type: string,
+    edit: (m: Meta) => void,
+  ) =>
+    frames.map((r) =>
+      recordMeta(r).type === type ? withRecordMeta(r, edit) : r,
+    );
+  const nodeBegin = (m: Meta) =>
+    (m.events as Array<Meta>).find((e) => "item" in e) as Meta;
+  const materialBegin = (m: Meta) =>
+    (m.events as Array<Meta>).find((e) => "material" in e) as Meta;
+  const step = (e: Meta) => (e.steps as Meta[])[0];
+  for (const version of [17, 18, 19] as const) {
+    const magic = new Uint8Array(mixed.subarray(0, 8));
+    magic[3] = 0x47 + version - 16;
+    const source = version === 19 ? mixed : node;
+    const frames = replace(rawFrames(source), "session", (m) => {
+      m.protocol = `render-stream/${version}`;
+    });
+    const ti = frames.findIndex((r) => recordMeta(r).type === "tween");
+    const tx = frames.findIndex((r) => recordMeta(r).type === "transaction");
+    const assemble = (r: Uint8Array[]) => assembleRecording(magic, r);
+    const expect = (r: Uint8Array[], want: string, why: string) => {
+      const errors = validateRecording(assemble(r), version);
+      ok(
+        (errors[0]?.split(":")[0] ?? "ok") === want,
+        `/${version} tween grammar: ${why} is ${want} (got ${JSON.stringify(errors)})`,
+      );
+    };
+    const tween = (edit: (m: Meta) => void) => replace(frames, "tween", edit);
+    const values = version === 19 ? endpoints : endpoints.slice(0, 18);
+    const custom = (edit: (m: Meta, f: number[]) => void) => {
+      const m = recordMeta(frames[ti]);
+      const f = [...values];
+      edit(m, f);
+      m.blocks =
+        f.length === 0
+          ? []
+          : [{ name: "tween_f32", type: "f32", count: f.length }];
+      const r = [...frames];
+      r[ti] = encodeTween(m, f);
+      return r;
+    };
+    const poseOnly = (m: Meta, f: number[]) => {
+      m.events = [];
+      (m.poses as Meta[])[0].f = 0;
+      f.splice(0, f.length, ...values.slice(2, 18));
+    };
+    expect(frames, "ok", "granted node/material events");
+    // A rejected picture must leave its pending tween and scene histories available for retry.
+    {
+      const retryFrames = tween((m) => {
+        nodeBegin(m).item = 999;
+        (m.poses as Meta[])[0].item = 999;
+      });
+      const corrected = withRecordMeta(frames[tx], (m) => {
+        const items = m.items as Meta[];
+        const item = items[items.length - 1];
+        const oldId = item.id;
+        item.id = 999;
+        for (const canvas of m.canvases as Meta[])
+          canvas.items = (canvas.items as number[]).map((id) =>
+            id === oldId ? 999 : id,
+          );
+      });
+      const correctedFrames = [...retryFrames];
+      correctedFrames[tx] = corrected;
+      expect(correctedFrames, "ok", "corrected picture in a fresh validator");
+      retryFrames.splice(tx + 1, 0, corrected);
+      const split = splitRecords(assemble(retryFrames), version);
+      const validator = createRecordingValidator(split.records, version);
+      const prefixErrors = split.records
+        .slice(1, tx)
+        .flatMap((_, i) => validator.accept(i + 1) ?? []);
+      ok(
+        (validator.errors?.length ?? 0) === 0 && prefixErrors.length === 0,
+        `/${version} tween retry: accept the prefix and pending tween (got ${JSON.stringify(prefixErrors)})`,
+      );
+      const rejected = validator.accept(tx);
+      ok(
+        rejected?.[0] === "tween-entry: begin item missing",
+        `/${version} tween retry: reject the missing item (got ${JSON.stringify(rejected)})`,
+      );
+      const retried = validator.accept(tx + 1);
+      ok(
+        retried === undefined,
+        `/${version} tween retry: accept the corrected seq/frame through the same validator (got ${JSON.stringify(retried)})`,
+      );
+    }
+    // Tween canonical JSON is checked after the top-level keys, before scalar schema.
+    {
+      const noncanonical = (edit: (m: Meta) => void) => {
+        const m = recordMeta(frames[ti]);
+        edit(m);
+        const text = Buffer.from(
+          JSON.stringify(m).replace(',"blocks"', ', "blocks"'),
+          "latin1",
+        );
+        const oldMetaLen = new DataView(
+          frames[ti].buffer,
+          frames[ti].byteOffset,
+          frames[ti].byteLength,
+        ).getUint32(4, true);
+        const tail = frames[ti].subarray(8 + oldMetaLen);
+        const head = Buffer.alloc(8);
+        head.writeUInt32LE(4 + text.length + tail.length, 0);
+        head.writeUInt32LE(text.length, 4);
+        const r = [...frames];
+        r[ti] = new Uint8Array(Buffer.concat([head, text, tail]));
+        return r;
+      };
+      expect(
+        noncanonical((m) => {
+          m.seq = 0;
+        }),
+        "meta-noncanonical",
+        "noncanonical JSON before invalid seq",
+      );
+      expect(
+        noncanonical((m) => {
+          (m.blocks as Meta[])[0].name = "wrong";
+        }),
+        "meta-noncanonical",
+        "noncanonical JSON before invalid block schema",
+      );
+      expect(
+        noncanonical((m) => {
+          delete m.seq;
+          m.seq = 0;
+        }),
+        "meta-schema",
+        "wrong top-level key order before noncanonical JSON",
+      );
+      if (version === 19) {
+        expect(
+          noncanonical((m) => {
+            (m.events as Meta[])[0].op = "wrong";
+          }),
+          "meta-noncanonical",
+          "noncanonical JSON before invalid event schema",
+        );
+        expect(
+          noncanonical((m) => {
+            (m.poses as Meta[])[0].kind = "wrong";
+          }),
+          "meta-noncanonical",
+          "noncanonical JSON before invalid pose schema",
+        );
+      }
+    }
+    expect(custom(poseOnly), "ok", "pose-only record");
+    expect(
+      custom((m, f) => {
+        m.events = [{ op: "cancel", tween_id: "999" }];
+        m.poses = [];
+        f.length = 0;
+      }),
+      "ok",
+      "unknown cancel-only record",
+    );
+    expect(
+      custom((m, f) => {
+        m.events = [];
+        m.poses = [];
+        f.length = 0;
+      }),
+      "tween-offset",
+      "empty tween record",
+    );
+    expect(
+      custom((_m, f) => {
+        f[8] = 1;
+      }),
+      "tween-offset",
+      "Node2D nonzero pivot",
+    );
+    expect(
+      custom((_m, f) => {
+        f[2] = Number.NaN;
+      }),
+      "tween-offset",
+      "nonfinite pose",
+    );
+    expect(
+      custom((_m, f) => {
+        f[0] = Number.POSITIVE_INFINITY;
+      }),
+      "tween-offset",
+      "nonfinite endpoint",
+    );
+    expect(
+      custom((m, f) => {
+        poseOnly(m, f);
+        const pose = structuredClone((m.poses as Meta[])[0]);
+        pose.f = 16;
+        (m.poses as Meta[]).push(pose);
+        f.push(...f);
+      }),
+      "tween-entry",
+      "duplicate poses",
+    );
+    expect(
+      tween((m) => {
+        step(nodeBegin(m)).property = "constructor";
+      }),
+      "meta-schema",
+      "unknown property matching an object key",
+    );
+    expect(
+      tween((m) => {
+        nodeBegin(m).tween_id = "1\n";
+      }),
+      "meta-schema",
+      "ID trailing newline",
+    );
+    if (version === 19)
+      expect(
+        tween((m) => {
+          step(materialBegin(m)).param = "threshold\n";
+        }),
+        "meta-schema",
+        "param trailing newline",
+      );
+    const isolated = {
+      bytes: frames[ti],
+      offset: 0,
+      byte_length: frames[ti].length,
+    };
+    ok(
+      validateTweenRecord(isolated, version).length === 0,
+      `/${version} record-only decode`,
+    );
+    ok(
+      validateTweenRecord(isolated, version, {
+        association: { seq: 1, frame: 99, t_us: 0 },
+      })[0]?.startsWith("tween-association:"),
+      `/${version} record-only association`,
+    );
+    ok(
+      validateTweenRecord(isolated, version, { grant: false })[0]?.startsWith(
+        "meta-schema:",
+      ),
+      `/${version} record-only grant`,
+    );
+    ok(
+      validateTweenRecord(isolated, version, { items: [] })[0]?.startsWith(
+        "tween-entry:",
+      ),
+      `/${version} record-only resolved item`,
+    );
+    expect(
+      replace(frames, "session", (m) => {
+        delete m.client_tweens;
+      }),
+      "meta-schema",
+      "ungranted tween",
+    );
+    expect(
+      tween((m) => {
+        m.seq = 2;
+      }),
+      "tween-association",
+      "seq mismatch",
+    );
+    expect(
+      tween((m) => {
+        m.frame = 2;
+      }),
+      "tween-association",
+      "frame mismatch",
+    );
+    expect(
+      tween((m) => {
+        m.t_us = 1;
+      }),
+      "tween-association",
+      "time mismatch",
+    );
+    const duplicate = [...frames];
+    duplicate.splice(ti, 0, frames[ti]);
+    expect(duplicate, "tween-association", "duplicate record");
+    const orphan = frames.filter((_, i) => i !== ti);
+    orphan.splice(orphan.length - 1, 0, frames[ti]);
+    expect(orphan, "tween-association", "orphan before end");
+    const interposed = [...frames];
+    interposed.splice(
+      ti + 1,
+      0,
+      jsonRecord({ type: "resource_unhint", hash: "a".repeat(64), blocks: [] }),
+    );
+    expect(interposed, "tween-association", "interposed resource unhint");
+    const missingTx = createRecordingValidator(
+      splitRecords(assemble(frames), version).records,
+      version,
+    );
+    for (let i = 1; i <= ti; i++) missingTx.accept(i);
+    ok(
+      missingTx.finish()[0]?.startsWith("tween-association:"),
+      `/${version} tween orphan at EOF`,
+    );
+    expect(
+      tween((m) => {
+        step(nodeBegin(m)).to = 1;
+      }),
+      "tween-offset",
+      "node endpoint gap",
+    );
+    expect(
+      tween((m) => {
+        nodeBegin(m).begin_us = 1;
+      }),
+      "tween-time",
+      "future begin",
+    );
+    expect(
+      tween((m) => {
+        step(nodeBegin(m)).duration_us = Number.MAX_SAFE_INTEGER;
+        step(nodeBegin(m)).start_us = 1;
+      }),
+      "tween-time",
+      "timing overflow",
+    );
+    expect(
+      tween((m) => {
+        nodeBegin(m).end_us = 2;
+      }),
+      "tween-entry",
+      "inconsistent end",
+    );
+    expect(
+      tween((m) => {
+        nodeBegin(m).item = 999;
+        (m.poses as Meta[])[0].item = 999;
+      }),
+      "tween-entry",
+      "missing resolved item",
+    );
+    expect(
+      tween((m) => {
+        (m.events as Meta[]).push(structuredClone(nodeBegin(m)));
+      }),
+      "tween-offset",
+      "duplicate begin checked after offsets",
+    );
+    expect(
+      tween((m) => {
+        step(nodeBegin(m)).property = "rotation_degrees";
+      }),
+      "meta-schema",
+      "host alias on wire",
+    );
+    expect(
+      tween((m) => {
+        nodeBegin(m).tween_id = "-0";
+      }),
+      "meta-schema",
+      "noncanonical ID",
+    );
+    expect(
+      tween((m) => {
+        nodeBegin(m).tween_id = "9223372036854775808";
+      }),
+      "meta-schema",
+      "ID overflow",
+    );
+    expect(
+      tween((m) => {
+        nodeBegin(m).tween_id = "-9223372036854775808";
+      }),
+      "ok",
+      "signed i64 minimum",
+    );
+    expect(
+      tween((m) => {
+        nodeBegin(m).tween_id = "9223372036854775807";
+      }),
+      "ok",
+      "signed i64 maximum",
+    );
+    // A second full transaction has the same host tables, so no predictor or scene change is needed.
+    const again = (edit: (m: Meta) => void, poses = true) => {
+      const r = [...frames];
+      const laterTween = withRecordMeta(frames[ti], (m) => {
+        m.seq = 2;
+        m.frame = 2;
+        m.t_us = 1;
+        edit(m);
+      });
+      const laterTx = withRecordMeta(frames[tx], (m) => {
+        m.seq = 2;
+        m.frame = 2;
+        m.t_us = 1;
+      });
+      r.splice(r.length - 1, 0, ...(poses ? [laterTween] : []), laterTx);
+      r[r.length - 1] = withRecordMeta(r[r.length - 1], (m) => {
+        m.transactions = 2;
+        (m.stats as Meta).full_transactions = 2;
+      });
+      return r;
+    };
+    const later = (edit: (m: Meta, f: number[]) => void) => {
+      const r = again(() => {});
+      const m = recordMeta(r[r.length - 3]);
+      const f = [...values];
+      edit(m, f);
+      m.blocks =
+        f.length === 0
+          ? []
+          : [{ name: "tween_f32", type: "f32", count: f.length }];
+      r[r.length - 3] = encodeTween(m, f);
+      return r;
+    };
+    expect(later(poseOnly), "ok", "active node carries a subsequent pose");
+    expect(
+      later((m, f) => {
+        const ids = (m.events as Meta[]).map((e) => e.tween_id);
+        m.events = ids.map((tween_id) => ({ op: "cancel", tween_id }));
+        m.poses = [];
+        f.length = 0;
+      }),
+      "ok",
+      "cancel retires active targets without poses",
+    );
+    expect(
+      later((m, f) => {
+        poseOnly(m, f);
+        (m.poses as Meta[])[0].kind = "control";
+      }),
+      "tween-entry",
+      "active node kind changes",
+    );
+    expect(
+      again((m) => {
+        for (const e of m.events as Meta[]) {
+          e.tween_id = String(Number(e.tween_id) + 100);
+          e.order = Number(e.order) + 2;
+        }
+      }),
+      "ok",
+      "later begins replace component claims",
+    );
+    expect(
+      again((m) => {
+        const events = m.events as Meta[];
+        m.events = events.flatMap((e) => {
+          e.order = Number(e.order) + 2;
+          return [{ op: "cancel", tween_id: e.tween_id }, e];
+        });
+      }),
+      "ok",
+      "cancel allows live ID reuse in event order",
+    );
+    expect(
+      again(() => {}),
+      "tween-entry",
+      "duplicate live ID",
+    );
+    expect(
+      again((m) => {
+        for (const e of m.events as Meta[])
+          e.tween_id = String(Number(e.tween_id) + 100);
+      }),
+      "tween-entry",
+      "repeated precedence",
+    );
+    expect(
+      again((m) => {
+        m.events = [];
+      }),
+      "tween-offset",
+      "unused endpoints",
+    );
+    expect(
+      again(() => {}, false),
+      "tween-entry",
+      "active node missing its next pose",
+    );
+    if (version === 19) {
+      expect(
+        tween((m) => {
+          step(materialBegin(m)).component = 0;
+        }),
+        "meta-schema",
+        "float component",
+      );
+      expect(
+        tween((m) => {
+          step(materialBegin(m)).param = "shader_parameter/threshold";
+        }),
+        "meta-schema",
+        "non-bare param",
+      );
+      expect(
+        tween((m) => {
+          step(materialBegin(m)).from = 2;
+        }),
+        "tween-offset",
+        "material endpoints follow poses",
+      );
+      expect(
+        tween((m) => {
+          materialBegin(m).material = 999;
+        }),
+        "tween-entry",
+        "missing resolved material",
+      );
+      expect(
+        tween((m) => {
+          step(materialBegin(m)).param = "missing";
+        }),
+        "tween-entry",
+        "missing baseline param",
+      );
+      const badEncoding = replace(
+        tween((m) => {
+          step(materialBegin(m)).to = 999;
+        }),
+        "transaction",
+        (m) => {
+          m.base_seq = 1;
+        },
+      );
+      expect(
+        badEncoding,
+        "patch-encoding",
+        "ordinary scene error before offsets",
+      );
+      // Association and ordinary scene errors precede a saved /19 float error.
+      const bad = tween((m) => {
+        step(materialBegin(m)).to = 999;
+        m.frame = 2;
+      });
+      expect(bad, "tween-association", "association before offsets");
+      const badScene = replace(
+        tween((m) => {
+          step(materialBegin(m)).to = 999;
+        }),
+        "transaction",
+        (m) => {
+          m.seq = 2;
+        },
+      );
+      expect(
+        badScene,
+        "tween-association",
+        "association before scene and offsets",
+      );
+    } else {
+      const materialRecord = rawFrames(mixed)[ti];
+      const r = [...frames];
+      r[ti] = materialRecord;
+      expect(r, "meta-schema", "material begin below /19");
+    }
+  }
+}
+
+// --------------------------------------------------------------------------------------- /17-/19 session grammar
+
+async function version17SessionCases(): Promise<void> {
+  const insertAfter = (m: Meta, after: string, key: string, value: unknown) => {
+    const entries = Object.entries(m).filter(([k]) => k !== key);
+    for (const k of Object.keys(m)) delete m[k];
+    for (const [k, v] of entries) {
+      m[k] = v;
+      if (k === after) m[key] = value;
+    }
+  };
+  for (const version of [17, 18, 19] as const) {
+    const dir = resolve(SCRIPT_DIR, `../../protocol/golden-${version}`);
+    const source = await readBytes(
+      dir,
+      version === 18 ? "window1.rs18" : `full.rs${version}`,
+    );
+    const frames = rawFrames(source);
+    const magic = source.subarray(0, 8);
+    const assemble = (recs: Uint8Array[]) => assembleRecording(magic, recs);
+    const code = (data: Uint8Array) =>
+      validateRecording(data, version)[0]?.split(":")[0] ?? "ok";
+    const expect = (data: Uint8Array, want: string, what: string) => {
+      const errors = validateRecording(data, version);
+      ok(
+        (errors[0]?.split(":")[0] ?? "ok") === want,
+        `/${version} session grammar: ${what} is ${want} (got ${JSON.stringify(errors)})`,
+      );
+    };
+    const grant = (
+      recs: Uint8Array[],
+      value: unknown = true,
+      after = "viewports",
+    ) => {
+      const out = [...recs];
+      out[0] = withRecordMeta(out[0], (m) =>
+        insertAfter(m, after, "client_tweens", value),
+      );
+      return out;
+    };
+    const stamps = (
+      recs: Uint8Array[],
+      time: (m: Meta) => unknown = (m) => m.frame,
+    ) =>
+      recs.map((r) =>
+        recordMeta(r).type === "transaction"
+          ? withRecordMeta(r, (m) => insertAfter(m, "frame", "t_us", time(m)))
+          : r,
+      );
+    const granted = stamps(grant(frames));
+    const first = frames.findIndex((r) => recordMeta(r).type === "transaction");
+    const second = frames.findIndex(
+      (r, i) => i > first && recordMeta(r).type === "transaction",
+    );
+    if (first < 0 || second < 0)
+      throw new Error(`expected two /${version} transactions`);
+    const edit = (
+      recs: Uint8Array[],
+      at: number,
+      mutate: (m: Meta) => void,
+    ) => {
+      const out = [...recs];
+      out[at] = withRecordMeta(out[at], mutate);
+      return assemble(out);
+    };
+
+    ok(wireVersionOf(source) === version, `/${version} magic is detected`);
+    expect(source, "ok", "an ungranted golden recording");
+    expect(
+      assemble(granted),
+      "ok",
+      "a grant and capture timestamps without tween records",
+    );
+    expect(
+      assemble(stamps(grant(frames), () => 0)),
+      "ok",
+      "equal timestamps including zero",
+    );
+    expect(
+      assemble(stamps(grant(frames), () => Number.MAX_SAFE_INTEGER)),
+      "ok",
+      "maximum exact timestamps",
+    );
+    expect(
+      assemble(grant(frames)),
+      "tween-association",
+      "a grant without timestamps",
+    );
+    expect(
+      edit(granted, second, (m) => {
+        delete m.t_us;
+      }),
+      "tween-association",
+      "a later missing timestamp",
+    );
+    expect(
+      assemble(stamps(frames)),
+      "meta-schema",
+      "timestamps without the grant",
+    );
+    expect(
+      assemble(stamps(grant(frames, false))),
+      "meta-schema",
+      "a false grant",
+    );
+    expect(
+      assemble(stamps(grant(frames, null))),
+      "meta-schema",
+      "a null grant",
+    );
+    expect(
+      assemble(stamps(grant(frames, true, "adoption"))),
+      "meta-schema",
+      "a grant before viewports",
+    );
+    expect(
+      assemble(stamps(grant(frames, true, "blocks"))),
+      "meta-schema",
+      "a grant after blocks",
+    );
+    expect(
+      edit(granted, first, (m) => insertAfter(m, "seq", "t_us", 0)),
+      "meta-schema",
+      "a timestamp before frame",
+    );
+    for (const time of [-1, 0.5, null, "0", Number.MAX_SAFE_INTEGER + 1]) {
+      expect(
+        edit(granted, first, (m) => {
+          m.t_us = time;
+        }),
+        "meta-schema",
+        `timestamp ${JSON.stringify(time)}`,
+      );
+    }
+    const decreasing = edit(granted, second, (m) => {
+      m.t_us = 0;
+    });
+    expect(decreasing, "tween-time", "a decreasing timestamp");
+    const sceneError = edit(rawFrames(decreasing), second, (m) => {
+      m.seq = 9999;
+    });
+    expect(
+      sceneError,
+      version < 19 ? "tween-time" : "seq-gap",
+      "timestamp/scene error precedence",
+    );
+    const websocket = (window: number) =>
+      edit(frames, 0, (m) => {
+        const stream = m.stream as Meta;
+        stream.transport = "websocket";
+        stream.connection = 1;
+        (m.publication as Meta).credit_window = window;
+      });
+    expect(
+      websocket(8),
+      version >= 18 ? "ok" : "publication-entry",
+      "credit window 8",
+    );
+    expect(websocket(9), "publication-entry", "credit window 9");
+
+    if (version === 17) {
+      const below = (recs: Uint8Array[]) => {
+        const out = [...recs];
+        out[0] = withRecordMeta(out[0], (m) => {
+          m.protocol = "render-stream/16";
+        });
+        const bytes = assemble(out);
+        bytes[3] = 0x47;
+        return validateRecording(bytes, 16)[0]?.split(":")[0];
+      };
+      ok(below(grant(frames)) === "meta-schema", "/16 refuses client_tweens");
+      ok(below(stamps(frames)) === "meta-schema", "/16 refuses t_us");
+    }
+    if (code(assemble(granted)) === "ok") {
+      const data = assemble(granted);
+      ok(
+        decodeRecording(data, version).schema ===
+          `render-stream-${version}-decoded/1` &&
+          resolveRecording(data, version).schema ===
+            `render-stream-${version}-resolved/1`,
+        `/${version} granted recording has its decoded and resolved schema identifiers`,
+      );
+      const split = splitRecords(data, version);
+      const validator = createRecordingValidator(split.records, version);
+      ok(
+        !validator.errors &&
+          split.records.slice(1).every((_, i) => !validator.accept(i + 1)) &&
+          validator.finish().length === 0,
+        `/${version} incremental validator accepts the granted recording`,
+      );
+    }
   }
 }
 

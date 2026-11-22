@@ -70,6 +70,10 @@
       "decoded": "poses.decoded.json",
       "sha256": "b97ba6b9bd304734c3c79377837a4519261ffabd0f2e2f3f32e8b3df277b004a",
       "record_only": true
+    },
+    {
+      "file": "node-tween.rs17",
+      "sha256": "1ac26475ca6b0fcb3dd9faa662418dd2c57fc366898cf8b271b164f0cf8e0fcc"
     }
   ],
   "invalid": [
@@ -226,6 +230,22 @@
       "items": [
         7
       ]
+    },
+    {
+      "file": "invalid/tween-without-grant.rs17",
+      "error": "meta-schema"
+    },
+    {
+      "file": "invalid/material-begin.rs17",
+      "error": "meta-schema"
+    },
+    {
+      "file": "invalid/client-tweens-key-order.rs17",
+      "error": "meta-schema"
+    },
+    {
+      "file": "invalid/missing-t-us.rs17",
+      "error": "tween-association"
     }
   ]
 }

@@ -17,6 +17,10 @@
     {
       "file": "window8.rs18",
       "sha256": "9890e8dd2492fc6de629a17f31d5139be638e67d9295952aa92b85ae9a59bd94"
+    },
+    {
+      "file": "node-tween.rs18",
+      "sha256": "40ea6619ade3d3d2a6a0031631de31997d0636557d8900cdaae046c887b07883"
     }
   ],
   "invalid": [
@@ -89,6 +93,26 @@
       "file": "invalid/window3.rs17",
       "version": 17,
       "code": "publication-entry"
+    },
+    {
+      "file": "invalid/tween-without-grant.rs18",
+      "version": 18,
+      "code": "meta-schema"
+    },
+    {
+      "file": "invalid/material-begin.rs18",
+      "version": 18,
+      "code": "meta-schema"
+    },
+    {
+      "file": "invalid/client-tweens-key-order.rs18",
+      "version": 18,
+      "code": "meta-schema"
+    },
+    {
+      "file": "invalid/missing-t-us.rs18",
+      "version": 18,
+      "code": "tween-association"
     }
   ]
 }

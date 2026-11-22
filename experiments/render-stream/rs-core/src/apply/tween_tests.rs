@@ -598,6 +598,9 @@ fn golden_invalid_records_report_spec_errors_and_association_is_atomic() {
     let index: serde_json::Value =
         serde_json::from_slice(&std::fs::read(root.join("index.json")).unwrap()).unwrap();
     for entry in index["invalid"].as_array().unwrap() {
+        if entry["record_only"] != true {
+            continue;
+        }
         let name = entry["file"].as_str().unwrap();
         let bytes = std::fs::read(root.join(name)).unwrap();
         let bytes = reframe(&bytes, |m| {

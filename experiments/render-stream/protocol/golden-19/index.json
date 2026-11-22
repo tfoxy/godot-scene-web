@@ -328,6 +328,18 @@
     {
       "file": "invalid/material-unsupported.rs19",
       "error": "tween-entry"
+    },
+    {
+      "file": "invalid/tween-without-grant.rs19",
+      "error": "meta-schema"
+    },
+    {
+      "file": "invalid/client-tweens-key-order.rs19",
+      "error": "meta-schema"
+    },
+    {
+      "file": "invalid/missing-t-us.rs19",
+      "error": "tween-association"
     }
   ]
 }

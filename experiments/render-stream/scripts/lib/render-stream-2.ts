@@ -24,7 +24,7 @@
 //
 // render-stream/3 (../../protocol/render-stream-3.md, G4e1), render-stream/4
 // (../../protocol/render-stream-4.md, G5w) and render-stream/5 (../../protocol/render-stream-5.md,
-// G55w) are implemented IN THIS SAME FILE behind an explicit `version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18` parameter
+// G55w) are implemented IN THIS SAME FILE behind an explicit `version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19` parameter
 // on every exported entry point (splitRecords/decodeRecording/validateRecording/
 // resolveRecording), rather than forked render-stream-3.ts/-4.ts/-5.ts modules -- /3 is /2 plus
 // one draw command (add_msdf_texture_rect_region) and one sabotage kind (perturb-glyph), /4 is /3
@@ -57,7 +57,16 @@ import {
   decodeShaderPayload,
   GRP1_MAGIC,
 } from "./render-stream-shader";
+import {
+  checkTweenSchema,
+  checkTweenValues,
+  type TweenRecordMeta,
+  TweenRegistry,
+} from "./render-stream-tweens";
+
 import { type HashFn, sha256Hex } from "./sha256";
+
+export type { TweenRecordMeta } from "./render-stream-tweens";
 
 // --------------------------------------------------------------------------------------- wire types
 
@@ -591,6 +600,8 @@ export interface SessionMeta {
   adoption?: AdoptionDeclaration | null;
   /** render-stream-16.md "Session: viewports": always present at /16, right after `adoption`. */
   viewports?: ViewportsMode;
+  /** /17+: present only when the session grants announced client tweens. */
+  client_tweens?: true;
   blocks: BlockDescriptor[];
 }
 
@@ -1055,6 +1066,8 @@ export interface TransactionMeta {
   type: "transaction";
   seq: number;
   frame: number;
+  /** /17+: capture timestamp, mandatory exactly when client_tweens is granted. */
+  t_us?: number;
   encoding: Encoding;
   base_seq: number | null;
   status: TransactionStatus;
@@ -1218,7 +1231,8 @@ export type Rs2Meta =
   | EndMeta
   | ItemMetaRecordMeta
   | ResourceHintMeta
-  | ResourceUnhintMeta;
+  | ResourceUnhintMeta
+  | TweenRecordMeta;
 
 // --------------------------------------------------------------------------------------- constants
 
@@ -1300,15 +1314,19 @@ export const MAGIC_V17 = new Uint8Array([
 export const MAGIC_V18 = new Uint8Array([
   0x47, 0x52, 0x53, 0x49, 0x0d, 0x0a, 0x1a, 0x0a,
 ]);
+// render-stream-19.md: /18 plus announced material-parameter tweens.
+export const MAGIC_V19 = new Uint8Array([
+  0x47, 0x52, 0x53, 0x4a, 0x0d, 0x0a, 0x1a, 0x0a,
+]);
 /** G7l: the wire version of a live stream's bytes: 7 when they start with GRS7 (a /7 receiver's
  * received.rs7, or a /7 connection's host tap), 8 when they start with GRS8 (G8w), 9 for GRS9
  * (G8k9), 10 for GRSA (CG1), 11 for GRSB (W11a), 12 for GRSC (PM5), 13 for GRSD (W13d), 14 for GRSE
  * (ID3: a /14 file sink or a v2 viewer's tap), 15 for GRSF (a /15 file sink), 16 for GRSG (a /16
- * file sink), else 6 -- so every other
+ * file sink), 17 for GRSH, 18 for GRSI, 19 for GRSJ, else 6 -- so every other
  * magic still meets the /6 decoder's own refusal, exactly as before. */
 export function wireVersionOf(
   data: Uint8Array | undefined,
-): 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 {
+): 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 {
   if (!data || data.length < MAGIC_V7.length) return 6;
   const startsWith = (magic: Uint8Array) => {
     for (let i = 0; i < magic.length; i++)
@@ -1328,6 +1346,7 @@ export function wireVersionOf(
   if (startsWith(MAGIC_V16)) return 16;
   if (startsWith(MAGIC_V17)) return 17;
   if (startsWith(MAGIC_V18)) return 18;
+  if (startsWith(MAGIC_V19)) return 19;
   return 6;
 }
 /** render-stream-9.md "KTX2 payload": the 12-byte KTX2 file identifier (KTX 2.0 section 2.1). */
@@ -2679,7 +2698,8 @@ function checkResourcesSchema(
     | 15
     | 16
     | 17
-    | 18,
+    | 18
+    | 19,
 ): string[] {
   const err = (detail: string) => [
     `meta-schema: record at offset ${offset}: resources ${detail}`,
@@ -2828,7 +2848,8 @@ function checkSessionSchema(
     | 15
     | 16
     | 17
-    | 18,
+    | 18
+    | 19,
 ): string[] {
   const err = (detail: string) => [
     `meta-schema: record at offset ${offset}: ${detail}`,
@@ -2884,8 +2905,13 @@ function checkSessionSchema(
   // "blocks", right after "adoption".
   if (version >= 16)
     expectedKeys = keysWith(expectedKeys, ADOPTION_KEY, "viewports");
+  const hasClientTweens = version >= 17 && "client_tweens" in meta;
+  if (hasClientTweens)
+    expectedKeys = keysWith(expectedKeys, "viewports", "client_tweens");
   if (!hasExactKeys(meta, expectedKeys))
     return err("session has the wrong top-level keys or order");
+  if (hasClientTweens && meta.client_tweens !== true)
+    return err('"client_tweens" must be true when present');
   if (version >= 16 && !isOneOf(meta.viewports, VIEWPORTS_MODES))
     return err(
       `"viewports" is ${JSON.stringify(meta.viewports)}, not "on", "off" or "unavailable"`,
@@ -3125,7 +3151,7 @@ function checkSessionSchema(
       ];
     }
     if (isV7) {
-      // render-stream-7.md "Session": credit_window is 1..2, and a "file" stream is always 1.
+      // credit_window is 1..2 below /18 and 1..8 from /18; a file stream is always 1.
       const creditWindow = publication.credit_window as number;
       const maxWindow = version >= 18 ? 8 : 2;
       if (creditWindow < 1 || creditWindow > maxWindow) {
@@ -3787,7 +3813,8 @@ function checkTransactionSchema(
     | 15
     | 16
     | 17
-    | 18,
+    | 18
+    | 19,
 ): string[] {
   const err = (detail: string) => [
     `meta-schema: record at offset ${offset}: ${detail}`,
@@ -3886,8 +3913,15 @@ function checkTransactionSchema(
       ...expectedKeys.slice(at),
     ];
   }
+  const hasTimestamp = version >= 17 && "t_us" in meta;
+  if (hasTimestamp) expectedKeys = keysWith(expectedKeys, "frame", "t_us");
   if (!hasExactKeys(meta, expectedKeys))
     return err("transaction has the wrong top-level keys or order");
+  if (
+    hasTimestamp &&
+    (!Number.isSafeInteger(meta.t_us) || (meta.t_us as number) < 0)
+  )
+    return err('"t_us" must be a nonnegative exact integer');
   if (isV13 && !isLowerHex(meta.predict_check, 16))
     return err('"predict_check" is not 16 lowercase hex digits');
   if (hasRemovedViewports) {
@@ -4742,6 +4776,7 @@ export const ITEM_META_V2_FIELDS = ["instance_id", "mouse_filter"] as const;
 const ITEM_META_INSTANCE_ID = /^[1-9][0-9]{0,19}$/;
 /** The canonical meta's first bytes (`type` is the first key): the validator judges the ask and
  * an orphan from them before the record's own schema. */
+const TWEEN_PREFIX = new TextEncoder().encode('{"type":"tween"');
 const ITEM_META_PREFIX = new TextEncoder().encode('{"type":"item_meta",');
 
 /** The hello / grant list rules at `version` (default the newest): null when `r` is valid, else
@@ -4991,12 +5026,16 @@ function checkMetaSchema(
     | 15
     | 16
     | 17
-    | 18,
+    | 18
+    | 19,
+  metaText: string,
 ): string[] {
   if (!isPlainObject(meta))
     return [
       `meta-schema: record at offset ${offset}: meta is not a JSON object`,
     ];
+  if (meta.type === "tween" && version >= 17)
+    return checkTweenSchema(meta, version, metaText);
   if (meta.type === "session") return checkSessionSchema(meta, offset, version);
   if (meta.type === "transaction")
     return checkTransactionSchema(meta, offset, version);
@@ -5040,45 +5079,48 @@ export function splitRecords(
     | 15
     | 16
     | 17
-    | 18 = 6,
+    | 18
+    | 19 = 6,
 ): {
   records: RawRecord[];
   errors: string[];
 } {
   const expectedMagic =
-    version === 18
-      ? MAGIC_V18
-      : version === 17
-        ? MAGIC_V17
-        : version === 16
-          ? MAGIC_V16
-          : version === 15
-            ? MAGIC_V15
-            : version === 14
-              ? MAGIC_V14
-              : version === 13
-                ? MAGIC_V13
-                : version === 12
-                  ? MAGIC_V12
-                  : version === 11
-                    ? MAGIC_V11
-                    : version === 10
-                      ? MAGIC_V10
-                      : version === 9
-                        ? MAGIC_V9
-                        : version === 8
-                          ? MAGIC_V8
-                          : version === 7
-                            ? MAGIC_V7
-                            : version === 6
-                              ? MAGIC_V6
-                              : version === 5
-                                ? MAGIC_V5
-                                : version === 4
-                                  ? MAGIC_V4
-                                  : version === 3
-                                    ? MAGIC_V3
-                                    : MAGIC;
+    version === 19
+      ? MAGIC_V19
+      : version === 18
+        ? MAGIC_V18
+        : version === 17
+          ? MAGIC_V17
+          : version === 16
+            ? MAGIC_V16
+            : version === 15
+              ? MAGIC_V15
+              : version === 14
+                ? MAGIC_V14
+                : version === 13
+                  ? MAGIC_V13
+                  : version === 12
+                    ? MAGIC_V12
+                    : version === 11
+                      ? MAGIC_V11
+                      : version === 10
+                        ? MAGIC_V10
+                        : version === 9
+                          ? MAGIC_V9
+                          : version === 8
+                            ? MAGIC_V8
+                            : version === 7
+                              ? MAGIC_V7
+                              : version === 6
+                                ? MAGIC_V6
+                                : version === 5
+                                  ? MAGIC_V5
+                                  : version === 4
+                                    ? MAGIC_V4
+                                    : version === 3
+                                      ? MAGIC_V3
+                                      : MAGIC;
   if (
     data.length < expectedMagic.length ||
     !bytesEqual(data.subarray(0, expectedMagic.length), expectedMagic)
@@ -5196,7 +5238,8 @@ export function decodeRecord(
     | 15
     | 16
     | 17
-    | 18 = 6,
+    | 18
+    | 19 = 6,
   opts?: DecodeRecordOptions,
 ): DecodeRecordResult {
   const memo = recordMemo;
@@ -5232,7 +5275,8 @@ function decodeRecordOnce(
     | 15
     | 16
     | 17
-    | 18,
+    | 18
+    | 19,
   opts?: DecodeRecordOptions,
 ): DecodeRecordResult {
   const view = new DataView(
@@ -5279,9 +5323,10 @@ function decodeRecordOnce(
     };
   }
 
-  const schemaErrors = checkMetaSchema(meta, raw.offset, version);
+  const tween = isPlainObject(meta) && meta.type === "tween" && version >= 17;
+  const schemaErrors = checkMetaSchema(meta, raw.offset, version, metaText);
   if (schemaErrors.length > 0) return { errors: schemaErrors };
-  if (JSON.stringify(meta) !== metaText) {
+  if (!tween && JSON.stringify(meta) !== metaText) {
     return {
       errors: [
         `meta-noncanonical: record at offset ${raw.offset}: meta is not canonical JSON`,
@@ -5289,10 +5334,12 @@ function decodeRecordOnce(
     };
   }
 
+  if (tween && (meta as TweenRecordMeta).blocks.length > 1)
+    return { errors: ["tween-offset: extra tween block"] };
   if (pos + 4 > raw.bytes.length) {
     return {
       errors: [
-        `truncated: block_count at offset ${raw.offset + pos} runs past the end of the record`,
+        `${tween ? "tween-offset" : "truncated"}: block_count at offset ${raw.offset + pos} runs past the end of the record`,
       ],
     };
   }
@@ -5302,7 +5349,7 @@ function decodeRecordOnce(
   if (blockCount !== metaBlocks.length) {
     return {
       errors: [
-        `record-length: record at offset ${raw.offset}: block_count ${blockCount} != meta.blocks.length ${metaBlocks.length}`,
+        `${tween ? "tween-offset" : "record-length"}: record at offset ${raw.offset}: block_count ${blockCount} != meta.blocks.length ${metaBlocks.length}`,
       ],
     };
   }
@@ -5312,7 +5359,7 @@ function decodeRecordOnce(
     if (pos + 4 > raw.bytes.length) {
       return {
         errors: [
-          `truncated: block ${i} length prefix at offset ${raw.offset + pos} runs past the end of the record`,
+          `${tween ? "tween-offset" : "truncated"}: block ${i} length prefix at offset ${raw.offset + pos} runs past the end of the record`,
         ],
       };
     }
@@ -5334,14 +5381,14 @@ function decodeRecordOnce(
     if (blockLen !== expectedLen && !zeroRuns) {
       return {
         errors: [
-          `block-length: record at offset ${raw.offset} block "${descriptor.name}" declares count ${descriptor.count} (${expectedLen} bytes) but carries ${blockLen} bytes`,
+          `${tween ? "tween-offset" : "block-length"}: record at offset ${raw.offset} block "${descriptor.name}" declares count ${descriptor.count} (${expectedLen} bytes) but carries ${blockLen} bytes`,
         ],
       };
     }
     if (pos + blockLen > raw.bytes.length) {
       return {
         errors: [
-          `truncated: block ${i} payload at offset ${raw.offset + pos} runs past the end of the record`,
+          `${tween ? "tween-offset" : "truncated"}: block ${i} payload at offset ${raw.offset + pos} runs past the end of the record`,
         ],
       };
     }
@@ -5383,11 +5430,19 @@ function decodeRecordOnce(
   if (pos !== raw.bytes.length || 4 + recordLen !== raw.byte_length) {
     return {
       errors: [
-        `record-length: record at offset ${raw.offset}: decoded ${pos} bytes but the record is ${raw.bytes.length} bytes`,
+        `${tween ? "tween-offset" : "record-length"}: record at offset ${raw.offset}: decoded ${pos} bytes but the record is ${raw.bytes.length} bytes`,
       ],
     };
   }
 
+  if (tween) {
+    const errors = checkTweenValues(
+      meta as TweenRecordMeta,
+      (blocks[0] as number[] | undefined) ?? [],
+      version,
+    );
+    if (errors.length > 0) return { errors };
+  }
   return {
     record: {
       offset: raw.offset,
@@ -5421,7 +5476,8 @@ export function decodeRecording(
     | 15
     | 16
     | 17
-    | 18 = 6,
+    | 18
+    | 19 = 6,
 ): {
   schema:
     | "render-stream-2-decoded/1"
@@ -5440,7 +5496,8 @@ export function decodeRecording(
     | "render-stream-15-decoded/1"
     | "render-stream-16-decoded/1"
     | "render-stream-17-decoded/1"
-    | "render-stream-18-decoded/1";
+    | "render-stream-18-decoded/1"
+    | "render-stream-19-decoded/1";
   magic: string;
   records: DecodedRecord[];
 } {
@@ -5450,7 +5507,10 @@ export function decodeRecording(
   // blocks, each record's sha256 still the /13 record's own.
   const plain =
     version >= 13
-      ? rs13PlainRecords(split.records, version as 13 | 14 | 15 | 16 | 17 | 18)
+      ? rs13PlainRecords(
+          split.records,
+          version as 13 | 14 | 15 | 16 | 17 | 18 | 19,
+        )
       : split.records;
   const records: DecodedRecord[] = [];
   for (let r = 0; r < split.records.length; r++) {
@@ -5473,74 +5533,78 @@ export function decodeRecording(
     );
   }
   const magic =
-    version === 18
-      ? MAGIC_V18
-      : version === 17
-        ? MAGIC_V17
-        : version === 16
-          ? MAGIC_V16
-          : version === 15
-            ? MAGIC_V15
-            : version === 14
-              ? MAGIC_V14
-              : version === 13
-                ? MAGIC_V13
-                : version === 12
-                  ? MAGIC_V12
-                  : version === 11
-                    ? MAGIC_V11
-                    : version === 10
-                      ? MAGIC_V10
-                      : version === 9
-                        ? MAGIC_V9
-                        : version === 8
-                          ? MAGIC_V8
-                          : version === 7
-                            ? MAGIC_V7
-                            : version === 6
-                              ? MAGIC_V6
-                              : version === 5
-                                ? MAGIC_V5
-                                : version === 4
-                                  ? MAGIC_V4
-                                  : version === 3
-                                    ? MAGIC_V3
-                                    : MAGIC;
+    version === 19
+      ? MAGIC_V19
+      : version === 18
+        ? MAGIC_V18
+        : version === 17
+          ? MAGIC_V17
+          : version === 16
+            ? MAGIC_V16
+            : version === 15
+              ? MAGIC_V15
+              : version === 14
+                ? MAGIC_V14
+                : version === 13
+                  ? MAGIC_V13
+                  : version === 12
+                    ? MAGIC_V12
+                    : version === 11
+                      ? MAGIC_V11
+                      : version === 10
+                        ? MAGIC_V10
+                        : version === 9
+                          ? MAGIC_V9
+                          : version === 8
+                            ? MAGIC_V8
+                            : version === 7
+                              ? MAGIC_V7
+                              : version === 6
+                                ? MAGIC_V6
+                                : version === 5
+                                  ? MAGIC_V5
+                                  : version === 4
+                                    ? MAGIC_V4
+                                    : version === 3
+                                      ? MAGIC_V3
+                                      : MAGIC;
   return {
     schema:
-      version === 18
-        ? "render-stream-18-decoded/1"
-        : version === 17
-          ? "render-stream-17-decoded/1"
-          : version === 16
-            ? "render-stream-16-decoded/1"
-            : version === 15
-              ? "render-stream-15-decoded/1"
-              : version === 14
-                ? "render-stream-14-decoded/1"
-                : version === 13
-                  ? "render-stream-13-decoded/1"
-                  : version === 12
-                    ? "render-stream-12-decoded/1"
-                    : version === 11
-                      ? "render-stream-11-decoded/1"
-                      : version === 10
-                        ? "render-stream-10-decoded/1"
-                        : version === 9
-                          ? "render-stream-9-decoded/1"
-                          : version === 8
-                            ? "render-stream-8-decoded/1"
-                            : version === 7
-                              ? "render-stream-7-decoded/1"
-                              : version === 6
-                                ? "render-stream-6-decoded/1"
-                                : version === 5
-                                  ? "render-stream-5-decoded/1"
-                                  : version === 4
-                                    ? "render-stream-4-decoded/1"
-                                    : version === 3
-                                      ? "render-stream-3-decoded/1"
-                                      : "render-stream-2-decoded/1",
+      version === 19
+        ? "render-stream-19-decoded/1"
+        : version === 18
+          ? "render-stream-18-decoded/1"
+          : version === 17
+            ? "render-stream-17-decoded/1"
+            : version === 16
+              ? "render-stream-16-decoded/1"
+              : version === 15
+                ? "render-stream-15-decoded/1"
+                : version === 14
+                  ? "render-stream-14-decoded/1"
+                  : version === 13
+                    ? "render-stream-13-decoded/1"
+                    : version === 12
+                      ? "render-stream-12-decoded/1"
+                      : version === 11
+                        ? "render-stream-11-decoded/1"
+                        : version === 10
+                          ? "render-stream-10-decoded/1"
+                          : version === 9
+                            ? "render-stream-9-decoded/1"
+                            : version === 8
+                              ? "render-stream-8-decoded/1"
+                              : version === 7
+                                ? "render-stream-7-decoded/1"
+                                : version === 6
+                                  ? "render-stream-6-decoded/1"
+                                  : version === 5
+                                    ? "render-stream-5-decoded/1"
+                                    : version === 4
+                                      ? "render-stream-4-decoded/1"
+                                      : version === 3
+                                        ? "render-stream-3-decoded/1"
+                                        : "render-stream-2-decoded/1",
     magic: toHex(magic),
     records,
   };
@@ -6895,7 +6959,7 @@ export function createRs13Unpredictor(
  * blocks in the /13 framing); throws the first decode, meta or predict-check error. */
 export function rs13PlainRecords(
   records: RawRecord[],
-  version: 13 | 14 | 15 | 16 | 17 | 18 = 13,
+  version: 13 | 14 | 15 | 16 | 17 | 18 | 19 = 13,
 ): RawRecord[] {
   const unpredictor = createRs13Unpredictor();
   return records.map((raw) => {
@@ -10735,7 +10799,8 @@ export function createRecordingValidator(
     | 15
     | 16
     | 17
-    | 18 = 6,
+    | 18
+    | 19 = 6,
   options?: RecordingValidatorOptions,
 ): RecordingValidator {
   const recordDigest = options?.recordDigest ?? "inline";
@@ -10846,6 +10911,10 @@ export function createRecordingValidator(
   let resourceByteTotal = 0;
   let prevSeq = 0;
   let prevFrame = -Infinity;
+  let prevTweenTime: number | undefined;
+  let tweenPending: TweenRecordMeta | null = null;
+  let tweenError: string[] | null = null;
+  let tweenRegistry = new TweenRegistry();
   let state = emptyResolvedState();
   const maxIdSeen = {
     canvas: 0,
@@ -10936,11 +11005,51 @@ export function createRecordingValidator(
           ];
       }
     }
+    // As in rs-core, a grant failure precedes even endpoint decoding.
+    const isTween =
+      records[i].bytes.length >= 8 + TWEEN_PREFIX.length &&
+      TWEEN_PREFIX.every((x, k) => records[i].bytes[8 + k] === x);
+    if (isTween && !sessionMeta.client_tweens)
+      return ["meta-schema: tween without grant"];
     let decoded = decodeRecord(records[i], version, { recordDigest });
+    let pendingError: string[] | null = null;
+    if (
+      version >= 19 &&
+      isTween &&
+      decoded.errors.some((e) =>
+        /^(tween-offset|tween-time|tween-entry):/.test(e),
+      )
+    ) {
+      // Scalar schema is already valid. Save the error until this picture's scene checks pass.
+      const b = records[i].bytes;
+      const n = new DataView(b.buffer, b.byteOffset, b.byteLength).getUint32(
+        4,
+        true,
+      );
+      const meta = JSON.parse(
+        bytesToAscii(b.subarray(8, 8 + n)) as string,
+      ) as TweenRecordMeta;
+      pendingError = decoded.errors;
+      decoded = {
+        record: {
+          ...records[i],
+          sha256: recordDigest === "deferred" ? "" : hashBytes(b),
+          meta,
+          blocks: [],
+        },
+        errors: [],
+      };
+    }
     if (decoded.errors.length > 0 || decoded.record === undefined) {
       if (timer) timer.decode_us += timer.now() - decodeT0;
       return [decoded.errors[0]];
     }
+    if (
+      tweenPending !== null &&
+      decoded.record.meta.type !== "transaction" &&
+      decoded.record.meta.type !== "item_meta"
+    )
+      return ["tween-association: orphan or interposed tween record"];
     // TAG1: the transaction's form against the record before it, or a missing full record.
     if (
       decoded.record.meta.type === "transaction" &&
@@ -10993,6 +11102,17 @@ export function createRecordingValidator(
     const meta = decoded.record.meta;
     const offset = records[i].offset;
 
+    if (meta.type === "tween") {
+      const orphan = imOrphan(offset, "a tween record");
+      if (orphan) return orphan;
+      if (!sessionMeta.client_tweens)
+        return ["meta-schema: tween without grant"];
+      tweenPending = meta;
+      tweenError = pendingError;
+      bytesTotal += decoded.record.byte_length;
+      maxRecordBytes = Math.max(maxRecordBytes, decoded.record.byte_length);
+      return undefined;
+    }
     if (meta.type === "session")
       return [`duplicate-session: a second session record at offset ${offset}`];
 
@@ -11189,6 +11309,28 @@ export function createRecordingValidator(
         for (const h of carriedHashes)
           if (!baseNames.has(h)) carriedHashes.delete(h);
       }
+      if (sessionMeta.client_tweens && meta.t_us === undefined)
+        return [
+          `tween-association: record at offset ${offset}: granted transaction missing t_us`,
+        ];
+      if (!sessionMeta.client_tweens && meta.t_us !== undefined)
+        return [
+          `meta-schema: record at offset ${offset}: t_us requires a tween grant`,
+        ];
+      // /17-/18 check time before the ordinary scene; /19 defers it until that scene is valid.
+      const decreasingTweenTime =
+        meta.t_us !== undefined &&
+        prevTweenTime !== undefined &&
+        meta.t_us < prevTweenTime;
+      if (version < 19 && decreasingTweenTime)
+        return [`tween-time: record at offset ${offset}: decreasing t_us`];
+      if (
+        tweenPending !== null &&
+        (tweenPending.seq !== meta.seq ||
+          tweenPending.frame !== meta.frame ||
+          tweenPending.t_us !== meta.t_us)
+      )
+        return ["tween-association: tween transaction mismatch"];
       // The account is in every transaction of a skip session and
       // in no other.
       const skipSession = sessionMeta.unknown_item_policy === "skip";
@@ -11569,10 +11711,6 @@ export function createRecordingValidator(
           offset,
         );
         if (ptErrors.length > 0) return ptErrors;
-        for (const p of meta.particles ?? []) {
-          const resolvedPt = nextState.particles.get(p.id);
-          if (resolvedPt !== undefined) lastSeenParticles.set(p.id, resolvedPt);
-        }
       }
       // render-stream-11.md "Patched unsupported": a patch's null stands for the base's list.
       const unsupportedNow =
@@ -11647,7 +11785,6 @@ export function createRecordingValidator(
             `texture-version: record at offset ${offset}: texture ${t.id}'s version/content is inconsistent with its earlier entry`,
           ];
         }
-        lastSeenTexture.set(t.id, t);
       }
       if (isV4) {
         for (const m of meta.meshes ?? []) {
@@ -11661,7 +11798,6 @@ export function createRecordingValidator(
               `mesh-version: record at offset ${offset}: mesh ${m.id}'s version/content is inconsistent with its earlier entry`,
             ];
           }
-          lastSeenMesh.set(m.id, resolvedMesh);
         }
       }
       if (isV5) {
@@ -11674,7 +11810,6 @@ export function createRecordingValidator(
               `shader-version: record at offset ${offset}: shader ${s.id}'s version/content is inconsistent with its earlier entry`,
             ];
           }
-          lastSeenShader.set(s.id, resolvedShader);
         }
         for (const m of meta.materials ?? []) {
           const resolvedMaterial = nextState.materials.get(m.id);
@@ -11685,7 +11820,6 @@ export function createRecordingValidator(
               `material-version: record at offset ${offset}: material ${m.id}'s version/content is inconsistent with its earlier entry`,
             ];
           }
-          lastSeenMaterial.set(m.id, resolvedMaterial);
         }
       }
       for (const m of meta.multimeshes ?? []) {
@@ -11698,7 +11832,6 @@ export function createRecordingValidator(
             `multimesh-version: record at offset ${offset}: multimesh ${m.id}'s version/content is inconsistent with its earlier entry`,
           ];
         }
-        lastSeenMultimesh.set(m.id, resolvedMm);
       }
 
       // resource-missing / resource-payload, over the RESOLVED table (every ok image entry, and,
@@ -11860,6 +11993,7 @@ export function createRecordingValidator(
           .map((v) => v.id),
       );
       const previousViewportIds = new Set(state.viewports.keys());
+      const nextMaxIdSeen = { ...maxIdSeen };
       for (const [kind, currentIds, previousIds] of [
         ["canvas", currentCanvasIds, previousCanvasIds] as const,
         ["item", currentItemIds, previousItemIds] as const,
@@ -11880,7 +12014,7 @@ export function createRecordingValidator(
           }
         }
         for (const id of currentIds)
-          maxIdSeen[kind] = Math.max(maxIdSeen[kind], id);
+          nextMaxIdSeen[kind] = Math.max(nextMaxIdSeen[kind], id);
       }
 
       // TAG1 item-meta-id: every pending row names an item of the target state.
@@ -11918,6 +12052,17 @@ export function createRecordingValidator(
         );
         if (vpErrors.length > 0) return vpErrors;
       }
+      if (version >= 19 && tweenError !== null) return tweenError;
+      if (version >= 19 && decreasingTweenTime)
+        return [`tween-time: record at offset ${offset}: decreasing t_us`];
+      const nextTweens =
+        meta.t_us === undefined
+          ? tweenRegistry
+          : tweenRegistry.transaction(meta.t_us, tweenPending, nextState);
+      if (typeof nextTweens === "string") return [nextTweens];
+      tweenRegistry = nextTweens;
+      tweenPending = null;
+      tweenError = null;
       if (imPending !== null) {
         if (imPending.form === "full") {
           imTable.grant = imPending.grant;
@@ -11935,6 +12080,34 @@ export function createRecordingValidator(
       }
       if (imTable.rows.size > 0 && meta.encoding !== "full")
         for (const id of meta.removed_items) imTable.rows.delete(id);
+      // Wire entries and nextState stage the histories until all scene/tween checks succeed.
+      // Each table's ids were checked for duplicates before its version checks.
+      for (const t of meta.textures) lastSeenTexture.set(t.id, t);
+      if (isV4)
+        for (const m of meta.meshes ?? []) {
+          const resolved = nextState.meshes.get(m.id);
+          if (resolved !== undefined) lastSeenMesh.set(m.id, resolved);
+        }
+      if (isV5) {
+        for (const s of meta.shaders ?? []) {
+          const resolved = nextState.shaders.get(s.id);
+          if (resolved !== undefined) lastSeenShader.set(s.id, resolved);
+        }
+        for (const m of meta.materials ?? []) {
+          const resolved = nextState.materials.get(m.id);
+          if (resolved !== undefined) lastSeenMaterial.set(m.id, resolved);
+        }
+      }
+      for (const m of meta.multimeshes ?? []) {
+        const resolved = nextState.multimeshes.get(m.id);
+        if (resolved !== undefined) lastSeenMultimesh.set(m.id, resolved);
+      }
+      if (isV12)
+        for (const p of meta.particles ?? []) {
+          const resolved = nextState.particles.get(p.id);
+          if (resolved !== undefined) lastSeenParticles.set(p.id, resolved);
+        }
+      Object.assign(maxIdSeen, nextMaxIdSeen);
       state = nextState;
       hintsFresh.clear();
       if (names !== null) {
@@ -11950,6 +12123,7 @@ export function createRecordingValidator(
       }
       prevSeq = meta.seq;
       prevFrame = meta.frame;
+      prevTweenTime = meta.t_us;
       transactionCount += 1;
       if (meta.encoding === "full") fullCount += 1;
       else patchCount += 1;
@@ -11998,9 +12172,11 @@ export function createRecordingValidator(
     errors: null,
     accept,
     finish: () =>
-      endSeen
-        ? []
-        : ["recording-incomplete: the recording ends without an end record"],
+      tweenPending !== null
+        ? ["tween-association: orphan tween at end of input"]
+        : endSeen
+          ? []
+          : ["recording-incomplete: the recording ends without an end record"],
     digestPending: () => Array.from(pendingDigest).sort((a, b) => a - b),
     itemMeta: () => imTable,
     itemMetaPending: () => imPending,
@@ -12033,6 +12209,35 @@ export function createRecordingValidator(
   };
 }
 
+/** Record-only golden check: decode_version, then the index's optional association. */
+export function validateTweenRecord(
+  raw: RawRecord,
+  version: 17 | 18 | 19,
+  options?: {
+    association?: { seq: number; frame: number; t_us: number };
+    grant?: boolean;
+    items?: number[];
+  },
+): string[] {
+  if (options?.grant === false) return ["meta-schema: tween without grant"];
+  const decoded = decodeRecord(raw, version);
+  if (decoded.errors.length > 0 || !decoded.record) return decoded.errors;
+  const m = decoded.record.meta;
+  if (m.type !== "tween") return ["meta-schema: expected tween record"];
+  const a = options?.association;
+  if (a && (a.seq !== m.seq || a.frame !== m.frame || a.t_us !== m.t_us))
+    return ["tween-association: golden associated picture mismatch"];
+  if (
+    options?.items &&
+    m.events.some(
+      (e) =>
+        e.op === "begin" && "item" in e && !options.items?.includes(e.item),
+    )
+  )
+    return ["tween-entry: begin item missing"];
+  return [];
+}
+
 /** Whole-file validation: `createRecordingValidator` over every record of `data`, in order. */
 export function validateRecording(
   data: Uint8Array,
@@ -12053,7 +12258,8 @@ export function validateRecording(
     | 15
     | 16
     | 17
-    | 18 = 6,
+    | 18
+    | 19 = 6,
   options?: RecordingValidatorOptions,
 ): string[] {
   const split = splitRecords(data, version);
@@ -12388,7 +12594,8 @@ export interface ResolvedRecording {
     | "render-stream-15-resolved/1"
     | "render-stream-16-resolved/1"
     | "render-stream-17-resolved/1"
-    | "render-stream-18-resolved/1";
+    | "render-stream-18-resolved/1"
+    | "render-stream-19-resolved/1";
   session_id: string;
   stream_id: string;
   transactions: ResolvedTransaction[];
@@ -12414,7 +12621,8 @@ export function resolveRecording(
     | 15
     | 16
     | 17
-    | 18 = 6,
+    | 18
+    | 19 = 6,
 ): ResolvedRecording {
   const decoded = decodeRecording(data, version);
   const sessionRecord = decoded.records[0];
@@ -12427,7 +12635,7 @@ export function resolveRecording(
   const raws = isV11 ? splitRecords(data, version).records : [];
   const plainRaws =
     version >= 13
-      ? rs13PlainRecords(raws, version as 13 | 14 | 15 | 16 | 17 | 18)
+      ? rs13PlainRecords(raws, version as 13 | 14 | 15 | 16 | 17 | 18 | 19)
       : raws;
 
   let state = emptyResolvedState();
@@ -12498,39 +12706,41 @@ export function resolveRecording(
   }
   return {
     schema:
-      version === 18
-        ? "render-stream-18-resolved/1"
-        : version === 17
-          ? "render-stream-17-resolved/1"
-          : version === 16
-            ? "render-stream-16-resolved/1"
-            : version === 15
-              ? "render-stream-15-resolved/1"
-              : version === 14
-                ? "render-stream-14-resolved/1"
-                : version === 13
-                  ? "render-stream-13-resolved/1"
-                  : version === 12
-                    ? "render-stream-12-resolved/1"
-                    : version === 11
-                      ? "render-stream-11-resolved/1"
-                      : version === 10
-                        ? "render-stream-10-resolved/1"
-                        : version === 9
-                          ? "render-stream-9-resolved/1"
-                          : version === 8
-                            ? "render-stream-8-resolved/1"
-                            : version === 7
-                              ? "render-stream-7-resolved/1"
-                              : version === 6
-                                ? "render-stream-6-resolved/1"
-                                : version === 5
-                                  ? "render-stream-5-resolved/1"
-                                  : version === 4
-                                    ? "render-stream-4-resolved/1"
-                                    : version === 3
-                                      ? "render-stream-3-resolved/1"
-                                      : "render-stream-2-resolved/1",
+      version === 19
+        ? "render-stream-19-resolved/1"
+        : version === 18
+          ? "render-stream-18-resolved/1"
+          : version === 17
+            ? "render-stream-17-resolved/1"
+            : version === 16
+              ? "render-stream-16-resolved/1"
+              : version === 15
+                ? "render-stream-15-resolved/1"
+                : version === 14
+                  ? "render-stream-14-resolved/1"
+                  : version === 13
+                    ? "render-stream-13-resolved/1"
+                    : version === 12
+                      ? "render-stream-12-resolved/1"
+                      : version === 11
+                        ? "render-stream-11-resolved/1"
+                        : version === 10
+                          ? "render-stream-10-resolved/1"
+                          : version === 9
+                            ? "render-stream-9-resolved/1"
+                            : version === 8
+                              ? "render-stream-8-resolved/1"
+                              : version === 7
+                                ? "render-stream-7-resolved/1"
+                                : version === 6
+                                  ? "render-stream-6-resolved/1"
+                                  : version === 5
+                                    ? "render-stream-5-resolved/1"
+                                    : version === 4
+                                      ? "render-stream-4-resolved/1"
+                                      : version === 3
+                                        ? "render-stream-3-resolved/1"
+                                        : "render-stream-2-resolved/1",
     session_id: sessionMeta.session_id,
     stream_id: sessionMeta.stream.stream_id,
     transactions,

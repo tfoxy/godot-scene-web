@@ -2,8 +2,10 @@
 """Build /18 credit-window vectors from /16's viewport recording, deterministically."""
 import argparse
 import hashlib
+import importlib.util
 import json
 import struct
+import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -75,6 +77,22 @@ def main():
         name = f"invalid/window3.rs{version}"
         vectors[name] = data[:8] + struct.pack("<II", 4 + len(encoded) + len(blocks), len(encoded)) + encoded + blocks
         index["invalid"].append({"file": name, "version": version, "code": "publication-entry"})
+    spec = importlib.util.spec_from_file_location("golden17", HERE.parent / "golden-17/make_golden.py")
+    g17 = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = g17
+    spec.loader.exec_module(g17)
+    name = "node-tween.rs18"
+    vectors[name] = g17.node_recording(18)
+    index["valid"].append({"file": name, "sha256": hashlib.sha256(vectors[name]).hexdigest()})
+    for name, code, kwargs in [
+        ("tween-without-grant", "meta-schema", {"grant": False}),
+        ("material-begin", "meta-schema", {"material": True}),
+        ("client-tweens-key-order", "meta-schema", {"bad": "client-tweens-key-order"}),
+        ("missing-t-us", "tween-association", {"bad": "missing-t-us"}),
+    ]:
+        name = "invalid/" + name + ".rs18"
+        vectors[name] = g17.node_recording(18, **kwargs)
+        index["invalid"].append({"file": name, "version": 18, "code": code})
     vectors["index.json"] = (json.dumps(index, indent=2) + "\n").encode()
     for name, data in vectors.items():
         path = HERE / name
