@@ -932,6 +932,30 @@ const scenarios: Scenario[] = [
     },
   },
   {
+    name: "the late-attach lean hooks pass capture-armed",
+    mutate: async (out) => {
+      const hooksPlanned = [
+        ...new Set([
+          ...GATE0_HOOKS,
+          "canvas_texture_set_shading_parameters",
+          "material_set_next_pass",
+          "material_set_render_priority",
+        ]),
+      ].sort();
+      await editJson<{ hooks_planned: string[] }>(
+        join(out, "capture", "evidence", "counters.json"),
+        (c) => {
+          c.hooks_planned = hooksPlanned;
+        },
+      );
+      await writeFile(
+        join(out, "capture", "recording.rs2"),
+        encodeRecording({ quit: 400, hooksPlanned }),
+      );
+    },
+    checks: { "capture-armed": true, "recording-decodes": true },
+  },
+  {
     name: "counters.json omitting a hook fails capture-armed",
     mutate: (out) =>
       editJson<{ hooks_omitted: string[] }>(

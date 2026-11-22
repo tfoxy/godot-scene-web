@@ -100,9 +100,10 @@ export const STORE_DIR_NAME = "store";
  * calibrator 8's nine materials/canvas-shader hooks
  * and calibrator 9's six CanvasLayer/canvas-item hooks, `texture_set_path` (LS1) and the 20-hook
  * viewport family (VS2: texture proxies, viewport create/configure/get_texture and
- * `instance_set_scenario`, planned whenever GRC_VIEWPORTS is not off, at every stream version) --
+ * `instance_set_scenario`, planned whenever GRC_VIEWPORTS is not off, at every stream version),
+ * plus canvas-texture shading, material next-pass and render-priority setters --
  * the record is shared by gate -1, gate 0, gate 1, gate 2, gate 3, gate 4 and gate 5, so every one
- * of them plans all 100. */
+ * of them plans all 103. */
 export const GATE0_HOOKS: readonly string[] = [
   "canvas_create",
   "canvas_item_add_animation_slice",
@@ -151,13 +152,16 @@ export const GATE0_HOOKS: readonly string[] = [
   "canvas_set_parent",
   "canvas_texture_create",
   "canvas_texture_set_channel",
+  "canvas_texture_set_shading_parameters",
   "canvas_texture_set_texture_filter",
   "canvas_texture_set_texture_repeat",
   "free",
   "instance_set_scenario",
   "material_create",
   "material_create_from_shader",
+  "material_set_next_pass",
   "material_set_param",
+  "material_set_render_priority",
   "material_set_shader",
   "mesh_add_surface",
   "mesh_clear",

@@ -33,6 +33,7 @@ import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 
+import { GATE0_HOOKS } from "./gate0-checks";
 import {
   compareWorkerRecordings,
   type FixtureTextureLine,
@@ -341,8 +342,10 @@ export async function runG8kc(out: string): Promise<G8kcReport> {
         problems.push(
           "texture_set_path is not planned with no cache directory (LS1 plans it always)",
         );
-      if (c.hooks_planned.length !== 100)
-        problems.push(`${c.hooks_planned.length} hooks planned, expected 100`);
+      if (c.hooks_planned.length !== GATE0_HOOKS.length)
+        problems.push(
+          `${c.hooks_planned.length} hooks planned, expected ${GATE0_HOOKS.length}`,
+        );
       if (!("texture_set_path" in c.counts))
         problems.push("counters.json counts do not name texture_set_path");
       if (c.captured.texture_set_path !== undefined)
@@ -393,9 +396,9 @@ export async function runG8kc(out: string): Promise<G8kcReport> {
     checks.push(
       check(
         "cache-off-identical",
-        "G8kc: with no GRC_TEXTURE_CACHE_DIR the capture is the one it was (100 hooks planned: LS1 plans texture_set_path always, and the VS2 viewport family is planned by capability, no captured.texture_set_path, no texture_cache block or texture-cache.json), and with any cache state (cold, warm, prepared, bounded, damaged, repaired) every transaction's state, the hook log's texture lines and the stored payload hashes equal the uncached capture's",
+        `G8kc: with no GRC_TEXTURE_CACHE_DIR the capture is the one it was (${GATE0_HOOKS.length} hooks planned: LS1 plans texture_set_path always, and the VS2 viewport family is planned by capability, no captured.texture_set_path, no texture_cache block or texture-cache.json), and with any cache state (cold, warm, prepared, bounded, damaged, repaired) every transaction's state, the hook log's texture lines and the stored payload hashes equal the uncached capture's`,
         ran("off/capture") ? problems : null,
-        `compared ${compared.join(", ")} transactions; 100 hooks planned`,
+        `compared ${compared.join(", ")} transactions; ${GATE0_HOOKS.length} hooks planned`,
         "off/capture",
       ),
     );
@@ -413,8 +416,10 @@ export async function runG8kc(out: string): Promise<G8kcReport> {
         problems.push(
           "texture_set_path is not planned under a cache directory",
         );
-      if (c.hooks_planned.length !== 100)
-        problems.push(`${c.hooks_planned.length} hooks planned, expected 100`);
+      if (c.hooks_planned.length !== GATE0_HOOKS.length)
+        problems.push(
+          `${c.hooks_planned.length} hooks planned, expected ${GATE0_HOOKS.length}`,
+        );
       if (!((c.counts.texture_set_path ?? 0) > 0))
         problems.push("the hook was never called");
     }
@@ -452,7 +457,7 @@ export async function runG8kc(out: string): Promise<G8kcReport> {
     checks.push(
       check(
         "cache-paths",
-        "G8kc (D10): under a cache directory the capture hooks texture_set_path (100 hooks planned), logs every call (texture id and res:// path) in counters.json, and texture-cache.json names the path of every texture the fixture loaded",
+        `G8kc (D10): under a cache directory the capture hooks texture_set_path (${GATE0_HOOKS.length} hooks planned), logs every call (texture id and res:// path) in counters.json, and texture-cache.json names the path of every texture the fixture loaded`,
         ran(cold) ? problems : null,
         `${calls.length} calls, ${coldFixture.length} fixture textures all named`,
         cold,

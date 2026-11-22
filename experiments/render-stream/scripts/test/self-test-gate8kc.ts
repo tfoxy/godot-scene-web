@@ -22,6 +22,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { GATE0_HOOKS } from "../lib/gate0-checks";
 import {
   DECODE_PARAMS_ID,
   foldIndex,
@@ -130,7 +131,7 @@ function capture(
       .join("\n")}\n`,
   );
   const planned = Array.from(
-    { length: o.planned ?? 100 },
+    { length: o.planned ?? GATE0_HOOKS.length },
     (_, i) => `hook${i}`,
   );
   // LS1: texture_set_path is planned with or without a cache directory.
