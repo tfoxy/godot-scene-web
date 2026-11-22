@@ -44,6 +44,7 @@ struct TxMeta {
   bool perturb_instance = false;
   // PM5 sabotage perturb-seed (render-stream-12.md "Sabotages"), /12 only.
   bool perturb_seed = false;
+  std::optional<std::uint64_t> t_us;
 };
 Transaction make_full(const Snapshot &cur, const TxMeta &meta);
 Transaction make_patch(const Snapshot &base, const Snapshot &cur, const TxMeta &meta);

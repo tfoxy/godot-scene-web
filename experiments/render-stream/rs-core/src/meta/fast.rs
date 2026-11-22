@@ -842,6 +842,13 @@ pub(super) fn transaction(meta: &[u8], version: u8, tx: &mut TxMeta) -> O<()> {
     tx.seq = c.int_ge(1)?;
     c.lit(b",\"frame\":")?;
     tx.frame = c.int_ge(1)?;
+    if version >= 17 && c.s[c.p..].starts_with(b",\"t_us\":") {
+        c.lit(b",\"t_us\":")?;
+        tx.t_us = Some(c.int_ge(0)?.min(crate::tweens::MAX_INT + 1));
+        if tx.t_us? > crate::tweens::MAX_INT {
+            return None;
+        }
+    }
     c.lit(b",\"encoding\":")?;
     tx.encoding = Some(c.enum_of(Encoding::ALL, Encoding::as_str)?);
     c.lit(b",\"base_seq\":")?;

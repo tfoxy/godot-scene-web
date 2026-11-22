@@ -110,6 +110,9 @@ export type RenderStreamStatus =
   | { kind: "ended" };
 
 export interface RenderStreamStats {
+  /** Opt-in tween diagnostics; pauses count payload waits, not frame callbacks. */
+  clientTweens?: { payload_wait_pauses: number; [key: string]: number };
+
   /** Draws in the last second (up to 256), by damage mode: off, full, partial, skip. */
   damageModeCounts?: readonly [number, number, number, number];
   /** Medians over those draws, or null before one: planning microseconds, damaged target
@@ -311,6 +314,7 @@ export interface LoopOptions {
   recorder?: RenderStreamRecorder | null;
   /** Keep resource hints in a table (`hints`) and prefetch while idle. Default false. */
   resourceHints?: boolean;
+  clientTweens?: boolean;
   /** Hint GETs at once, default 2; clamped below the fetch cap to reserve a demand slot. */
   prefetchMaxInFlight?: number;
   /** Completed plus in-flight hint payload bytes per connection, default 64 MiB. */
@@ -602,6 +606,10 @@ export class StreamLoop {
     this.cap.activity(this.o.clock.now(), "restore");
   }
 
+  private drawSerial = 0;
+  private tweenWaitPaused = false;
+  private tweenPayloadPauses = 0;
+
   stats(): RenderStreamStats {
     const now = this.o.clock.now();
     let perSec = 0;
@@ -615,6 +623,14 @@ export class StreamLoop {
     }
     return {
       ...this.damageStats(now),
+      ...(this.o.clientTweens
+        ? {
+            clientTweens: {
+              ...this.o.core.tweenDiagnostics?.(),
+              payload_wait_pauses: this.tweenPayloadPauses,
+            },
+          }
+        : {}),
       applied: this.applied,
       appliesPerSec: perSec,
       creditRttMsP50: p50,
@@ -778,6 +794,7 @@ export class StreamLoop {
         dprMilli: c.dprMilli,
         gpuFormats: c.gpuFormats,
         itemMeta: this.ext?.request ?? null,
+        clientTweens: this.o.clientTweens,
       }),
     );
     this.executorPreparing = true;
@@ -810,6 +827,7 @@ export class StreamLoop {
       this.endpoint.protocol,
       this.ext?.request,
       this.hints !== null,
+      this.o.clientTweens,
     );
   }
 
@@ -885,7 +903,8 @@ export class StreamLoop {
       else if (m.kind === "transaction")
         rec.record(bytes, "transaction", m.full, m.seq);
       else if (m.kind === "resource") rec.record(bytes, "resource", false, 0);
-      else if (m.kind === "item_meta") rec.record(bytes, "item_meta", false, 0);
+      else if (m.kind === "item_meta" || m.kind === "tween")
+        rec.record(bytes, m.kind, false, 0);
       else if (m.kind === "end") rec.record(bytes, "end", false, 0);
       // Hints are not recorded: advisory, a recording replays as the same frames without them.
     }
@@ -894,6 +913,7 @@ export class StreamLoop {
         // Identities for the extensions, at receipt (no ext: skipped).
         if (this.ext) this.ext.itemMeta();
         return;
+      case "tween":
       case "held":
       case "resource":
         return;
@@ -1005,6 +1025,7 @@ export class StreamLoop {
   }
 
   private beginSession(conn: Connection, session: SessionMeta): void {
+    this.tweenWaitPaused = false;
     conn.streamId = session.stream?.stream_id ?? "";
     // The pin rule ends with the connection; a new one re-sends the hints still in effect.
     this.hints?.clear();
@@ -1159,6 +1180,7 @@ export class StreamLoop {
   /** receiver.gd `_process_live`, one callback. */
   private step(): void {
     const now = this.o.clock.now();
+    const drawsBefore = this.drawSerial;
     const conn = this.conn as Connection;
     switch (this.phase) {
       case "connecting":
@@ -1182,7 +1204,9 @@ export class StreamLoop {
     if (this.ctx !== "ok") {
       this.stepContext();
     } else {
-      present = this.presents(now);
+      present =
+        (this.o.clientTweens && this.o.core.tweensActive?.() === true) ||
+        this.presents(now);
       // J1: links that settled since the last callback register before this callback's
       // applier run, which draws their materials.
       const linked = this.o.core.pollPrograms?.() === true;
@@ -1222,6 +1246,19 @@ export class StreamLoop {
         present = true;
       }
     }
+    if (this.o.clientTweens) {
+      const paused =
+        this.ctx === "ok" &&
+        this.connApplied > 0 &&
+        this.o.core.tweensActive?.() === true &&
+        this.acceptedUntaken();
+      if (paused && !this.tweenWaitPaused) {
+        this.tweenPayloadPauses++;
+        this.tweenWaitPaused = true;
+      }
+      // A context loss in the middle of a payload wait does not start another wait.
+      if (!this.acceptedUntaken()) this.tweenWaitPaused = false;
+    }
     if (this.ctx === "ok" && present) {
       if (this.undrawn.length > 0) {
         // The transactions applied before one accepted and not yet taken (waiting for its
@@ -1230,6 +1267,12 @@ export class StreamLoop {
         if (this.applyDue === null || !this.acceptedUntaken())
           this.drawApplied();
       } else if (this.revisitDraw) this.drawRevisit(now);
+      else if (
+        this.o.clientTweens &&
+        this.o.core.tweensActive?.() === true &&
+        this.drawSerial === drawsBefore
+      )
+        this.tweenRedraw(now);
       else if (this.ext) this.extensionRedraw(now);
     }
     if (this.phase !== "streaming") return;
@@ -1875,6 +1918,7 @@ export class StreamLoop {
   /** The revisited state drawn, with no transaction: acks nothing, asks no credit. */
   private drawRevisit(now: number): void {
     this.revisitDraw = false;
+    if (this.o.clientTweens) this.o.core.tweenTick?.(now, false);
     if (this.ext) this.ext.beforeDraw(null, now);
     this.drawCore(this.lastAppliedSeq);
   }
@@ -1950,6 +1994,8 @@ export class StreamLoop {
   /** Draws the newest applied state and acks submitted every seq applied since the last draw. */
   private drawApplied(): void {
     this.flushApply();
+    if (this.o.clientTweens && !this.acceptedUntaken())
+      this.o.core.tweenTick?.(this.o.clock.now(), true);
     const seq = this.lastAppliedSeq;
     if (this.ext) this.ext.beforeDraw(seq, this.o.clock.now());
     this.drawCore(seq);
@@ -1968,6 +2014,14 @@ export class StreamLoop {
   /** An extension asked to draw again with no
    * transaction: `beforeDraw` (seq null), the table composed, one draw. Acks nothing, asks no
    * credit. */
+  private tweenRedraw(now: number): void {
+    if (this.acceptedUntaken() || this.connApplied === 0) return;
+    if (this.o.core.tweenTick?.(now, false)) {
+      if (this.ext) this.ext.beforeDraw(null, now);
+      this.drawCore(this.lastAppliedSeq);
+    }
+  }
+
   private extensionRedraw(now: number): void {
     const ext = this.ext as ExtensionHost;
     if (!ext.wantsRedraw || this.connApplied === 0 || this.pending !== null)
@@ -1980,6 +2034,7 @@ export class StreamLoop {
   /** One draw of the applied state; it closes every missed payload in the store since the last
    * one (one branch when there is none). */
   private drawCore(seq: number): void {
+    this.drawSerial++;
     if (!this.cold.pending) {
       this.o.core.draw(seq);
       this.sampleDamage(this.o.clock.now());
@@ -2072,11 +2127,14 @@ export class StreamLoop {
     // transactions due wait for it).
     if (!this.acceptedUntaken()) this.flushApply();
     const redrawAt = this.o.clock.now();
+    if (this.o.clientTweens && !this.acceptedUntaken())
+      core.tweenTick?.(redrawAt, true);
     if (core.redraw(this.lastAppliedSeq) === "lost") {
       this.ctx = "lost";
       this.restoreWant = null;
       return;
     }
+    this.drawSerial++;
     this.sampleDamage(this.o.clock.now());
     if (this.cold.pending) this.cold.drew(redrawAt);
     this.restoreWant = null;

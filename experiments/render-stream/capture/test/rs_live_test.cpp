@@ -1241,6 +1241,7 @@ void test_rate_two_connections() {
         "both connections' acks were immediate: nothing credit-blocked");
 }
 
+
 }  // namespace
 
 // G2b2: an inline session ("Live before HTTP"). Every ok image hash a transaction's table names
@@ -4186,6 +4187,309 @@ void test_connection_observer() {
   rig.hub.set_observer({});
 }
 
+std::string tween_hello(bool request, int version = 17) {
+  std::string h = hello7("null");
+  h.replace(h.find("render-stream/7"), std::strlen("render-stream/7"),
+            "render-stream/" + std::to_string(version));
+  h.pop_back();
+  h += R"(,"texture_encodings":"decoded","gpu_formats":"rgba8")";
+  if (request) h += R"(,"client_tweens":true)";
+  return h + '}';
+}
+
+void test_tween_lifecycle() {
+  using namespace grc::rs::tweens;
+  FakeTransport transport;
+  LiveConfig config;
+  config.tap_dir = std::string(GRC_TEST_TMP_DIR) + "/tweens";
+  auto tmpl = template_v6(); tmpl.version = ProtocolVersion::V17;
+  Hub hub(&transport, config, tmpl);
+  const auto open = [&](std::uint32_t id) {
+    hub.on_event(opened_with(id, kSubprotocolV17), 0);
+    hub.on_event(text(id, tween_hello(true)), 0);
+  };
+  open(1);
+  Pose pose; pose.item = 1;
+  Resolve resolve = [&](std::uint64_t, Pose *p) { *p = pose; return std::string(); };
+  const auto begin = [](int id) {
+    return Value::Object{{"tween_id", id}, {"object_id", 7}, {"steps", Value::Array{
+      Value::Object{{"property", "rotation"}, {"to", 2.0}, {"start_ms", 0},
+                    {"duration_ms", 1000}, {"trans", 0}, {"ease", 0}}}}};
+  };
+  const auto frame = [&](int n) {
+    auto snapshot = captured_state(1);
+    snapshot.tweens = std::make_shared<const Frame>(hub.tweens().snapshot(n * 1000, resolve));
+    hub.on_frame(n, n * 1000000ULL, &snapshot, n, 1000);
+  };
+  const auto credit = [&](std::uint32_t id) {
+    for (const auto &s : hub.summaries()) if (s.connection == id)
+      hub.on_event(text(id, ack(s.stream_id, s.transactions, "submitted")), 0);
+  };
+  hub.tweens().begin(begin(1), 1000, resolve);
+  frame(1);
+  // A resync must discard even unsent events; it does not replay an already active tween.
+  hub.tweens().begin(begin(2), 1500, resolve);
+  const auto sid = hub.summaries()[0].stream_id;
+  hub.on_event(text(1, resync(sid, 1)), 1);
+  frame(2);
+  auto wire = of_conn(transport, Sent::Binary, 1);
+  check(wire.size() == 4, "tween resync sends no pending begin or pose");
+  if (wire.size() == 4) check(has(meta_at(wire[3].bytes, 0), "\"encoding\":\"full\"") &&
+    has(meta_at(wire[3].bytes, 0), "\"t_us\":2000"), "tween resync full retains snapshot time");
+  hub.on_event(closed(1, 1000), 2);
+  open(2);
+  frame(3);
+  wire = of_conn(transport, Sent::Binary, 2);
+  check(wire.size() == 2, "reconnect mid-tween sends host state without old events");
+  hub.tweens().begin(begin(3), 3500, resolve);
+  credit(2); frame(4);
+  wire = of_conn(transport, Sent::Binary, 2);
+  check(wire.size() == 4 && has(meta_at(wire[2].bytes, 0), "\"tween_id\":\"3\""),
+    "new announcement after reconnect participates");
+  open(3);
+  credit(2); frame(5);
+  check(of_conn(transport, Sent::Binary, 3).size() == 2, "late granted peer gets no live tween pose");
+  hub.tweens().cancel(3, 5500);
+  credit(2); credit(3); frame(6);
+  wire = of_conn(transport, Sent::Binary, 3);
+  check(wire.size() == 3, "late granted peer gets no unknown cancel");
+  hub.finish(EndReason::Shutdown, 7, 7000000);
+  // The granted tap contains the uncoded session, tween records, transactions and end together.
+  const auto tapped = read_file(config.tap_dir + "/stream-2.rs2");
+  std::string live;
+  for (const auto &m : of_conn(transport, Sent::Binary, 2))
+    live.append(reinterpret_cast<const char *>(m.bytes.data()), m.bytes.size());
+  check(!tapped.empty() && tapped == live, "granted tap equals complete live stream bytes");
+  const std::vector<std::uint8_t> tap_bytes(tapped.begin(), tapped.end());
+  const auto metas = stream_metas(tap_bytes);
+  check(metas.size() == 9 && has(metas[1], "\"t_us\":3000") &&
+    has(metas[2], "\"op\":\"begin\"") && has(metas[7], "\"type\":\"transaction\""),
+    "granted tap preserves tween adjacency and timestamps");
+  if (!metas.empty()) {
+    std::uint64_t before_end = 8;
+    for (std::size_t at = 8; at + 4 < tap_bytes.size();) {
+      const auto next = at + 4 + u32le(tap_bytes, at);
+      if (next == tap_bytes.size()) { before_end = at; break; }
+      at = next;
+    }
+    check(has(metas.back(), "\"bytes_total\":" + std::to_string(before_end)),
+      "tap end counts tween bytes in bytes_total");
+    check(has(metas.back(), "\"transactions\":4") &&
+      has(metas.back(), "\"resource_records\":0"), "tween records do not count as transactions or resources");
+  }
+}
+
+void test_tween_peer_bytes() {
+  using namespace grc::rs::tweens;
+  using grc::rs::live_coding::Coding;
+  for (const auto coding : {Coding::Off, Coding::Zstd, Coding::ZstdBase}) {
+    const auto run = [&](bool peer, std::vector<ConnectionSummary> *sums) {
+      FakeTransport transport;
+      LiveConfig config; config.live_coding = coding;
+      auto tmpl = make_template(Delivery::Inline);
+      tmpl.version = peer ? ProtocolVersion::V17 : ProtocolVersion::V16;
+      Hub hub(&transport, config, tmpl);
+      const auto hello = [&](bool request, int version) {
+        auto h = tween_hello(request, version);
+        return coding == Coding::Off ? h : with_live_coding(h, "zstd-base,zstd");
+      };
+      hub.on_event(opened_with(1, kSubprotocolV16), 0);
+      hub.on_event(text(1, hello(false, 16)), 0);
+      if (peer) {
+        hub.on_event(opened_with(2, kSubprotocolV17), 0);
+        hub.on_event(text(2, hello(true, 17)), 0);
+      }
+      Pose pose; pose.item = 1;
+      Resolve resolve = [&](std::uint64_t, Pose *p) { *p = pose; return std::string(); };
+      hub.tweens().begin(Value::Object{{"tween_id", 1}, {"object_id", 7}, {"steps", Value::Array{
+        Value::Object{{"property", "rotation"}, {"to", 2.0}, {"start_ms", 0},
+                      {"duration_ms", 1000}, {"trans", 0}, {"ease", 0}}}}}, 1000, resolve);
+      for (int n = 1; n <= 4; ++n) {
+        if (n > 1) for (const auto &s : hub.summaries())
+          hub.on_event(text(s.connection, ack(s.stream_id, s.transactions, "submitted")), n);
+        auto snapshot = with_payloads(n);
+        if (hub.tweens().on()) snapshot.tweens =
+          std::make_shared<const Frame>(hub.tweens().snapshot(n * 1000, resolve));
+        hub.on_frame(n, n * 1000000ULL, &snapshot, n, 1000);
+      }
+      *sums = hub.summaries();
+      // End timing counters vary between runs, so compare through the final transaction.
+      const auto messages = transport.sent;
+      hub.finish(EndReason::Shutdown, 5, 5000000);
+      return messages;
+    };
+    std::vector<ConnectionSummary> base_sums, peer_sums;
+    const auto baseline = run(false, &base_sums), peer = run(true, &peer_sums);
+    const auto binary = [](const std::vector<Sent> &messages, std::uint32_t id) {
+      std::vector<std::vector<std::uint8_t>> out;
+      for (const auto &m : messages) if (m.kind == Sent::Binary && m.conn == id) out.push_back(m.bytes);
+      return out;
+    };
+    const auto a = binary(baseline, 1), b = binary(peer, 1);
+    check(a.size() > 5 && a.size() == b.size() && std::equal(a.begin() + 1, a.end(), b.begin() + 1),
+      "opt-out resources, transactions and live coding equal /16 baseline beside granted peer");
+    const auto session = [](const std::vector<std::uint8_t> &bytes, const std::string &id) {
+      std::string s(bytes.begin(), bytes.end());
+      const auto at = s.find(id);
+      if (at != std::string::npos) s.replace(at, id.size(), std::string(id.size(), '#'));
+      return s;
+    };
+    std::vector<std::vector<std::uint8_t>> decoded_a, decoded_b;
+    std::string session_error; std::uint64_t session_prefixed = 0;
+    if (coding == Coding::Off) { decoded_a = a; decoded_b = b; }
+    else {
+      check(model_decode(a, &decoded_a, &session_error, &session_prefixed) &&
+        model_decode(b, &decoded_b, &session_error, &session_prefixed), "opt-out live coding decodes");
+    }
+    check(!decoded_a.empty() && !decoded_b.empty() && session(decoded_a[0], base_sums[0].stream_id) ==
+      session(decoded_b[0], peer_sums[0].stream_id), "opt-out session equals baseline after random stream ID normalization");
+    check(base_sums[0].resource_records == 4 && peer_sums[0].resource_records == 4,
+      "peer byte check exercises resource introductions");
+    const auto granted = binary(peer, 2);
+    std::vector<std::vector<std::uint8_t>> decoded;
+    std::string why; std::uint64_t prefixed = 0;
+    if (coding == Coding::Off) decoded = granted;
+    else check(model_decode(granted, &decoded, &why, &prefixed), "granted coded stream decodes: " + why);
+    int tweens = 0;
+    for (std::size_t i = 1; i < decoded.size(); ++i) if (has(meta_at(decoded[i], 0), "\"type\":\"tween\"")) {
+      ++tweens;
+      check(i + 1 < decoded.size() && has(meta_at(decoded[i + 1], 0), "\"type\":\"transaction\""),
+        "coded tween record stays adjacent to its transaction after resources");
+    }
+    check(tweens == 4, "granted peer receives begin then per-frame poses with coding");
+    if (coding == Coding::ZstdBase) check(prefixed > 0, "peer byte check exercises based live coding");
+  }
+}
+
+void test_client_tweens() {
+  using namespace grc::rs::tweens;
+  const auto hello = [](bool request, int version = 17) {
+    std::string h = hello7("null");
+    h.replace(h.find("render-stream/7"),std::strlen("render-stream/7"),"render-stream/"+std::to_string(version));
+    h.pop_back();
+    h += R"(,"texture_encodings":"decoded","gpu_formats":"rgba8")";
+    if (request) h += R"(,"client_tweens":true)";
+    return h + '}';
+  };
+  ControlMessage control;
+  std::string error;
+  check(parse_control(hello(true),&control,&error,ProtocolVersion::V17) && control.client_tweens,
+        "tween hello accepted at /17");
+  check(!parse_control(hello(true,16),&control,&error,ProtocolVersion::V16),
+        "tween hello rejected below /17");
+  for (const char *bad : {"false","null","1","\"true\""}) {
+    auto h=hello(true); h.replace(h.find("true"),4,bad);
+    check(!parse_control(h,&control,&error,ProtocolVersion::V17),"tween request must be true boolean");
+  }
+  FakeTransport transport;
+  auto tmpl=template_v6(); tmpl.version=ProtocolVersion::V17;
+  LiveConfig config;
+  Hub hub(&transport,config,tmpl);
+  hub.on_event(opened_with(1,kSubprotocolV17),0);
+  hub.on_event(opened_with(2,kSubprotocolV17),0);
+  hub.on_event(opened_with(3,kSubprotocolV16),0);
+  hub.on_event(text(1,hello(true)),0);
+  hub.on_event(text(2,hello(false)),0);
+  hub.on_event(text(3,hello(false,16)),0);
+  check(hub.tweens().on(),"hello grants activate host API");
+  {
+    FakeTransport held_transport;
+    Hub held_hub(&held_transport,config,tmpl);
+    held_hub.on_event(opened_with(1,kSubprotocolV17),0);
+    held_hub.on_event(opened_with(2,kSubprotocolV17),0);
+    held_hub.on_event(text(1,hello(true)),0);
+    held_hub.on_event(text(2,hello(false)),0);
+    auto held=captured_state(1);
+    held_hub.on_frame(1,99000000,&held,1,1000);
+    check(of_conn(held_transport,Sent::Binary,1).empty(),
+          "F1 granted initial session and transaction wait for a timestamped snapshot");
+    check(of_conn(held_transport,Sent::Binary,2).size()==2,
+          "F1 pre-grant snapshot remains eligible for opted-out peers");
+    held.tweens=std::make_shared<const Frame>(held_hub.tweens().snapshot(101000,[](std::uint64_t,Pose*) { return std::string(); }));
+    held_hub.on_frame(2,999000000,&held,2,1000);
+    auto sent=of_conn(held_transport,Sent::Binary,1);
+    check(sent.size()==2 && has(meta_at(sent[1].bytes,0),"\"t_us\":101000"),
+          "F1 first granted transaction preserves capture timestamp rather than send time");
+  }
+
+  Pose pose; pose.item=1;
+  Resolve resolve=[&](std::uint64_t,Pose *p) { *p=pose; return std::string(); };
+  const Value::Object step={{"property","rotation"},{"to",1.0},{"start_ms",0},
+    {"duration_ms",1000},{"trans",0},{"ease",0}};
+  const Value::Object begin={{"tween_id",42},{"object_id",7},{"started_usec",1000},
+    {"steps",Value::Array{step}}};
+  hub.tweens().begin(begin,100000,resolve);
+  auto snapshot=captured_state(1);
+  snapshot.tweens=std::make_shared<const Frame>(hub.tweens().snapshot(101000,resolve));
+  hub.on_frame(1,101000000,&snapshot,1,1000);
+  auto on=of_conn(transport,Sent::Binary,1);
+  auto off=of_conn(transport,Sent::Binary,2);
+  auto old=of_conn(transport,Sent::Binary,3);
+  check(on.size()==3 && off.size()==2 && old.size()==2,"grant adds only one associated record");
+  if (on.size()==3 && off.size()==2 && old.size()==2) {
+    check(has(meta_at(on[0].bytes,8),"\"client_tweens\":true,\"blocks\":"),"session grants before blocks");
+    check(!has(meta_at(off[0].bytes,8),"client_tweens"),"opt-out session omits grant");
+    check(has(meta_at(on[1].bytes,0),"\"type\":\"tween\"") &&
+      has(meta_at(on[1].bytes,0),"\"begin_us\":1000"),"late begin stays keyed to creation tick");
+    check(has(meta_at(on[2].bytes,0),"\"frame\":1,\"t_us\":101000,\"encoding\":"),"transaction snapshot timestamp");
+    check(off[1].bytes==old[1].bytes,"opt-out /17 transaction identical to /16 including prediction");
+  }
+  // Hold credit on every connection. A cancel must survive until the next eligible picture.
+  hub.tweens().cancel(42,102000);
+  snapshot.tweens=std::make_shared<const Frame>(hub.tweens().snapshot(103000,resolve));
+  hub.on_frame(2,103000000,&snapshot,2,1000);
+  check(of_conn(transport,Sent::Binary,1).size()==on.size(),"no tween bytes without credit");
+  const auto sums=hub.summaries();
+  for(const auto &s : sums) hub.on_event(text(s.connection,ack(s.stream_id,1,"submitted")),2);
+  snapshot.tweens=std::make_shared<const Frame>(hub.tweens().snapshot(104000,resolve));
+  hub.on_frame(3,104000000,&snapshot,3,1000);
+  on=of_conn(transport,Sent::Binary,1);
+  off=of_conn(transport,Sent::Binary,2);
+  old=of_conn(transport,Sent::Binary,3);
+  check(on.size()==5 && off.size()==3 && old.size()==3,"credit release sends retained cancel then transaction");
+  if(on.size()==5 && off.size()==3 && old.size()==3) {
+    check(has(meta_at(on[3].bytes,0),"\"op\":\"cancel\"") &&
+      has(meta_at(on[3].bytes,0),"\"t_us\":104000"),"cancel uses actual selected snapshot timestamp");
+    check(off[2].bytes==old[2].bytes,"opt-out patch unchanged while peer plays tweens");
+  }
+  check(hub.tweens().stats().records_sent==2,"per-connection record send counters");
+  hub.on_event(closed(1,1000),3);
+  check(!hub.tweens().on(),"last granted disconnect deactivates API");
+  check(hub.summary_json().find("\"begins_accepted\": 1") != std::string::npos &&
+        hub.summary_json().find("\"records_sent\": 2") != std::string::npos,
+        "tween counters appear in the capture report");
+  hub.finish(EndReason::Shutdown,4,105000000);
+  // The rate gate must coalesce API events independently of ordinary capture epochs.
+  FakeTransport paced_transport;
+  LiveConfig paced_config;
+  paced_config.publish_period_ns=100000000;
+  paced_config.publish_target_fps=10;
+  Hub paced(&paced_transport,paced_config,tmpl);
+  paced.on_event(opened_with(1,kSubprotocolV17),0);
+  paced.on_event(text(1,hello(true)),0);
+  snapshot.tweens=std::make_shared<const Frame>(paced.tweens().snapshot(200000,resolve));
+  paced.on_frame(1,200000000,&snapshot,1,1000);
+  const auto stream=paced.summaries()[0].stream_id;
+  paced.on_event(text(1,ack(stream,1,"submitted")),1);
+  paced.tweens().begin(begin,210000,resolve);
+  snapshot.tweens=std::make_shared<const Frame>(paced.tweens().snapshot(220000,resolve));
+  paced.on_frame(2,220000000,&snapshot,2,1000);
+  paced.tweens().cancel(42,230000);
+  snapshot.tweens=std::make_shared<const Frame>(paced.tweens().snapshot(240000,resolve));
+  paced.on_frame(3,240000000,&snapshot,3,1000);
+  check(of_conn(paced_transport,Sent::Binary,1).size()==2,"rate gate holds tween events with credit available");
+  snapshot.tweens=std::make_shared<const Frame>(paced.tweens().snapshot(300000,resolve));
+  paced.on_frame(4,300000000,&snapshot,4,1000);
+  const auto paced_bytes=of_conn(paced_transport,Sent::Binary,1);
+  check(paced_bytes.size()==4,"rate tick emits one coalesced tween record");
+  if(paced_bytes.size()==4) {
+    const auto m=meta_at(paced_bytes[2].bytes,0);
+    check(has(m,"\"op\":\"begin\"") && has(m,"\"op\":\"cancel\"") &&
+      has(m,"\"begin_us\":1000"),"rate coalescing retains begin then cancel and delayed start");
+  }
+  paced.finish(EndReason::Shutdown,5,310000000);
+}
+
 int main(int argc, char **argv) {
   grc::rs13::set_verify_meta(true);  // W13p: predict_meta() == the meta JSON
   // HC5: `--formation=thread` runs every hub here through the encode thread (each frame callback
@@ -4195,6 +4499,9 @@ int main(int argc, char **argv) {
       grc::rs2::set_default_formation(grc::rs2::Formation::Thread, true);
     }
   }
+  test_client_tweens();
+  test_tween_lifecycle();
+  test_tween_peer_bytes();
   test_connection_observer();
   test_pm1_multimesh_buffer_f();
   test_pm5_v11_viewer_of_v12_host();

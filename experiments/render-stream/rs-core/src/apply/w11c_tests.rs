@@ -73,6 +73,7 @@ fn replay(data: &[u8], apply_every: usize, retain: bool) -> Run {
                 }
             }
             Accepted::End
+            | Accepted::Tween
             | Accepted::ItemMeta
             | Accepted::ResourceHint { .. }
             | Accepted::ResourceUnhint { .. } => {}
@@ -213,6 +214,7 @@ fn golden_11_incremental_paint_equals_a_fresh_applier() {
                 }
             }
             Accepted::End
+            | Accepted::Tween
             | Accepted::ItemMeta
             | Accepted::ResourceHint { .. }
             | Accepted::ResourceUnhint { .. } => {}

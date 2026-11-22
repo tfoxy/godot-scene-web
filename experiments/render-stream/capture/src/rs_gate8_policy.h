@@ -3,7 +3,7 @@
 // Pure C++17, no engine types, so it is unit-testable without a Godot process (the ctest
 // rs_gate8_policy_test). The environment variables it reads:
 //
-//   GRC_STREAM_VERSION    6 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16, default 6. The wire version of FILE sinks only (render-stream-8.md
+//   GRC_STREAM_VERSION    6 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17, default 6. The wire version of FILE sinks only (render-stream-8.md
 //                         "Which sinks speak /8"); the live listener negotiates per connection.
 //                         9 (G8k9, render-stream-9.md) is /8 plus the texture-delivery wire; it is the
 //                         only way `render-stream.9` is ever offered. 10 (CG1, render-stream-10.md)
@@ -40,7 +40,7 @@ namespace grc {
 namespace rs {
 
 struct Gate8Policy {
-  // GRC_STREAM_VERSION: the wire version of file sinks. V6 (the default), V8 to V16.
+  // GRC_STREAM_VERSION: the wire version of file sinks. V6 (the default), V8 to V17.
   rs2::ProtocolVersion file_version = rs2::ProtocolVersion::V6;
   bool stream_version_set = false;  // GRC_STREAM_VERSION was present and non-empty
   bool adopt = false;               // GRC_ADOPT=arm

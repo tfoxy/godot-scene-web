@@ -136,6 +136,8 @@ export interface RenderStreamClientOptions {
    * Default false: no /15 offer, no table, and the offer, the hello and the core's calls are the
    * client's without the option. Older cores without hint selection keep only the table. */
   resourceHints?: boolean;
+  /** Play announced Godot tweens locally. Opt-in, approximate parity; requires /17. Default false. */
+  clientTweens?: boolean;
   /** Hint GETs at once (default 2). At most 3, reserving a slot for demand; 0 disables prefetch. */
   prefetchMaxInFlight?: number;
   /** Per-connection hint payload byte budget, completed plus in flight (default 64 MiB). */
@@ -332,7 +334,14 @@ export function createRenderStreamClient(
         `render-stream client: ${key} must be a non-negative safe integer`,
       );
   }
-  clientProtocol(endpoint.protocol, ext?.request, resourceHints);
+  if (typeof (options.clientTweens ?? false) !== "boolean")
+    throw new TypeError("render-stream client: clientTweens must be a boolean");
+  clientProtocol(
+    endpoint.protocol,
+    ext?.request,
+    resourceHints,
+    options.clientTweens,
+  );
   if (typeof (options.viewports ?? true) !== "boolean")
     throw new TypeError("render-stream client: viewports must be a boolean");
   if (typeof (options.transparentClear ?? false) !== "boolean")
@@ -533,7 +542,12 @@ class Client implements RenderStreamClient {
 
   setEndpoint(e: RenderStreamEndpoint): void {
     const next = validateEndpoint(e);
-    clientProtocol(next.protocol, this.ext?.request, this.o.resourceHints);
+    clientProtocol(
+      next.protocol,
+      this.ext?.request,
+      this.o.resourceHints,
+      this.o.clientTweens,
+    );
     if (sameEndpoint(next, this.endpoint)) return;
     this.endpoint = next;
     this.loop?.setEndpoint(next);
@@ -641,6 +655,7 @@ class Client implements RenderStreamClient {
       this.endpoint.protocol,
       this.ext?.request,
       this.o.resourceHints,
+      this.o.clientTweens,
     );
     const build = (protocol: RenderStreamProtocol): GswRs => {
       const presentation = this.endpoint.presentation;
@@ -657,6 +672,7 @@ class Client implements RenderStreamClient {
             this.o.viewports ?? true,
             this.o.transparentClear ?? false,
             this.damageRedraw,
+            this.o.clientTweens,
           ),
         );
       } catch (e) {
@@ -706,6 +722,7 @@ class Client implements RenderStreamClient {
       ext: this.ext,
       recorder: this.recorder,
       resourceHints: this.o.resourceHints === true,
+      clientTweens: this.o.clientTweens === true,
       prefetchMaxInFlight: this.o.prefetchMaxInFlight,
       prefetchBudgetBytes: this.o.prefetchBudgetBytes,
       frameCap: this.frameCap,

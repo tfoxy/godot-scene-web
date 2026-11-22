@@ -615,6 +615,7 @@ impl ItemMetaDump {
     pub fn observe(&mut self, v: &crate::validate::Validator, accepted: crate::validate::Accepted) {
         use crate::validate::Accepted;
         match accepted {
+            Accepted::Tween => {}
             Accepted::ItemMeta => self.held = v.item_meta_pending().cloned(),
             Accepted::Transaction => {
                 if let Some(r) = self.held.take() {
@@ -753,6 +754,7 @@ pub fn to13_from14(data14: &[u8]) -> Result<Vec<u8>, Error> {
         let rec = span.bytes(data14);
         let at = out.len();
         match v.accept(rec, span.offset)? {
+            Accepted::Tween => {}
             Accepted::ItemMeta => {
                 let p = v
                     .item_meta_pending()

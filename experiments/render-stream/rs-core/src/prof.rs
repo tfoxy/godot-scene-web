@@ -289,6 +289,7 @@ pub fn replay_every_with_programs(
                 carry_digest += digest_us;
             }
             Accepted::End
+            | Accepted::Tween
             | Accepted::ItemMeta
             | Accepted::ResourceHint { .. }
             | Accepted::ResourceUnhint { .. } => {}

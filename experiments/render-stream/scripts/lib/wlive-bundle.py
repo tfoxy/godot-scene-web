@@ -81,8 +81,10 @@ def main():
         for leg in ('carriers', 'wss')], 'imports_only': [], 'sabotage': []}
     (live / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n', encoding='utf-8')
     size = sum(p.stat().st_size for p in out.rglob('*') if p.is_file())
-    if size > 300_000_000:
-        raise ValueError(f'bundle exceeds 300 MB: {size} bytes')
+    # headroom for statically linked capture tests (about 3 MB each); the uploaded artifact compresses to about a third
+    bundle_limit = 320_000_000 if windows else 300_000_000
+    if size > bundle_limit:
+        raise ValueError(f'bundle exceeds {bundle_limit // 1_000_000} MB: {size} bytes')
     print(f'wlive bundle: {live}, total bundle bytes={size}')
     return 0
 

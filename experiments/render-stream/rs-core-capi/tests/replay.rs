@@ -24,6 +24,24 @@ fn golden7() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../protocol/golden-7")
 }
 
+#[test]
+fn native_receiver_rejects_client_tween_protocol_and_records() {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../protocol/golden-17");
+    let data = std::fs::read(dir.join("full.rs17")).unwrap();
+    let spans = wire::split_records(&data, 17).unwrap();
+    let mut core = Core::new();
+    assert_eq!(core.session(&data, spans[0].offset, 17), KIND_ERROR);
+    assert!(mentions(&core.vt.out, "bad-magic"));
+
+    let data = std::fs::read(dir.join("../golden-15/full.rs15")).unwrap();
+    let spans = wire::split_records(&data, 15).unwrap();
+    assert_eq!(core.session(&data, spans[0].offset, 15), KIND_SESSION);
+    let tween = std::fs::read(dir.join("begin.record")).unwrap();
+    assert_eq!(core.accept(&tween, 0), KIND_ERROR);
+    assert!(mentions(&core.vt.out, "meta-schema: tween without grant"));
+    assert!(core.state().unwrap().items.is_empty());
+}
+
 fn payloads() -> HashMap<Hash, Vec<u8>> {
     payloads_in(&golden().join("payloads"))
 }

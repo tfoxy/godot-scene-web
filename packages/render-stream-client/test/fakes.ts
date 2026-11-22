@@ -360,6 +360,7 @@ export function harness(
     | "prefetchMaxInFlight"
     | "prefetchBudgetBytes"
     | "frameCap"
+    | "clientTweens"
   > = {},
   core: FakeCore = new FakeCore(),
   endpoint: RenderStreamEndpoint = ENDPOINT,

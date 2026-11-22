@@ -1,0 +1,231 @@
+{
+  "schema": "render-stream-17-golden-index/1",
+  "protocol": "render-stream/17",
+  "valid": [
+    {
+      "file": "full.rs17",
+      "hex": "full.hex",
+      "sha256": "f3c8b45e9fddadd9518c683028bddec432ee6d6dffd71f6ecab07b425df4b249",
+      "rs16": "../golden-16/full.rs16"
+    },
+    {
+      "file": "hints.rs17",
+      "hex": "hints.hex",
+      "sha256": "35b4864c806ddd05efe0605965b3a891d21e182cbc8fda35fc069dc1887ab0fa",
+      "rs16": "../golden-16/hints.rs16"
+    },
+    {
+      "file": "inline.rs17",
+      "hex": "inline.hex",
+      "sha256": "f1517f8d37ea7676bb1feba1eb7c0a822a0934903f9fc8dfe52474745d014894",
+      "rs16": "../golden-16/inline.rs16"
+    },
+    {
+      "file": "item-meta-v2.rs17",
+      "hex": "item-meta-v2.hex",
+      "sha256": "23be65ebeb4797380e32493282f0c6396313051b0870b0e537e85062b7e3adf8",
+      "rs16": "../golden-16/item-meta-v2.rs16"
+    },
+    {
+      "file": "item-meta.rs17",
+      "hex": "item-meta.hex",
+      "sha256": "ff36a31ba37dc74d6ed1c827b58b6e9c025ec856dfb23e8a4068f4ec40e3bfc3",
+      "rs16": "../golden-16/item-meta.rs16"
+    },
+    {
+      "file": "patch.rs17",
+      "hex": "patch.hex",
+      "sha256": "5d9a79fcbc2fad172f3efa722d5aac83e80b45fefc3fb036762e417424c31446",
+      "rs16": "../golden-16/patch.rs16"
+    },
+    {
+      "file": "predict.rs17",
+      "hex": "predict.hex",
+      "sha256": "8231e909ade5d2c966521bcc1b907f5e6e6c8cfb74bed6da2af527a94b100365",
+      "rs16": "../golden-16/predict.rs16"
+    },
+    {
+      "file": "viewports.rs17",
+      "hex": "viewports.hex",
+      "sha256": "7d6f11edc03c7d24cc50d9dd2f0fb78622fb1670ab5685a146e53163ee5882ba",
+      "rs16": "../golden-16/viewports.rs16"
+    },
+    {
+      "file": "begin.record",
+      "hex": "begin.hex",
+      "decoded": "begin.decoded.json",
+      "sha256": "03baaca7e0f098b979bb9067a4fce7b9613074863d58b50fd575bd8d1b99fce0",
+      "record_only": true
+    },
+    {
+      "file": "cancel-removed.record",
+      "hex": "cancel-removed.hex",
+      "decoded": "cancel-removed.decoded.json",
+      "sha256": "7ef7596f1d9b06b0b9a42e1931854c9348879d59e7ea836b37f92dc73426cd30",
+      "record_only": true
+    },
+    {
+      "file": "poses.record",
+      "hex": "poses.hex",
+      "decoded": "poses.decoded.json",
+      "sha256": "b97ba6b9bd304734c3c79377837a4519261ffabd0f2e2f3f32e8b3df277b004a",
+      "record_only": true
+    }
+  ],
+  "invalid": [
+    {
+      "file": "invalid/unknown-key.record",
+      "error": "meta-schema",
+      "record_only": true,
+      "association": {
+        "seq": 1,
+        "frame": 10,
+        "t_us": 102000
+      },
+      "grant": true,
+      "items": [
+        7
+      ]
+    },
+    {
+      "file": "invalid/unknown-property.record",
+      "error": "meta-schema",
+      "record_only": true,
+      "association": {
+        "seq": 1,
+        "frame": 10,
+        "t_us": 102000
+      },
+      "grant": true,
+      "items": [
+        7
+      ]
+    },
+    {
+      "file": "invalid/bad-id.record",
+      "error": "meta-schema",
+      "record_only": true,
+      "association": {
+        "seq": 1,
+        "frame": 10,
+        "t_us": 102000
+      },
+      "grant": true,
+      "items": [
+        7
+      ]
+    },
+    {
+      "file": "invalid/bad-easing.record",
+      "error": "meta-schema",
+      "record_only": true,
+      "association": {
+        "seq": 1,
+        "frame": 10,
+        "t_us": 102000
+      },
+      "grant": true,
+      "items": [
+        7
+      ]
+    },
+    {
+      "file": "invalid/wrong-offset.record",
+      "error": "tween-offset",
+      "record_only": true,
+      "association": {
+        "seq": 1,
+        "frame": 10,
+        "t_us": 102000
+      },
+      "grant": true,
+      "items": [
+        7
+      ]
+    },
+    {
+      "file": "invalid/wrong-count.record",
+      "error": "tween-offset",
+      "record_only": true,
+      "association": {
+        "seq": 1,
+        "frame": 10,
+        "t_us": 102000
+      },
+      "grant": true,
+      "items": [
+        7
+      ]
+    },
+    {
+      "file": "invalid/empty-steps.record",
+      "error": "tween-entry",
+      "record_only": true,
+      "association": {
+        "seq": 1,
+        "frame": 10,
+        "t_us": 102000
+      },
+      "grant": true,
+      "items": [
+        7
+      ]
+    },
+    {
+      "file": "invalid/wrong-end.record",
+      "error": "tween-entry",
+      "record_only": true,
+      "association": {
+        "seq": 1,
+        "frame": 10,
+        "t_us": 102000
+      },
+      "grant": true,
+      "items": [
+        7
+      ]
+    },
+    {
+      "file": "invalid/missing-pose.record",
+      "error": "tween-entry",
+      "record_only": true,
+      "association": {
+        "seq": 1,
+        "frame": 10,
+        "t_us": 102000
+      },
+      "grant": true,
+      "items": [
+        7
+      ]
+    },
+    {
+      "file": "invalid/future-start.record",
+      "error": "tween-time",
+      "record_only": true,
+      "association": {
+        "seq": 1,
+        "frame": 10,
+        "t_us": 102000
+      },
+      "grant": true,
+      "items": [
+        7
+      ]
+    },
+    {
+      "file": "invalid/mismatch-frame.record",
+      "error": "tween-association",
+      "record_only": true,
+      "association": {
+        "seq": 1,
+        "frame": 10,
+        "t_us": 102000
+      },
+      "grant": true,
+      "items": [
+        7
+      ]
+    }
+  ]
+}

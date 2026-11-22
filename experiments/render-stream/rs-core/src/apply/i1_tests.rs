@@ -92,6 +92,7 @@ fn run(path: &str, version: u8) -> (usize, usize, usize) {
                 }
             }
             Accepted::End
+            | Accepted::Tween
             | Accepted::ItemMeta
             | Accepted::ResourceHint { .. }
             | Accepted::ResourceUnhint { .. } => {}

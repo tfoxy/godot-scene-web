@@ -514,6 +514,15 @@ impl Core {
         v.str(&digest);
         v.key("meta");
         match accepted {
+            Accepted::Tween => {
+                // Native sessions stop at /15 and cannot negotiate client tweens.
+                self.write_failure(
+                    record,
+                    offset,
+                    &Error::new("meta-schema", "native receiver does not support client tweens"),
+                );
+                return KIND_ERROR;
+            }
             Accepted::Resource { hash } => {
                 kind = KIND_RESOURCE;
                 self.last_resource = Some(hash);

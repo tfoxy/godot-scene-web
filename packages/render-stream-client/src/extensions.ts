@@ -156,8 +156,9 @@ export interface OverrideTable {
   /** The item's own override, or null. */
   get(id: number): Readonly<Required<OverrideValues>> | null;
   /** The composed override transform of the item and its ancestors (`E`, identity when
-   * none): the item draws at `E · query.transform(id)`, and `E⁻¹` maps a drawn point back to
-   * the game's. */
+   * none): with clientTweens off the item draws at `E · query.transform(id)`. With
+   * clientTweens on, E multiplies the displayed tween base; host queries stay unchanged. `E⁻¹` maps a drawn point back to
+   * that displayed base. */
   effective(id: number): Affine2D;
   /** Removes the item's whole entry (every module's values on that id). */
   clear(id: number): void;
@@ -174,7 +175,7 @@ export interface OverrideTable {
 export interface ItemQuery {
   parent(id: number): number | null;
   children(id: number): Uint32Array;
-  /** The game's draw transform, before any override. */
+  /** Latest accepted host transform, before client tweens and extension overrides. */
   transform(id: number): Affine2D | null;
   /** The global AABB of the item's own commands, presentation px (null: it draws nothing). */
   rect(id: number): Rect | null;
@@ -340,6 +341,8 @@ export interface ExtensionCore {
   /** `[parent, visible, has_xform, xform x6, has_rect, rect x4]`, or empty. The answer may be
    * the core's one scratch row: read it before the next `queryItem`. */
   queryItem(id: number): ArrayLike<number>;
+  /** Internal setGlobal base: includes client tweens, excludes extension overrides. */
+  queryDisplayedTransform?(id: number): Affine2D | null;
   /** `queryItem`'s `visible` from the ancestor walk alone (false for no such item). */
   itemVisible(id: number): boolean;
   /** `queryItem` for every id, `ITEM_ROW_STRIDE` floats each into `out` (an unknown id:
@@ -449,7 +452,10 @@ class Table implements OverrideTable {
   owners: Map<number, string> | null = null;
   private warned: Set<string> | null = null;
 
-  constructor(private readonly query: ItemQuery) {}
+  constructor(
+    private readonly query: ItemQuery,
+    private readonly displayed?: (id: number) => Affine2D | null,
+  ) {}
 
   get size(): number {
     return this.entries.size;
@@ -537,7 +543,9 @@ class Table implements OverrideTable {
   }
 
   setGlobal(id: number, xf: Affine2D): void {
-    const resolved = this.query.transform(id);
+    const resolved = this.displayed
+      ? this.displayed(id)
+      : this.query.transform(id);
     if (resolved === null) return;
     const p = this.query.parent(id);
     const parentE = p === null ? IDENTITY : this.effective(p);
@@ -726,7 +734,11 @@ export class ExtensionHost {
       },
     };
     this.query = query;
-    this.table = new Table(this.query);
+    this.table = new Table(this.query, (id) =>
+      this.core?.queryDisplayedTransform
+        ? this.core.queryDisplayedTransform(id)
+        : this.query.transform(id),
+    );
     if (this.drawers.length > 1) this.table.owners = new Map();
   }
 

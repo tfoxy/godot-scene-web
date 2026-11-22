@@ -158,7 +158,7 @@ void test_v9_policy() {
   check(parse("9", nullptr, nullptr, nullptr, &p, &error) &&
             p.file_version == ProtocolVersion::V9 && !p.any() && p.speaks_v8() && p.speaks_v9(),
         "GRC_STREAM_VERSION=9 is a /9 file sink without a policy (G8k9)");
-  check(!parse("7", nullptr, nullptr, nullptr, &p, &error) && error.find("6, 8, 9, 10, 11, 12, 13, 14, 15 or 16") != std::string::npos,
+  check(!parse("7", nullptr, nullptr, nullptr, &p, &error) && error.find("6, 8, 9, 10, 11, 12, 13, 14, 15, 16 or 17") != std::string::npos,
         "GRC_STREAM_VERSION=7 is still invalid");
   check(parse("8", nullptr, nullptr, nullptr, &p, &error) && !p.speaks_v9(), "/8 does not speak /9");
   Gate8Policy policy;
@@ -248,9 +248,9 @@ void test_v10_policy() {
         "GRC_STREAM_VERSION=10 is a /10 file sink without a policy, speaking /8 and /9's keys");
   check(parse("9", nullptr, nullptr, nullptr, &p, &error) && !p.speaks_v10(),
         "/9 does not speak /10");
-  check(!parse("17", nullptr, nullptr, nullptr, &p, &error) &&
-            error.find("6, 8, 9, 10, 11, 12, 13, 14, 15 or 16") != std::string::npos,
-        "GRC_STREAM_VERSION=17 is invalid, and the error lists 16");
+  check(!parse("18", nullptr, nullptr, nullptr, &p, &error) &&
+            error.find("6, 8, 9, 10, 11, 12, 13, 14, 15, 16 or 17") != std::string::npos,
+        "GRC_STREAM_VERSION=18 is invalid, and the error lists 17");
   // render-stream-15.md "Who speaks /15": .15 first, then /13's list; /15 speaks every /14 key.
   check(parse("15", nullptr, nullptr, nullptr, &p, &error) &&
             p.file_version == ProtocolVersion::V15 && p.speaks_v15() && p.speaks_v14() &&
@@ -321,6 +321,14 @@ void test_v10_policy() {
 
 // VS2 (render-stream-16.md "Who speaks /16"; viewport-surfaces-design.md D2, D3, D14).
 void test_v16_policy() {
+  Gate8Policy v17;
+  std::string why;
+  check(parse("17", nullptr, nullptr, nullptr, &v17, &why) &&
+            v17.file_version == ProtocolVersion::V17 && v17.speaks_v16(),
+        "GRC_STREAM_VERSION=17 retains viewport support");
+  check(grc::rs::gate8_live_subprotocols(v17) ==
+            std::vector<std::string>{"render-stream.17","render-stream.16"},
+        "/17 offers itself first and preserves /16 availability");
   Gate8Policy p;
   std::string error;
   check(parse("16", nullptr, nullptr, nullptr, &p, &error) &&

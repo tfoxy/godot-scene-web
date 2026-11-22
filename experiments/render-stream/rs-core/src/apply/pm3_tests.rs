@@ -56,6 +56,7 @@ fn replay(half: bool, undrawn: bool) -> Seen {
                 }
             }
             Accepted::End
+            | Accepted::Tween
             | Accepted::ItemMeta
             | Accepted::ResourceHint { .. }
             | Accepted::ResourceUnhint { .. } => {}

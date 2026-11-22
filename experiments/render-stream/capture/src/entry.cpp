@@ -220,6 +220,7 @@
 #include "rs_carrier_ext.h"
 #include "rs_carrier_gd.h"
 #include "rs_capture_gd.h"
+#include "rs_tweens_host.h"
 #include "rs_carrier_set.h"
 #include "rs_net_module.h"
 #include "rs_expose.h"
@@ -983,7 +984,8 @@ std::string result_json() {
   if (g_stream.gate8.speaks_v8()) {
     json.key("gate8").object_begin();
     json.field("file_stream_version", static_cast<int64_t>(
-                   g_stream.gate8.speaks_v16()   ? 16
+                   g_stream.gate8.file_version == rs2::ProtocolVersion::V17 ? 17
+                   : g_stream.gate8.speaks_v16()   ? 16
                    : g_stream.gate8.speaks_v15() ? 15
                    : g_stream.gate8.speaks_v14() ? 14
                    : g_stream.gate8.speaks_v13() ? 13
@@ -3174,7 +3176,8 @@ void stream_start() {
   // ID3: GRC_STREAM_VERSION=14 selects /14 (render-stream-14.md): /13 plus item_meta v2.
   // GRC_STREAM_VERSION=15 selects /15 (render-stream-15.md): /14 plus hints and size_override.
   // VS2: GRC_STREAM_VERSION=16 selects /16 (render-stream-16.md): /15 plus viewport surfaces.
-  session.version = g_stream.gate8.speaks_v16()   ? rs2::ProtocolVersion::V16
+  session.version = g_stream.gate8.file_version == rs2::ProtocolVersion::V17 ? rs2::ProtocolVersion::V17
+                    : g_stream.gate8.speaks_v16()   ? rs2::ProtocolVersion::V16
                     : g_stream.gate8.speaks_v15() ? rs2::ProtocolVersion::V15
                     : g_stream.gate8.speaks_v14() ? rs2::ProtocolVersion::V14
                     : g_stream.gate8.speaks_v13() ? rs2::ProtocolVersion::V13
@@ -3715,7 +3718,7 @@ void stream_start() {
                                                    rs2::kSubprotocolV9, rs2::kSubprotocolV10,
                                                    rs2::kSubprotocolV11, rs2::kSubprotocolV12,
                                                    rs2::kSubprotocolV13, rs2::kSubprotocolV14,
-                                                   rs2::kSubprotocolV15, rs2::kSubprotocolV16};
+                                                   rs2::kSubprotocolV15, rs2::kSubprotocolV16, rs2::kSubprotocolV17};
     {
       // ID3: the list itself, for the pure-path check (identical without a v2 grant).
       std::string names;
@@ -5222,6 +5225,10 @@ void stream_publish(uint64_t frame) {
   const bool serving = g_live.hub != nullptr && g_live.served != nullptr && !g_live.stopped &&
                        g_live.hub->has_viewer();
   if (g_stream.publisher == nullptr && !live_wants && !serving) {
+    // Credit and publish pacing must not move an omitted start to the next send.
+    if (g_live.hub && g_live.hub->tweens().on()) {
+      g_live.hub->tweens().announce_frame(rs::tweens::ticks_usec());
+    }
     multimesh_states_log();
     particles_states_log();  // PM1: a free's last state, even without a snapshot
     if (g_live.hub != nullptr) {
@@ -5237,6 +5244,10 @@ void stream_publish(uint64_t frame) {
   const uint64_t t0 = monotonic_ns();
   rs::Captured snapshot = rs::mirror_snapshot(0, frame);
   uint64_t snapshot_ns = monotonic_ns() - t0;
+  if (g_live.hub && g_live.hub->tweens().on()) {
+    snapshot.tweens = std::make_shared<const rs::tweens::Frame>(
+        g_live.hub->tweens().snapshot(rs::tweens::ticks_usec(),rs::tweens::resolve_node));
+  }
   if (g_meta.grant != 0) {
     item_meta_frame(frame);  // TAG1: off, one branch; on, the frame's new items
   }
@@ -6783,6 +6794,7 @@ cap::Value::Object api_state() {
     for (const auto &[name, count] : *threads->named) own += count;
     snapshot["capture_threads"] = own;
   }
+  if (g_live.hub) snapshot["client_tweens"] = g_live.hub->tweens().state();
   return snapshot;
 }
 void api_json_value(JsonWriter &j, const cap::Value &v) {
@@ -7266,7 +7278,15 @@ void initialize(void * /*userdata*/, GDExtensionInitializationLevel level) {
     if (!live::gd_carrier_class_register(&why)) {
       log_line("carrier class: " + why);
     }
-    if (!cap::gd_capture_register(api_invoke, g_state.mode == "standby" || g_state.mode == "arm", &why)) {
+    if (!cap::gd_capture_register(api_invoke, g_state.mode == "standby" || g_state.mode == "arm", &why,
+        [](const std::string &method, const rs::tweens::Value &value) {
+          const auto now = rs::tweens::ticks_usec();
+          if (method == "tween_begin") g_live.hub->tweens().begin(value,now,rs::tweens::resolve_node);
+          else g_live.hub->tweens().cancel(value,now);
+        }, []() {
+          return std::this_thread::get_id() == g_api_main && g_state.armed && g_live.hub &&
+                 g_live.hub->tweens().on();
+        })) {
       log_line("capture class: " + why);
     }
     // RenderStreamTrack, a script receiver of one track kind.

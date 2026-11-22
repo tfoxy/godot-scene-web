@@ -128,6 +128,7 @@ class Line {
 // ------------------------------------------------------------------ control-message parser
 
 struct Value {
+  bool is_bool = false;
   bool is_string = false;
   // render-stream-7.md "Hello": `token`/`manifest_sha256` may be JSON null -- the only control
   // message fields that ever are (every other type/key stays flat strings and non-negative
@@ -181,6 +182,11 @@ class Parser {
           if (!string_lists(&value.object)) {
             return fail(error, "\"item_meta\" is not an object of arrays of strings");
           }
+        } else if ((c == 't' && s_.compare(p_,4,"true") == 0) ||
+                   (c == 'f' && s_.compare(p_,5,"false") == 0)) {
+          value.is_bool = true;
+          value.number = c == 't' ? 1 : 0;
+          p_ += c == 't' ? 4 : 5;
         } else if (c == 'n') {
           // render-stream-7.md "Hello": `null` is legal only for `token`/`manifest_sha256`,
           // enforced below once the whole object is parsed and the field is known.
@@ -441,7 +447,8 @@ std::size_t stage_index(AckStage stage) { return static_cast<std::size_t>(stage)
 
 // The hello `protocol` string of a version (render-stream-N.md "Live transport").
 const char *protocol_string(ProtocolVersion version) {
-  return version == ProtocolVersion::V16   ? kProtocolV16
+  return version == ProtocolVersion::V17 ? kProtocolV17
+         : version == ProtocolVersion::V16   ? kProtocolV16
          : version == ProtocolVersion::V15 ? kProtocolV15
          : version == ProtocolVersion::V14 ? kProtocolV14
          : version == ProtocolVersion::V13 ? kProtocolV13
@@ -566,6 +573,13 @@ bool parse_control(const std::string &text, ControlMessage *out, std::string *er
   const bool optional_item_meta =
       message.type == ControlType::Hello && is_v13_or_later(version);
   for (const auto &field : fields) {
+    if (message.type == ControlType::Hello && version == ProtocolVersion::V17 &&
+        field.first == "client_tweens") {
+      if (!field.second.is_bool || field.second.number != 1) return fail("client_tweens must be true");
+      message.client_tweens = true;
+      continue;
+    }
+    if (field.second.is_bool) return fail("unexpected boolean");
     if (optional_live_coding && field.first == "live_coding") {
       continue;
     }
@@ -854,6 +868,7 @@ struct Hub::Conn {
   std::uint64_t opened_ns = 0;
   bool hello_received = false;
   AckStage credit_stage = AckStage::Submitted;
+  bool client_tweens = false;
   Session session;
   std::uint64_t next_seq = 1;
   // The credit window: the sent seqs that
@@ -1061,6 +1076,7 @@ struct Hub::Job {
   std::shared_ptr<const rs::Captured> record_base;
   std::vector<std::pair<std::string, std::uint32_t>> given;
   TxMeta meta;
+  rs::tweens::Record tweens;
   bool full = false;
   std::shared_ptr<const rs::Captured> tx_base;  // null for a full transaction
   // TAG1: the connection's grant (null: no records), and the identities the main thread resolved
@@ -1236,7 +1252,9 @@ namespace {
 // (not including) `,"status":`.
 std::string tx_prefix(const TxMeta &meta, bool full) {
   std::string m = "{\"type\":\"transaction\",\"seq\":" + std::to_string(meta.seq) +
-                  ",\"frame\":" + std::to_string(meta.frame) + ",\"encoding\":\"" +
+                  ",\"frame\":" + std::to_string(meta.frame) +
+                  (meta.t_us ? ",\"t_us\":" + std::to_string(*meta.t_us) : std::string()) +
+                  ",\"encoding\":\"" +
                   to_wire(full ? Encoding::Full : Encoding::Patch) + "\",\"base_seq\":" +
                   (full ? std::string("null") : std::to_string(meta.base_seq));
   return m;
@@ -1534,6 +1552,7 @@ void Hub::host_close(Conn &c, std::uint16_t code, const std::string &reason) {
     return;
   }
   transport_->close(c.id, code, reason);
+  tweens_.leave(c.s.connection);
   c.state = State::Closed;
   release_closed(c);
   c.s.close_code = code;
@@ -1600,7 +1619,8 @@ void Hub::on_event(const LiveEvent &event, std::uint64_t frame) {
       // ID3: render-stream.14 -> /14 (render-stream-14.md), listed only under a v2 grant.
       // render-stream.15 -> /15 (render-stream-15.md), listed only under GRC_STREAM_VERSION=15.
       // VS2: render-stream.16 -> /16 (render-stream-16.md), listed only under GRC_STREAM_VERSION=16.
-      c.version = event.subprotocol == kSubprotocolV16   ? ProtocolVersion::V16
+      c.version = event.subprotocol == kSubprotocolV17 ? ProtocolVersion::V17
+                  : event.subprotocol == kSubprotocolV16   ? ProtocolVersion::V16
                   : event.subprotocol == kSubprotocolV15 ? ProtocolVersion::V15
                   : event.subprotocol == kSubprotocolV14 ? ProtocolVersion::V14
                   : event.subprotocol == kSubprotocolV13 ? ProtocolVersion::V13
@@ -1667,6 +1687,7 @@ void Hub::on_event(const LiveEvent &event, std::uint64_t frame) {
       if (c == nullptr || c->state == State::Closed) {
         return;  // already closed by the host (host_close logged it)
       }
+      tweens_.leave(c->s.connection);
       c->state = State::Closed;
       release_closed(*c);
       c->s.close_code = event.code;
@@ -1810,6 +1831,8 @@ void Hub::handle_text(Conn &c, const LiveEvent &event, std::uint64_t frame) {
                     1008, frame, event.t_ns);
         return;
       }
+      c.client_tweens = message.client_tweens;
+      if (c.client_tweens) tweens_.grant(c.s.connection);
       c.hello_received = true;
       c.credit = true;  // the hello is the credit for the session and seq 1
       return;
@@ -1887,6 +1910,7 @@ void Hub::handle_text(Conn &c, const LiveEvent &event, std::uint64_t frame) {
             ++c.s.credits;
             if (!is_ack) {
               c.resync = true;
+              if (c.client_tweens) tweens_.resync(c.s.connection);
               ++c.s.resyncs;
             }
             if (sent != c.sent_at.end()) {
@@ -2168,6 +2192,10 @@ void Hub::send_transaction(Conn &c, const std::shared_ptr<const rs::Captured> &t
   meta.version = is_v7_or_later(c.version) ? c.version : snapshot.state.version;
   meta.seq = c.next_seq;
   meta.frame = frame;
+  if (c.client_tweens && snapshot.tweens) {
+    meta.t_us = snapshot.tweens->t_us;
+    job.tweens = tweens_.take(c.s.connection, *snapshot.tweens);
+  }
   meta.base_seq = c.base_seq;
   // PM1 sabotage perturb-instance: a function of the frame, so lockstep viewers still share.
   meta.perturb_instance = v11 && config_.perturb_instance_frame != 0 &&
@@ -2249,6 +2277,7 @@ std::shared_ptr<const std::vector<std::uint8_t>> Hub::form_predicted(
     for (const auto &p : memo_->predicted) {
       if (p->full == full && p->base == job.tx_base && p->target == job.target &&
           p->meta.version == meta.version && p->meta.frame == meta.frame &&
+          p->meta.t_us == meta.t_us &&
           p->meta.perturb_instance == meta.perturb_instance &&
           p->meta.perturb_seed == meta.perturb_seed &&
           (full || rs13::same_history(p->before, f.predictor))) {
@@ -2578,6 +2607,19 @@ void Hub::run_job(Job &job) {
   }
   const TxMeta &meta = job.meta;
   const bool full = job.full;
+  if (!job.tweens.empty()) {
+    const auto bytes = rs::tweens::encode(job.tweens,meta.seq,meta.frame,*meta.t_us);
+    if (bytes.size() > job.max_message_bytes) {
+      job.error = true; job.error_detail = "tween record exceeds message cap";
+      transport_->send_text(f.id,encode_error("message-too-large",job.error_detail));
+      return;
+    }
+    std::shared_ptr<const std::vector<std::uint8_t>> wire;
+    if (coded) wire = coded_plain(&o.coded_shared,&o.coding_ns,bytes,"");
+    form_deliver(job,bytes,job.send,wire.get());
+    o.record_bytes_total += bytes.size();
+    o.max_record_bytes = std::max<std::uint64_t>(o.max_record_bytes,bytes.size());
+  }
   // the item_meta record goes after the resource records,
   // immediately before the transaction it describes.
   std::shared_ptr<const std::vector<std::uint8_t>> meta_record;
@@ -2598,6 +2640,7 @@ void Hub::run_job(Job &job) {
   for (const auto &tx : memo_->txs) {
     if (tx->full == full && tx->base == job.tx_base && tx->target == job.target &&
         tx->meta.version == meta.version && tx->meta.frame == meta.frame &&
+        tx->meta.t_us == meta.t_us &&
         tx->meta.perturb_instance == meta.perturb_instance &&
         tx->meta.perturb_seed == meta.perturb_seed) {
       shared = tx.get();
@@ -2709,6 +2752,7 @@ void Hub::complete(Job &job) {
     return;  // its memo (job.retired) is released with the job, on this thread
   }
   Conn &c = *job.conn;
+  if (!job.error && job.send) tweens_.sent(job.tweens);
   const Counters &o = job.out;
   const std::uint64_t frame_saved = frame_;
   frame_ = job.frame;  // the close line of an error names the job's frame, as a sync send did
@@ -2933,6 +2977,11 @@ void Hub::on_frame_shared(std::uint64_t frame, std::uint64_t now_ns,
     if (c.state == State::Closed) {
       continue;
     }
+    // A held snapshot may predate this viewer's grant. Wait for its original capture
+    // timestamp before sending either a granted session or any associated transaction.
+    if (c.client_tweens && snapshot != nullptr && snapshot->tweens == nullptr) {
+      continue;
+    }
     const bool credit_before = c.credit;
     if (c.state == State::AwaitHello) {
       if (c.hello_received) {
@@ -2945,6 +2994,7 @@ void Hub::on_frame_shared(std::uint64_t frame, std::uint64_t now_ns,
           continue;
         }
         c.session = template_;
+        c.session.client_tweens = c.client_tweens;
         // G7n: the connection's own version (render-stream.7 -> /7: the GRS7 magic, the /7
         // protocol string and publication.credit_window, the grant).
         c.session.version = c.version;
@@ -3390,6 +3440,21 @@ std::string Hub::summary_json(const ServingSummary *resources) const {
   JsonWriter json;
   json.object_begin();
   json.field("schema", std::string("render-stream-live-summary/1"));
+  if (template_.version == ProtocolVersion::V17) {
+    json.key("client_tweens").object_begin();
+    for (const auto &field : tweens_.state()) {
+      if (const auto *n = std::get_if<std::int64_t>(&field.second.data)) {
+        json.field(field.first, *n);
+      } else if (const auto *drops = std::get_if<rs::capture::Value::Object>(&field.second.data)) {
+        json.key(field.first).object_begin();
+        for (const auto &reason : *drops) {
+          json.field(reason.first, std::get<std::int64_t>(reason.second.data));
+        }
+        json.object_end();
+      }
+    }
+    json.object_end();
+  }
   json.key("connections").array_begin();
   for (const ConnectionSummary &s : summaries()) {
     json.object_begin();

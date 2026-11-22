@@ -1074,3 +1074,111 @@ fn deferred_cover_settles_early_only_for_a_sampled_surface() {
         assert!(a.cover_recheck());
     }
 }
+
+
+fn tween_record(item: Id) -> crate::tweens::Record {
+    use crate::tweens::*;
+    Record {
+        seq: 1,
+        frame: 1,
+        time: 0,
+        poses: vec![Pose {
+            item,
+            kind: Kind::Node2d,
+            values: [
+                0., 0., 0., 1., 1., 0., 0., 0., 1., 1., 1., 1., 1., 1., 1., 1.,
+            ],
+        }],
+        events: vec![Event::Begin(Begin {
+            id: 1,
+            item,
+            order: 1,
+            begin: 0,
+            end: 1_000_000,
+            steps: vec![Step {
+                components: vec![0],
+                start: 0,
+                duration: 1_000_000,
+                trans: 0,
+                ease: 0,
+                from: Some(vec![0.]),
+                to: vec![10.],
+            }],
+        })],
+    }
+}
+
+#[test]
+fn regression_surface_tween_refreshes_between_host_transactions() {
+    let s = scene();
+    let store = PayloadStore::default();
+    let mut a = applier();
+    a.apply(&s, &full_delta(&s), &store);
+    a.surfaces.as_mut().unwrap().consumed();
+    a.tween_tick(&s, &store, 0., Some((0, &[tween_record(20)])));
+    a.surfaces.as_mut().unwrap().consumed();
+    let held = a
+        .surfaces
+        .as_ref()
+        .unwrap()
+        .applier(5)
+        .unwrap()
+        .paint_digest();
+    a.tween_tick(&s, &store, 500_000., None);
+    let set = a.surfaces.as_ref().unwrap();
+    assert_ne!(set.applier(5).unwrap().paint_digest(), held);
+    assert_eq!(set.passes().count(), 1);
+    assert_eq!(set.applier(5).unwrap().paint_order()[0].1[4], 5.);
+    a.surfaces.as_mut().unwrap().consumed();
+    a.tween_tick(&s, &store, 1_000_000., None);
+    assert_eq!(
+        a.surfaces
+            .as_ref()
+            .unwrap()
+            .applier(5)
+            .unwrap()
+            .paint_digest(),
+        held
+    );
+}
+
+#[test]
+fn regression_root_only_tween_does_not_rerun_accumulating_surface() {
+    let mut s = scene();
+    s.viewports.get_mut(&5).unwrap().clear = ViewportClear::Never;
+    let store = PayloadStore::default();
+    let mut a = applier();
+    a.apply(&s, &full_delta(&s), &store);
+    a.surfaces.as_mut().unwrap().consumed();
+    let serial = a.surfaces.as_ref().unwrap().applier(5).unwrap().walk_serial;
+    a.tween_tick(&s, &store, 0., Some((0, &[tween_record(10)])));
+    a.tween_tick(&s, &store, 500_000., None);
+    let set = a.surfaces.as_ref().unwrap();
+    assert_eq!(set.passes().count(), 0);
+    assert_eq!(set.applier(5).unwrap().walk_serial, serial);
+}
+
+#[test]
+fn regression_surface_tween_respects_once_and_disabled() {
+    for update in [ViewportUpdate::Once, ViewportUpdate::Disabled] {
+        let mut s = scene();
+        s.viewports.get_mut(&5).unwrap().update = update;
+        s.viewports.get_mut(&5).unwrap().once_seq = 1;
+        let store = PayloadStore::default();
+        let mut a = applier();
+        a.apply(&s, &full_delta(&s), &store);
+        a.surfaces.as_mut().unwrap().consumed();
+        let held = a
+            .surfaces
+            .as_ref()
+            .unwrap()
+            .applier(5)
+            .unwrap()
+            .paint_digest();
+        a.tween_tick(&s, &store, 0., Some((0, &[tween_record(20)])));
+        a.tween_tick(&s, &store, 500_000., None);
+        let set = a.surfaces.as_ref().unwrap();
+        assert_eq!(set.passes().count(), 0);
+        assert_eq!(set.applier(5).unwrap().paint_digest(), held);
+    }
+}

@@ -159,6 +159,10 @@ export interface GswRs {
   /** Whole override table, 16 floats per id; last four are clip outsets (L/T/R/B). */
   set_overrides(ids: Uint32Array, vals: Float32Array): number;
   refresh_overrides(): number;
+  tweens_active?(): boolean;
+  tween_tick?(localUs: number, picture: boolean): number;
+  tween_diagnostics_json?(): string;
+  query_display_transform?(id: number): number;
   /** 1 when the item's row was written at `query_item_ptr()` (14 f64), 0 for no such item. */
   query_item(id: number): number;
   query_item_ptr(): number;

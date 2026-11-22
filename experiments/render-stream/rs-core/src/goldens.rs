@@ -191,6 +191,7 @@ pub fn resolve_recording(data: &[u8], version: u8, opts: GoldenOptions) -> Resul
                 resources.push(json!({"hash": hash.to_hex(), "bytes": bytes, "record_index": i}));
             }
             Accepted::End
+            | Accepted::Tween
             | Accepted::ItemMeta
             | Accepted::ResourceHint { .. }
             | Accepted::ResourceUnhint { .. } => {}
@@ -1354,6 +1355,43 @@ pub fn run_golden(version: u8, read: ReadFn, opts: GoldenOptions) -> Vec<Check> 
         checks: Vec::new(),
     };
     match suite.json("index.json") {
+        Some(index) if version == 17 => {
+            for entry in index["valid"].as_array().into_iter().flatten() {
+                let file = entry["file"].as_str().unwrap_or_default().to_string();
+                let Some(bytes) = suite.bytes(&file) else {
+                    suite.ok(false, file, "missing");
+                    continue;
+                };
+                if entry["record_only"] == true {
+                    suite.ok(
+                        crate::meta::decode_record(
+                            &bytes,
+                            0,
+                            17,
+                            &mut Default::default(),
+                            &mut Default::default(),
+                        )
+                        .is_ok(),
+                        file,
+                        "record decode",
+                    );
+                } else {
+                    suite.ok(
+                        validate_recording(&bytes, suite.opts()).is_ok(),
+                        &file,
+                        "recording validation",
+                    );
+                    if let Some(old) = suite.bytes(entry["rs16"].as_str().unwrap_or_default()) {
+                        let down = crate::item_meta::restamp(&bytes, 17, 16);
+                        suite.ok(
+                            down.as_ref().is_ok_and(|d| *d == old),
+                            file,
+                            "/16 byte identity",
+                        );
+                    }
+                }
+            }
+        }
         Some(mut index) => {
             // golden-13 is golden-12's content: its names(S) and inline resources are
             // golden-12's (render-stream-13.md "Forms and transcode").

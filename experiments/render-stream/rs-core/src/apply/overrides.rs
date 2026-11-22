@@ -217,6 +217,54 @@ pub struct ItemFacts {
 }
 
 impl Applier {
+    pub fn display_local(&self, id: Id, item: &crate::state::Item) -> crate::tweens::Display {
+        // The sabotage accepts frozen upserts; neither a held pose nor tween playback may
+        // hide them from the draw path.
+        if self.ov_sabotage.frozen_still_applies && self.frozen.contains_key(&id) {
+            return crate::tweens::Display::host(item);
+        }
+        self.frozen_display
+            .get(&id)
+            .or_else(|| self.tweens.display.get(&id))
+            .copied()
+            .unwrap_or_else(|| crate::tweens::Display::host(item))
+    }
+    /// Sample below extension overrides; refresh uses the existing move/walk, clipping, picking,
+    /// cover and damage paths. No table ownership is acquired by playback.
+    pub fn tween_tick(
+        &mut self,
+        state: &ResolvedState,
+        payloads: &PayloadStore,
+        local_us: f64,
+        picture: Option<(i64, &[crate::tweens::Record])>,
+    ) -> Refresh {
+        if picture.is_none() && !self.tweens.active() {
+            return Refresh::Clean;
+        }
+        // Match extension redraws: never sample against accepted-but-undrawn host fields.
+        // The anchor stays unchanged, so the next eligible tick includes the elapsed wait.
+        if picture.is_none() && (self.prepared || self.first) {
+            return Refresh::Deferred;
+        }
+        let old = self.tweens.display.clone();
+        if let Some((time, records)) = picture {
+            self.tweens.picture(time, local_us, records, state);
+        } else {
+            self.tweens.sample(local_us, state);
+            self.tweens.diagnostics.tween_redraws += 1;
+        }
+        for id in old.keys().chain(self.tweens.display.keys()) {
+            if !self.frozen.contains_key(id) && old.get(id) != self.tweens.display.get(id) {
+                self.ov_changed.push(*id);
+            }
+        }
+        let refresh = self.refresh_overrides(state, payloads);
+        if refresh != Refresh::Deferred && !self.first {
+            self.tick_surfaces(state, payloads);
+        }
+        refresh
+    }
+
     /// Replace the override table with `ids` and their [`OVERRIDE_FLOATS`] values each. Ids not
     /// listed have no override. The changed ids are recorded and composed at the next apply or
     /// [`Applier::refresh_overrides`], whichever comes first.
@@ -384,18 +432,27 @@ impl Applier {
         self.removed_log.as_mut().map(std::mem::take).unwrap_or_default()
     }
 
-    /// TAG2: a fresh applier (a coding resync's rebuild) keeps the session's table and log.
+    /// A coding resync discards playback and frozen tween poses before its full arrives.
+    /// Recompute frozen displays from that full's host state on the next apply.
+    pub fn reset_tweens_for_resync(&mut self) {
+        self.tweens.clear();
+        self.frozen_display.clear();
+        self.frozen_dirty = true;
+    }
+
+    /// A fresh applier keeps the session's table, log and frozen displays. Coding resyncs
+    /// must call `reset_tweens_for_resync` on the old applier before inheriting them.
     pub fn inherit_overrides(&mut self, old: &mut Applier) {
         self.overrides = std::mem::take(&mut old.overrides);
         self.removed_log = old.removed_log.take();
         self.hit_filters = std::mem::take(&mut old.hit_filters);
         self.pick_order = old.pick_order;
         self.ov_sabotage = old.ov_sabotage;
-        // FRZ-HOOK: the frozen membership and any pending unfreeze follow the table. The held
-        // records do not (a fresh applier has none): its first apply draws the held items from
-        // the resolved state, i.e. the frozen subtree shows the host's state at the resync, and
-        // holds from there (`hold_upserts`).
+        // The membership, held display and pending unfreeze follow the table. Supersession
+        // preserves playback, so its frozen display must survive a later forced walk too.
+        // A coding resync cleared that display and marked membership dirty for host recapture.
         self.frozen = std::mem::take(&mut old.frozen);
+        self.frozen_display = std::mem::take(&mut old.frozen_display);
         self.frozen_dirty = old.frozen_dirty;
         self.frozen_res_dirty = true;
         self.unfrozen = std::mem::take(&mut old.unfrozen);
@@ -441,6 +498,15 @@ impl Applier {
                 && roots.contains(&root)
             {
                 self.frozen.entry(id).or_insert(root);
+            }
+        }
+        self.frozen_display.retain(|id, _| self.frozen.contains_key(id));
+        for id in self.frozen.keys() {
+            if let Some(item) = state.items.get(id) {
+                self.frozen_display.entry(*id).or_insert_with(|| {
+                    self.tweens.display.get(id).copied()
+                        .unwrap_or_else(|| crate::tweens::Display::host(item))
+                });
             }
         }
         self.reconcile_frozen |= unfreeze;
@@ -546,13 +612,14 @@ impl Applier {
     /// `base · xform(root) · … · xform(id)`, multiplied root first (the order a chain walk down
     /// the tree multiplies in, so the floats are the same). The caller has walked the chain
     /// ([`Applier::chain_walk`]), so every item exists and the recursion ends at the canvas.
-    fn compose_down(state: &ResolvedState, id: Id, base: &Xform) -> Xform {
+    fn compose_down<const TWEEN: bool>(&self, state: &ResolvedState, id: Id, base: &Xform) -> Xform {
         let it = &state.items[&id];
+        let local = if TWEEN { self.display_local(id, it).xform } else { it.xform };
         match it.parent {
             Some(p) if p.kind == ParentKind::Item => {
-                geom::mul(&Self::compose_down(state, p.id, base), &it.xform)
+                geom::mul(&self.compose_down::<TWEEN>(state, p.id, base), &local)
             }
-            _ => geom::mul(base, &it.xform),
+            _ => geom::mul(base, &local),
         }
     }
 
@@ -561,7 +628,7 @@ impl Applier {
     fn game_xforms(&self, state: &ResolvedState, id: Id) -> Option<(Xform, Xform, bool)> {
         let (visible, canvas) = self.chain_walk(state, id)?;
         let canvas_xf = geom::mul(&self.viewport.global_xform, &canvas.xform);
-        let xf = Self::compose_down(state, id, &canvas_xf);
+        let xf = self.compose_down::<false>(state, id, &canvas_xf);
         let it = &state.items[&id];
         let draw = if it.use_identity_transform && !self.sabotage.ignore_identity_transform {
             canvas_xf
@@ -569,6 +636,18 @@ impl Applier {
             xf
         };
         Some((xf, draw, visible))
+    }
+
+    /// The displayed base before extension overrides. Kept separate from public host queries.
+    pub fn query_display_transform(&self, state: &ResolvedState, id: Id) -> Option<Xform> {
+        let (_, canvas) = self.chain_walk(state, id)?;
+        let base = geom::mul(&self.viewport.global_xform, &canvas.xform);
+        let it = state.items.get(&id)?;
+        Some(if it.use_identity_transform && !self.sabotage.ignore_identity_transform {
+            base
+        } else {
+            self.compose_down::<true>(state, id, &base)
+        })
     }
 
     /// The effective visibility of item `id` (the game's, no override): what
@@ -814,7 +893,7 @@ impl Applier {
                         if !it.visible {
                             continue;
                         }
-                        let mut final_xf = geom::mul(&parent_xf, &it.xform);
+                        let mut final_xf = geom::mul(&parent_xf, &self.display_local(id, it).xform);
                         if ov {
                             if let Some(o) = self.overrides.get(&id) {
                                 if !o.visible {

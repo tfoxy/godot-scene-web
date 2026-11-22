@@ -1465,6 +1465,7 @@ pub struct Session {
     pub unknown_item_skip: bool,
     /// /16 only (render-stream-16.md "Session: `viewports`"): always `Some` at /16.
     pub viewports: Option<ViewportsMode>,
+    pub client_tweens: bool,
     pub clear_color: [f32; 4],
     pub root_canvas_xform: [f32; 6],
     pub host_visible_rect: [f32; 4],
@@ -1691,12 +1692,20 @@ fn check_session(
         let at = keys.iter().position(|&k| k == "blocks").unwrap();
         keys.insert(at, "viewports");
     }
+    let client_tweens = version >= 17 && ck.has_key(meta, "client_tweens");
+    if client_tweens {
+        let i = keys.iter().position(|&k| k == "blocks").unwrap();
+        keys.insert(i, "client_tweens");
+    }
     let Some(f) = ck.fields(meta, &keys) else {
         return Err(ck.schema("session has the wrong top-level keys or order"));
     };
     let at = |name: &str| f.at(keys.iter().position(|&k| k == name).unwrap());
     if skip_declared && ck.string(at("unknown_item_policy")) != Some(b"skip") {
         return Err(ck.schema("\"unknown_item_policy\" must be \"skip\" when present"));
+    }
+    if client_tweens && ck.boolean(at("client_tweens")) != Some(true) {
+        return Err(ck.schema("client_tweens must be true"));
     }
     let expected_protocol = format!("render-stream/{version}");
     if ck.string(at("protocol")) != Some(expected_protocol.as_bytes()) {
@@ -2095,6 +2104,7 @@ fn check_session(
         sabotage,
         adoption,
         unknown_item_skip: skip_declared,
+        client_tweens,
         viewports,
         clear_color: [0.0; 4],
         root_canvas_xform: [0.0; 6],
@@ -2464,6 +2474,7 @@ pub struct UnsupportedMeta {
 /// A checked transaction meta, in reusable buffers (cleared per record).
 #[derive(Default, Debug)]
 pub struct TxMeta {
+    pub t_us: Option<i64>,
     pub seq: i64,
     pub frame: i64,
     pub encoding: Option<Encoding>,
@@ -2523,6 +2534,7 @@ pub struct TxMeta {
 
 impl TxMeta {
     pub(crate) fn clear(&mut self) {
+        self.t_us = None;
         self.failures.clear();
         self.unsupported.clear();
         self.unsupported_null = false;
@@ -3567,7 +3579,11 @@ fn check_transaction(ck: &mut Ck, meta: Value, version: u8, tx: &mut TxMeta) -> 
                 at += 1;
             }
         }
-        &keys_buf
+            if version >= 17 && ck.has_key(meta, "t_us") {
+                let i = keys_buf.iter().position(|&k| k == "frame").unwrap() + 1;
+                keys_buf.insert(i, "t_us");
+            }
+            &keys_buf
     } else {
         base
     };
@@ -3576,6 +3592,7 @@ fn check_transaction(ck: &mut Ck, meta: Value, version: u8, tx: &mut TxMeta) -> 
     };
     // Field positions (the optional unknown_items shifts every later key by one; the optional keys
     // before `blocks` shift it).
+    let stamp = usize::from(tx.t_us.is_some() || (version >= 17 && ck.has_key(meta, "t_us")));
     let shift = has_unknown as usize;
     let before_blocks = has_time as usize
         + has_mm as usize
@@ -3589,11 +3606,11 @@ fn check_transaction(ck: &mut Ck, meta: Value, version: u8, tx: &mut TxMeta) -> 
     let pos = |name: &str| -> usize {
         let i = base.iter().position(|&k| k == name).unwrap();
         let i = if i >= 8 { i + shift } else { i };
-        i + if name == "blocks" { before_blocks } else { 0 }
+        i + if name == "blocks" { before_blocks } else { 0 } + if i >= 3 { stamp } else { 0 }
     };
     if has_unknown {
         let u = (|| {
-            let u = ck.fields(f.at(8), UNKNOWN_ITEMS_KEYS)?;
+            let u = ck.fields(f.at(8 + stamp), UNKNOWN_ITEMS_KEYS)?;
             Some(UnknownItems {
                 unknown_rids: ck.int_ge(u.at(0), 0)?,
                 withheld_items: ck.int_ge(u.at(1), 0)?,
@@ -3616,23 +3633,30 @@ fn check_transaction(ck: &mut Ck, meta: Value, version: u8, tx: &mut TxMeta) -> 
         return Err(ck.schema("\"frame\" is not an integer >= 1"));
     };
     tx.frame = frame;
-    let Some(enc) = ck.one_of(f.at(3), &["full", "patch"]) else {
-        return Err(ck.schema(format!("unknown encoding {}", lossy(ck, f.at(3)))));
+    if version >= 17 && ck.has_key(meta, "t_us") {
+        tx.t_us = Some(
+            ck.int_ge(f.at(keys.iter().position(|&k| k == "t_us").unwrap()), 0)
+                .filter(|&n| n <= crate::tweens::MAX_INT)
+                .ok_or_else(|| ck.schema("invalid t_us"))?,
+        );
+    }
+    let Some(enc) = ck.one_of(f.at(3 + stamp), &["full", "patch"]) else {
+        return Err(ck.schema(format!("unknown encoding {}", lossy(ck, f.at(3 + stamp)))));
     };
     tx.encoding = Some(if enc == 0 {
         Encoding::Full
     } else {
         Encoding::Patch
     });
-    tx.base_seq = if ck.null(f.at(4)) {
+    tx.base_seq = if ck.null(f.at(4 + stamp)) {
         None
-    } else if let Some(b) = ck.int_ge(f.at(4), 1) {
+    } else if let Some(b) = ck.int_ge(f.at(4 + stamp), 1) {
         Some(b)
     } else {
         return Err(ck.schema("\"base_seq\" is neither null nor an integer >= 1"));
     };
-    let Some(st) = ck.one_of(f.at(5), &["ok", "capture-failure"]) else {
-        return Err(ck.schema(format!("unknown status {}", lossy(ck, f.at(5)))));
+    let Some(st) = ck.one_of(f.at(5 + stamp), &["ok", "capture-failure"]) else {
+        return Err(ck.schema(format!("unknown status {}", lossy(ck, f.at(5 + stamp)))));
     };
     tx.status = Some(if st == 0 {
         TxStatus::Ok
@@ -3640,7 +3664,7 @@ fn check_transaction(ck: &mut Ck, meta: Value, version: u8, tx: &mut TxMeta) -> 
         TxStatus::CaptureFailure
     });
 
-    let Some(failures) = ck.arr(f.at(6)) else {
+    let Some(failures) = ck.arr(f.at(6 + stamp)) else {
         return Err(ck.schema("\"failures\" is not an array"));
     };
     for &fv in failures {
@@ -3660,7 +3684,7 @@ fn check_transaction(ck: &mut Ck, meta: Value, version: u8, tx: &mut TxMeta) -> 
     }
 
     // WB (render-stream-11.md "Patched `unsupported`"): null is legal in a /11 patch only.
-    let unsupported_null = version >= 11 && ck.null(f.at(7));
+    let unsupported_null = version >= 11 && ck.null(f.at(7 + stamp));
     if unsupported_null && tx.encoding == Some(Encoding::Full) {
         return Err(
             ck.schema("a full transaction's \"unsupported\" is null (legal in a patch only)")
@@ -3671,7 +3695,7 @@ fn check_transaction(ck: &mut Ck, meta: Value, version: u8, tx: &mut TxMeta) -> 
     let unsupported = if unsupported_null {
         Some(empty)
     } else {
-        ck.arr(f.at(7))
+        ck.arr(f.at(7 + stamp))
     };
     let Some(unsupported) = unsupported else {
         return Err(ck.schema("\"unsupported\" is not an array"));
@@ -4811,6 +4835,7 @@ fn check_resource_unhint(
 /// What a record decoded as. A transaction's fields are in the caller's [`TxMeta`].
 #[derive(Debug)]
 pub enum Decoded {
+    Tween(Box<crate::tweens::Record>),
     Session(Box<Session>),
     Transaction,
     Resource(ResourceMeta),
@@ -4874,6 +4899,12 @@ pub fn decode_record_with(
     fast_path: bool,
 ) -> Result<Decoded, Error> {
     let frame = wire::frame(record, offset)?;
+    if frame.meta.starts_with(b"{\"type\":\"tween\"") {
+        if version < 17 {
+            return Err(Error::new("meta-schema", "tween below /17"));
+        }
+        return crate::tweens::decode(record, offset, bufs).map(|r| Decoded::Tween(Box::new(r)));
+    }
     if fast_path
         && frame.meta.starts_with(b"{\"type\":\"transaction\",")
         && fast::transaction(frame.meta, version, tx).is_some()
@@ -4933,6 +4964,7 @@ pub fn decode_record_with(
                 .to_string(),
             Decoded::Transaction => tx.block_name(i).to_string(),
             Decoded::Resource(_) => "payload".to_string(),
+            Decoded::Tween(_) => "tween_f32".to_string(),
             Decoded::End(_)
             | Decoded::ItemMeta(_)
             | Decoded::ResourceHint(_)

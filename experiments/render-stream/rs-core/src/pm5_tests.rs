@@ -457,6 +457,7 @@ fn gsw_counts_every_add_particles_undrawn() {
                 }
             }
             Accepted::End
+            | Accepted::Tween
             | Accepted::ItemMeta
             | Accepted::ResourceHint { .. }
             | Accepted::ResourceUnhint { .. } => {}

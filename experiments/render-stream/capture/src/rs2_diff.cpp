@@ -544,6 +544,7 @@ Transaction make_full(const Snapshot &cur, const TxMeta &meta) {
   t.version = meta.version;
   t.seq = meta.seq;
   t.frame = meta.frame;
+  t.t_us = meta.t_us;
   t.encoding = Encoding::Full;
   t.base_seq.reset();
   t.failures = cur.failures;
@@ -707,6 +708,7 @@ Transaction make_patch(const Snapshot &base, const Snapshot &cur, const TxMeta &
   t.version = meta.version;
   t.seq = meta.seq;
   t.frame = meta.frame;
+  t.t_us = meta.t_us;
   t.encoding = Encoding::Patch;
   t.base_seq = meta.base_seq;
   t.failures = cur.failures;

@@ -755,6 +755,7 @@ struct Spare {
 
 /// The applier: owns the packed list it fills.
 pub struct Applier {
+    pub tweens: crate::tweens::Playback,
     pub list: DrawList,
     /// Client-owned TIME pin; absent keeps the carried clock. No TIME reader still uses 0.
     pub pinned_shader_time: Option<f32>,
@@ -940,6 +941,8 @@ pub struct Applier {
     /// is unfrozen (the root names which held records an unfreeze releases: a held record whose
     /// state entry is gone has no parent chain left). `apply` tests `frozen.is_empty()` once.
     frozen: IdMap<Id>,
+    /// Local display held above tween sampling until this member is unfrozen.
+    frozen_display: IdMap<crate::tweens::Display>,
     /// FRZ-HOOK: the texture and mesh ids the held records draw from (`frozen_resources`), cached
     /// until the membership or a held record changes (`frozen_res_dirty`).
     frozen_res: (std::collections::HashSet<Id>, std::collections::HashSet<Id>),
@@ -1350,6 +1353,7 @@ impl Applier {
             surface: gsw_canvas_draw_list::ROOT_SURFACE,
         };
         Applier {
+            tweens: Default::default(),
             list: DrawList::new(target),
             pinned_shader_time: None,
             expected_calls: None,
@@ -1434,6 +1438,7 @@ impl Applier {
             pick_order: overrides::PickOrder::Drawn,
             in_apply: false,
             frozen: IdMap::default(),
+            frozen_display: IdMap::default(),
             frozen_res: Default::default(),
             frozen_res_dirty: false,
             frozen_dirty: false,
@@ -3716,9 +3721,9 @@ impl Applier {
             return;
         }
         #[allow(unused_mut)]
-        let mut modulate = mul4(it.modulate, parent_modulate);
+        let mut modulate = mul4(self.display_local(id, it).modulate, parent_modulate);
         #[allow(unused_mut)]
-        let mut final_xf = geom::mul(parent_xf, &it.xform);
+        let mut final_xf = geom::mul(parent_xf, &self.display_local(id, it).xform);
         let mut own_xf: Option<Xform> = None;
         // TAG2 (§3.2): `final_xf' = O · (parent_xf · it.xform)`; children, cull and clips follow.
         if ov {
@@ -3938,7 +3943,16 @@ impl Applier {
             let row = Row {
                 xform: rec.draw_xform,
                 modulate: mul4(
-                    mul4(rec.child_modulate, it.self_modulate),
+                    mul4(rec.child_modulate,
+                        self.tweens
+                            .display
+                            .get(&id)
+                            .filter(|_| {
+                                !(self.ov_sabotage.frozen_still_applies
+                                    && self.frozen.contains_key(&id))
+                            })
+                            .map_or(it.self_modulate, |d| d.self_modulate),
+                    ),
                     rec.canvas_modulate,
                 ),
                 flags: row_flags(&rec.lowered),
@@ -4262,7 +4276,15 @@ impl Applier {
             return;
         };
         let modulate = mul4(
-            mul4(rec.child_modulate, it.self_modulate),
+            mul4(rec.child_modulate,
+                self.tweens
+                    .display
+                    .get(&id)
+                    .filter(|_| {
+                        !(self.ov_sabotage.frozen_still_applies && self.frozen.contains_key(&id))
+                    })
+                    .map_or(it.self_modulate, |d| d.self_modulate),
+            ),
             rec.canvas_modulate,
         );
         let row = Row {
@@ -4790,7 +4812,7 @@ impl Applier {
             return false;
         }
         #[allow(unused_mut)]
-        let mut modulate = mul4(it.modulate, parent_mod);
+        let mut modulate = mul4(self.display_local(id, it).modulate, parent_mod);
         if let Some(o) = ov {
             modulate = mul4(modulate, o.modulate);
         }
@@ -4805,7 +4827,7 @@ impl Applier {
         if !was_visited {
             return true;
         }
-        let mut final_xf = geom::mul(parent_xf, &it.xform);
+        let mut final_xf = geom::mul(parent_xf, &self.display_local(id, it).xform);
         let mut own_xf: Option<Xform> = None;
         if let Some(o) = ov {
             if self.ov_sabotage.no_inherit {
@@ -4917,6 +4939,9 @@ mod gap2_rx_tests;
 mod size_override_tests;
 #[cfg(test)]
 mod surface_tests;
+
+#[cfg(test)]
+mod tween_tests;
 
 /// G8kp: one texture's upload: RGBA8 pixels, or a `block` variant's level 0 in a format the list
 /// carries. A block format the list cannot carry would have

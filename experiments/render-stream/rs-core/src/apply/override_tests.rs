@@ -966,6 +966,7 @@ fn freeze(b: &mut Applier, s: &ResolvedState, store: &PayloadStore, ids: &[Id], 
 /// A coding resync's rebuild (gsw-rs `live_rebuild`): a fresh applier inherits the table and
 /// applies the full transaction that ends the resync.
 fn rebuild(old: &mut Applier, s: &ResolvedState, store: &PayloadStore) -> Applier {
+    old.reset_tweens_for_resync();
     let mut a = applier();
     a.inherit_overrides(old);
     a.apply(s, &full_delta(s), store);

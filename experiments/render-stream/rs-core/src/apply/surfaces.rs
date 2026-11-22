@@ -364,6 +364,15 @@ impl Applier {
 
     /// The options a surface applier takes from the root, and its programs.
     fn inherit_options(&mut self, root: &Applier) {
+        // Surfaces use the root's evaluated local values; they own no playback clock.
+        for id in self.tweens.display.keys().chain(root.tweens.display.keys()) {
+            if self.tweens.display.get(id) != root.tweens.display.get(id)
+                && self.is_member(*id) && !self.frozen.contains_key(id)
+            {
+                self.ov_changed.push(*id);
+            }
+        }
+        self.tweens.display.clone_from(&root.tweens.display);
         self.sabotage = root.sabotage;
         self.pinned_shader_time = root.pinned_shader_time;
         self.delivery = root.delivery.clone();
@@ -560,10 +569,20 @@ impl Applier {
             return;
         }
         let mut set = self.surfaces.take().unwrap_or_default();
-        set.run(self, state, delta, payloads);
+        set.run(self, state, delta, payloads, false);
         if !(set.passes.is_empty() && set.freed.is_empty() && state.viewports.is_empty()) {
             self.surfaces = Some(set);
         }
+    }
+}
+
+impl Applier {
+    /// Refresh existing due surfaces for a display tick, without applying new host state.
+    pub(super) fn tick_surfaces(&mut self, state: &ResolvedState, payloads: &PayloadStore) {
+        if self.surface.is_some() { return; }
+        let Some(mut set) = self.surfaces.take() else { return; };
+        set.run(self, state, &TxDelta::default(), payloads, true);
+        self.surfaces = Some(set);
     }
 }
 
@@ -574,6 +593,7 @@ impl SurfaceSet {
         state: &ResolvedState,
         delta: &TxDelta,
         payloads: &PayloadStore,
+        tween_tick: bool,
     ) {
         self.stats = SurfaceStats::default();
         // Passes an earlier apply ordered that no draw has run yet: carried (must render).
@@ -593,7 +613,7 @@ impl SurfaceSet {
             self.passes.remove(&id);
             carried.remove(&id);
         }
-        for p in self.passes.values_mut() {
+        for p in self.passes.values_mut().filter(|_| !tween_tick) {
             match &mut p.pending {
                 Some(d) => d.merge(delta),
                 None => p.pending = Some(delta.clone()),
@@ -657,6 +677,8 @@ impl SurfaceSet {
             if !is_due {
                 continue;
             }
+            // A tick refreshes only surfaces already built by a host picture.
+            if tween_tick && !self.passes.contains_key(&v) { continue; }
             let pass = self.passes.entry(v).or_insert_with(|| Pass {
                 applier: Box::new(Applier::new_surface(root, e)),
                 pending: None,
@@ -669,8 +691,12 @@ impl SurfaceSet {
             });
             pass.applier.inherit_options(root);
             pass.applier.configure_surface(e, root.viewport.clear);
-            let d = pass.pending.take().unwrap_or_else(|| delta.clone());
-            pass.applier.apply(state, &d, payloads);
+            if tween_tick {
+                pass.applier.refresh_overrides(state, payloads);
+            } else {
+                let d = pass.pending.take().unwrap_or_else(|| delta.clone());
+                pass.applier.apply(state, &d, payloads);
+            }
             // Its uploads and frees duplicate the root's (the root names every texture any item
             // draws): only the root's reach the executor.
             let l = &mut pass.applier.list;
@@ -752,12 +778,12 @@ impl SurfaceSet {
                     .any(|b| b.samplers.iter().any(|s| changed_textures.contains(&(s.texture as Id))));
             let unchanged = carried_clear.is_none()
                 && !pass.stale
-                && e.clear == ViewportClear::Always
+                && (tween_tick || e.clear == ViewportClear::Always)
                 && pass.rendered
                 && pass.allocated == Some(size)
                 && a.list.dirty.is_clean()
                 && !inputs_changed
-                && (pass.time == time || !a.reads_time());
+                && (tween_tick || pass.time == time || !a.reads_time());
             pass.once_seq = pass.once_seq.max(e.once_seq);
             pass.clear_seq = pass.clear_seq.max(e.clear_seq);
             if unchanged {

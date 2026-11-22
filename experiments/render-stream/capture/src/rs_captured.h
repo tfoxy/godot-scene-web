@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "rs2_snapshot.h"
+#include "rs_tweens.h"
 #include "rs_shared_map.h"
 
 namespace grc {
@@ -140,6 +141,7 @@ struct PendingTexture {
 };
 
 struct Captured {
+  std::shared_ptr<const tweens::Frame> tweens;  // Main-thread poses and Godot frame time.
   rs2::Snapshot state;
   // Exactly the hashes payload_refs(state) names: the `ok` image entries in `state.textures`,
   // the surfaces of the `ok` entries in `state.meshes` and the `ok` payload-source shaders in

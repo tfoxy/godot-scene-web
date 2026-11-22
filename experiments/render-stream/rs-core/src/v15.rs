@@ -66,7 +66,9 @@ pub fn to14_from15(data15: &[u8]) -> Result<Vec<u8>, Error> {
                     None => out.extend_from_slice(rec),
                 }
             }
-            Accepted::Resource { .. } | Accepted::ItemMeta => out.extend_from_slice(rec),
+            Accepted::Resource { .. } | Accepted::Tween | Accepted::ItemMeta => {
+                out.extend_from_slice(rec)
+            }
         }
         out_lens.push(out.len() - at);
         in_lens.push(rec.len());

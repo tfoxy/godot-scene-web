@@ -232,6 +232,7 @@ struct ControlMessage {
   std::string live_coding;
   // hello, /13 only, optional: the identity the viewer
   // asks for. Absent: not asked (the hello is byte for byte a no-extension client's).
+  bool client_tweens = false;
   bool has_item_meta = false;
   rs::item_meta::Request item_meta;
   // ack, resync
@@ -332,6 +333,7 @@ inline constexpr const char *kSubprotocolV15 = "render-stream.15";
 // VS2 (render-stream-16.md "Who speaks /16"): /15's live transport under render-stream/16
 // (viewport surfaces). Opt-in (GRC_STREAM_VERSION=16), listed alone.
 inline constexpr const char *kSubprotocolV16 = "render-stream.16";
+inline constexpr const char *kSubprotocolV17 = "render-stream.17";
 
 // HC5: where a frame callback's formation jobs run (rs_live.h header, "Formation").
 enum class Formation : std::uint8_t { Inline, Thread };
@@ -647,6 +649,8 @@ class Hub {
 
   // HC1: true while a connection has sent its hello or is streaming -- somebody who reads the
   // stream. A connection still awaiting its hello is not a viewer (it names no resource yet).
+  rs::tweens::Host &tweens() { return tweens_; }
+  const rs::tweens::Host &tweens() const { return tweens_; }
   bool has_viewer() const;
   std::size_t viewer_count() const;
 
@@ -837,6 +841,7 @@ class Hub {
                                 const std::shared_ptr<const rs::Captured> &target,
                                 bool lower = false);
 
+  rs::tweens::Host tweens_;
   LiveTransport *transport_;
   LiveConfig config_;
   std::function<void(const ConnEvent &)> observer_;

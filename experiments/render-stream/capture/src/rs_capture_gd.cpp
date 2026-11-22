@@ -1,5 +1,6 @@
 #include "rs_capture_gd.h"
 #include "iface.h"
+#include "abi.h"
 #include <cstring>
 #include <memory>
 #include <utility>
@@ -39,6 +40,8 @@ struct Fns {
   GDExtensionMethodBindPtr reg = nullptr, unreg = nullptr, emit = nullptr;
 } f;
 Invoke g_invoke;
+TweenInvoke g_tween_invoke;
+TweenEnabled g_tween_enabled;
 bool g_registered = false;
 GDExtensionObjectPtr g_object = nullptr;
 struct Var {
@@ -100,12 +103,60 @@ Value::Object options(GDExtensionConstVariantPtr v) {
   }
   return out;
 }
-struct Method { const char *name; bool state; };
-Method methods[] = {{"arm", false}, {"disarm", false}, {"detach", false}, {"attach", false}, {"state", true}};
+// Only the outer dictionary, steps array and step dictionaries need traversal. Unsupported
+// nested objects become nil, preventing cycles in producer input from recursing forever.
+tweens::Value tween_value(GDExtensionConstVariantPtr v, int depth = 0) {
+  const auto type = f.type(v);
+  if (type == kString || type == GDEXTENSION_VARIANT_TYPE_STRING_NAME) return read_string(v);
+  if (type == kInt) { std::int64_t n=0; f.to[kInt](&n,const_cast<void *>(v)); return n; }
+  if (type == kFloat) { double n=0; f.to[kFloat](&n,const_cast<void *>(v)); return n; }
+  if (type == GDEXTENSION_VARIANT_TYPE_VECTOR2) {
+    grc::Vector2 n{}; f.to[type](&n,const_cast<void *>(v)); return tweens::Vector2{n.x,n.y};
+  }
+  if (type == GDEXTENSION_VARIANT_TYPE_COLOR) {
+    grc::Color n{}; f.to[type](&n,const_cast<void *>(v)); return tweens::Color{n.r,n.g,n.b,n.a};
+  }
+  if (depth > 2) return {};
+  if (type == kDictionary) {
+    tweens::Value::Object out;
+    Var it; GDExtensionBool valid=false;
+    for(bool more=f.iter_init(v,&it.v,&valid);more && valid;more=f.iter_next(v,&it.v,&valid)) {
+      Var key,val; f.iter_get(v,&it.v,&key.v,&valid);
+      if (!valid) break;
+      if (f.type(&key.v)!=kString) { out["<non-string-key>"]={}; continue; }
+      f.get(v,&key.v,&val.v,&valid);
+      out[read_string(&key.v)]=tween_value(&val.v,depth+1);
+    }
+    return out;
+  }
+  if (type == kArray) {
+    tweens::Value::Array out;
+    Var it; GDExtensionBool valid=false;
+    for(bool more=f.iter_init(v,&it.v,&valid);more && valid;more=f.iter_next(v,&it.v,&valid)) {
+      Var val; f.iter_get(v,&it.v,&val.v,&valid);
+      if (!valid) break;
+      out.push_back(tween_value(&val.v,depth+1));
+    }
+    return out;
+  }
+  return {};
+}
+struct Method { const char *name; bool state; bool tween = false; bool cancel = false; };
+Method methods[] = {{"arm", false}, {"disarm", false}, {"detach", false}, {"attach", false}, {"state", true},
+                    {"tween_begin",false,true}, {"tween_cancel",false,true,true}};
 void call(void *data, GDExtensionClassInstancePtr,
           const GDExtensionConstVariantPtr *args, GDExtensionInt argc,
           GDExtensionVariantPtr ret, GDExtensionCallError *error) {
   auto &m = *static_cast<Method *>(data);
+  if (m.tween) {
+    error->error = GDEXTENSION_CALL_OK;
+    GDExtensionCallError e{};
+    f.construct(GDEXTENSION_VARIANT_TYPE_NIL,ret,nullptr,0,&e);
+    if (g_tween_enabled && g_tween_enabled() && g_tween_invoke) {
+      g_tween_invoke(m.name,argc == 1 ? tween_value(args[0]) : tweens::Value{});
+    }
+    return;
+  }
   if (argc < 0 || argc > (m.state ? 0 : 1)) {
     error->error = GDEXTENSION_CALL_ERROR_TOO_MANY_ARGUMENTS; return;
   }
@@ -119,6 +170,13 @@ void call(void *data, GDExtensionClassInstancePtr,
 void ptrcall(void *data, GDExtensionClassInstancePtr,
              const GDExtensionConstTypePtr *args, GDExtensionTypePtr ret) {
   auto &m = *static_cast<Method *>(data);
+  if (m.tween) {
+    if (!g_tween_enabled || !g_tween_enabled() || !g_tween_invoke) return;
+    Var value;
+    f.from[m.cancel ? kInt : kDictionary](&value.v,const_cast<void *>(args[0]));
+    g_tween_invoke(m.name,tween_value(&value.v));
+    return;
+  }
   Var arg;
   if (!m.state) f.from[kDictionary](&arg.v, const_cast<void *>(args[0]));
   Value result = g_invoke(m.name, m.state ? Value::Object{} : options(&arg.v));
@@ -151,7 +209,8 @@ template<class T> void resolve(const char *name, T *ptr, std::string *missing) {
   if (!*ptr && missing->empty()) *missing = name;
 }
 }  // namespace
-bool gd_capture_register(Invoke invoke, bool singleton, std::string *why) {
+bool gd_capture_register(Invoke invoke, bool singleton, std::string *why,
+                         TweenInvoke tween_invoke, TweenEnabled tween_enabled) {
   if (g_registered) return true;
   if (!g_iface.get_proc_address || !g_iface.library ||
       !g_iface.variant_destroy || !g_iface.get_variant_from_type_constructor ||
@@ -180,7 +239,8 @@ bool gd_capture_register(Invoke invoke, bool singleton, std::string *why) {
   resolve("string_new_with_utf8_chars_and_len2", &f.string_new, &missing);
   if (!missing.empty()) { *why = "capture-class-unavailable: " + missing; return false; }
   for (auto t : {kInt, kBool, kFloat, kString, kDictionary, GDEXTENSION_VARIANT_TYPE_OBJECT,
-                 GDEXTENSION_VARIANT_TYPE_STRING_NAME}) {
+                 GDEXTENSION_VARIANT_TYPE_STRING_NAME, GDEXTENSION_VARIANT_TYPE_VECTOR2,
+                 GDEXTENSION_VARIANT_TYPE_COLOR}) {
     f.from[t] = g_iface.get_variant_from_type_constructor(t);
     f.to[t] = g_iface.get_variant_to_type_constructor(t);
     if (!f.from[t] || !f.to[t]) { *why = "capture-class-unavailable: constructor"; return false; }
@@ -194,23 +254,25 @@ bool gd_capture_register(Invoke invoke, bool singleton, std::string *why) {
   f.emit = method_bind("Object", "emit_signal", kEmitSignal);
   if (!f.reg || !f.unreg || !f.emit) { *why = "capture-class-unavailable: method bind"; return false; }
   g_invoke = std::move(invoke);
+  g_tween_invoke = std::move(tween_invoke);
+  g_tween_enabled = std::move(tween_enabled);
   StringName cls(kClass), parent("Object");
   GDExtensionClassCreationInfo4 ci{};
   ci.is_exposed = true; ci.create_instance_func = create; ci.free_instance_func = free_instance;
   f.register_class(g_iface.library, cls.ptr(), parent.ptr(), &ci);
   for (auto &m : methods) {
-    StringName name(m.name); Prop result(m.state ? kDictionary : kInt, ""), arg(kDictionary, "options");
+    StringName name(m.name); Prop result(m.state ? kDictionary : kInt, ""), arg(m.cancel ? kInt : kDictionary, m.cancel ? "tween_id" : "options");
     GDExtensionClassMethodInfo mi{};
     mi.name = const_cast<void *>(name.ptr()); mi.method_userdata = &m;
     mi.call_func = call; mi.ptrcall_func = ptrcall; mi.method_flags = GDEXTENSION_METHOD_FLAGS_DEFAULT;
-    mi.has_return_value = true; mi.return_value_info = &result.info;
+    mi.has_return_value = !m.tween; mi.return_value_info = &result.info;
     mi.return_value_metadata = m.state ? GDEXTENSION_METHOD_ARGUMENT_METADATA_NONE : GDEXTENSION_METHOD_ARGUMENT_METADATA_INT_IS_INT64;
     GDExtensionClassMethodArgumentMetadata meta = GDEXTENSION_METHOD_ARGUMENT_METADATA_NONE;
     Var default_arg; write(Value::Object{}, &default_arg.v);
     GDExtensionVariantPtr defaults[] = {&default_arg.v};
     if (!m.state) {
       mi.argument_count = 1; mi.arguments_info = &arg.info; mi.arguments_metadata = &meta;
-      mi.default_argument_count = 1; mi.default_arguments = defaults;
+      mi.default_argument_count = m.tween ? 0 : 1; mi.default_arguments = defaults;
     }
     f.register_method(g_iface.library, cls.ptr(), &mi);
   }
@@ -251,5 +313,6 @@ void gd_capture_unregister() {
     g_iface.object_destroy(g_object); g_object = nullptr;
   }
   f.unregister_class(g_iface.library, cls.ptr()); g_registered = false; g_invoke = {};
+  g_tween_invoke = {}; g_tween_enabled = {};
 }
 }  // namespace grc::rs::capture

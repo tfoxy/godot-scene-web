@@ -11,7 +11,7 @@
 // the host's tap from the same full (the capture's live tap holds the uncoded messages too).
 //
 // Bounding. A full transaction re-establishes the whole state, so the records before it are
-// dropped (all but those since the transaction before it: the full's own `item_meta`, which goes
+// dropped (all but those since the transaction before it: the full's own `tween`/`item_meta`, which go
 // immediately before it, and inline payloads) and the ring restarts at the full (drop-oldest at the only place a drop is safe: a
 // delta depends on every record before it, so dropping a delta would make the recording
 // unplayable). Between fulls the ring grows with the stream; `maxBytes` caps it and, once
@@ -28,7 +28,12 @@
 // desktop debugging session that wants long or self-contained recordings passes larger caps.
 
 /** What one decoded record was. `transaction` is a full or a patch; the rest are not. */
-export type RecordKind = "transaction" | "resource" | "item_meta" | "end";
+export type RecordKind =
+  | "transaction"
+  | "resource"
+  | "item_meta"
+  | "tween"
+  | "end";
 
 export interface RecorderOptions {
   /** The most message bytes the ring may hold (session + records since the last full), before
@@ -49,7 +54,7 @@ export interface Recording {
   /** Fetched resource bodies by hex SHA-256, so a later replay can apply without the host. A
    * snapshot: later fetches do not change an exported map. */
   resources: ReadonlyMap<string, Uint8Array>;
-  /** Records captured (transactions + resources + item_meta + end). */
+  /** Records captured (transactions + resources + item_meta + tween + end). */
   records: number;
   /** The seq of the last full the recording starts at (0: the session). */
   fullSeq: number;
@@ -90,6 +95,8 @@ export function createRecorder(
   let records: Uint8Array[] = [];
   /** How many of `records`' last entries arrived after the last transaction. */
   let sinceTx = 0;
+  // A tween prefix becomes exportable only with its associated transaction.
+  let pendingTweenAt: number | null = null;
   /** While stopped: the non-transaction records since the last transaction (the next full's). */
   let preamble: Uint8Array[] = [];
   let preambleBytes = 0;
@@ -117,6 +124,7 @@ export function createRecorder(
       sessionBytes = bytes;
       records = [];
       sinceTx = 0;
+      pendingTweenAt = null;
       preamble = [];
       preambleBytes = 0;
       recordsBytes = 0;
@@ -163,6 +171,7 @@ export function createRecorder(
         preamble = [];
         preambleBytes = 0;
         sinceTx = 0;
+        pendingTweenAt = null;
         return;
       }
       if (overflow) {
@@ -202,6 +211,8 @@ export function createRecorder(
         }
         return;
       }
+      if (kind === "tween") pendingTweenAt = records.length;
+      if (isTx) pendingTweenAt = null;
       records.push(bytes);
       recordsBytes += bytes.byteLength;
       recordsCount++;
@@ -230,11 +241,15 @@ export function createRecorder(
           fullSeq,
           overflow,
         };
-      const total = sessionBytes.byteLength + recordsBytes;
+      const exportRecords =
+        pendingTweenAt === null ? records : records.slice(0, pendingTweenAt);
+      const total =
+        sessionBytes.byteLength +
+        exportRecords.reduce((n, r) => n + r.byteLength, 0);
       const out = new Uint8Array(total);
       out.set(sessionBytes, 0);
       let at = sessionBytes.byteLength;
-      for (const r of records) {
+      for (const r of exportRecords) {
         out.set(r, at);
         at += r.byteLength;
       }

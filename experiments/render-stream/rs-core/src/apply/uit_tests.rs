@@ -44,6 +44,7 @@ fn rows_of_item_18(ignore: bool) -> Vec<(i64, [f32; 6])> {
                 }
             }
             Accepted::End
+            | Accepted::Tween
             | Accepted::ItemMeta
             | Accepted::ResourceHint { .. }
             | Accepted::ResourceUnhint { .. } => {}

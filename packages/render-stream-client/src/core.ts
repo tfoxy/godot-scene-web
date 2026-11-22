@@ -89,6 +89,7 @@ export type CoreMessage =
   | { kind: "held" }
   /** An item_meta record (identities for extensions): nothing to apply, no ack. */
   | { kind: "item_meta" }
+  | { kind: "tween" }
   /** W11t: a based message that did not decode: ask the host for a `coding` resync. */
   | { kind: "coding-resync"; seq: number; error: string }
   /** A /15 `resource_hint` (render-stream-15.md): advisory, nothing to apply, no ack. `held`:
@@ -199,6 +200,9 @@ export interface StreamCore {
   setStaticShaders?(on: boolean): void;
   setDrawBatching?(mask: number): void;
   setDamageRedraw?(on: boolean): void;
+  tweensActive?(): boolean;
+  tweenTick?(nowMs: number, picture: boolean): boolean;
+  tweenDiagnostics?(): Record<string, number>;
   apply(seq: number): void;
   /** What the last `apply` did to the draw list, read after it (`RenderStreamStats`). The
    * returned object may be reused by the next call. Absent: the loop reports none. */
@@ -406,6 +410,30 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
     return this.instance;
   }
 
+  tweensActive(): boolean {
+    return this.g.tweens_active?.() ?? false;
+  }
+  tweenTick(nowMs: number, picture: boolean): boolean {
+    return (this.g.tween_tick?.(nowMs * 1000, picture) ?? 0) > 0;
+  }
+  tweenDiagnostics(): Record<string, number> {
+    return JSON.parse(this.g.tween_diagnostics_json?.() ?? "{}");
+  }
+
+  queryDisplayedTransform(id: number): import("./extensions").Affine2D | null {
+    const g = this.instance;
+    if (!g) return null;
+    if (!g.query_display_transform) {
+      const row = this.queryItem(id);
+      return row.length && row[2]
+        ? [row[3], row[4], row[5], row[6], row[7], row[8]]
+        : null;
+    }
+    if (g.query_display_transform(id) === 0) return null;
+    const row = new Float64Array(this.memory.buffer, g.query_item_ptr(), 6);
+    return [row[0], row[1], row[2], row[3], row[4], row[5]];
+  }
+
   beginConnection(protocol = this.protocol): void {
     this.sessionStarted = false;
     this.executorError = null;
@@ -533,6 +561,7 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
     if (code >= ACCEPT_HELD) {
       // W13c: a patch dropped while a predict-check resync awaits its full.
       if (code === ACCEPT_HELD) return { kind: "held" };
+      if (code === 8) return { kind: "tween" };
       if (code === ACCEPT_ITEM_META) return { kind: "item_meta" };
       return this.hintMessage(code === ACCEPT_RESOURCE_HINT);
     }

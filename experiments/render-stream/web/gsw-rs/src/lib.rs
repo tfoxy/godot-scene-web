@@ -25,22 +25,22 @@ use godot_scene_web_rust_prototype::canvas_items::{
     CanvasItemsExecutor, ContextState, ExecError, ExecOptions, ExecStats, FenceState, Sabotage,
     SurfacePass,
 };
-use gsw_canvas_draw_list::{Format, Target};
 use gsw_canvas_draw_list::{Binding, UniformValue};
+use gsw_canvas_draw_list::{Format, Target};
 use render_stream_core::apply::geom::{self, Xform};
 use render_stream_core::apply::material_residency::MaterialCounts;
+use render_stream_core::apply::overrides::{
+    check_hit_filters, OverrideSabotage, PickOrder, Refresh,
+};
 use render_stream_core::apply::payloads::{PayloadStage, PayloadStore, PayloadStream};
 use render_stream_core::apply::programs::{ProgramEntry, ProgramInfo};
 use render_stream_core::apply::residency::TextureAccount;
 use render_stream_core::apply::retention::Retention;
-use render_stream_core::apply::overrides::{
-    check_hit_filters, OverrideSabotage, PickOrder, Refresh,
-};
 use render_stream_core::apply::{Applier, ApplySabotage, BindingKey, Viewport};
 use render_stream_core::canon;
-use render_stream_core::state::VariantEncoding;
 use render_stream_core::meta::Stretch;
 use render_stream_core::prof;
+use render_stream_core::state::VariantEncoding;
 use render_stream_core::state::{Hash, Id, ResolvedState, ShaderSource};
 use render_stream_core::validate::{Accepted, DigestPolicy, Options, Validator};
 use render_stream_core::wire::{self, RecordSpan};
@@ -64,6 +64,7 @@ pub const ACCEPT_HELD: i32 = 4;
 pub const ACCEPT_ITEM_META: i32 = 5;
 /// A /15 `resource_hint` record (render-stream-15.md "Resource hints"), now in the validator's
 /// hint table: nothing to apply, nothing to ack, not a transaction. `hint_json` reads it.
+pub const ACCEPT_TWEEN: i32 = 8;
 pub const ACCEPT_RESOURCE_HINT: i32 = 6;
 /// A /15 `resource_unhint` record: the hash left the hint table. `hint_json` reads it.
 pub const ACCEPT_RESOURCE_UNHINT: i32 = 7;
@@ -316,6 +317,7 @@ struct Opts {
     /// (`"viewports":false`): the viewport table is applied, no surface pass is built, and every
     /// viewport texture samples transparent (stat `surfaces_skipped`).
     no_viewports: bool,
+    client_tweens: bool,
     /// Client-only root clear override; neither the session nor offscreen surfaces change.
     transparent_clear: bool,
 }
@@ -400,7 +402,10 @@ fn parse_options(json: &str) -> Result<Opts, String> {
         o.gpu_format_mask = mask.split(',').map(str::to_string).collect();
     }
     o.summary_log = json.contains("\"log\":\"summary\"");
-    o.live_protocol = if json.contains("\"live_protocol\":16") {
+    o.client_tweens = json.contains("\"client_tweens\":true");
+    o.live_protocol = if json.contains("\"live_protocol\":17") {
+        17
+    } else if json.contains("\"live_protocol\":16") {
         16
     } else if json.contains("\"live_protocol\":15") {
         15
@@ -877,6 +882,8 @@ pub struct GswRs {
     /// there by `apply`) and from shared payloads (no copy), for `last_upload_bytes_json`.
     last_upload_bytes: (u64, u64),
     /// `set_motion`: measure each accepted transaction's motion (off by default).
+    tween_records: Vec<render_stream_core::tweens::Record>,
+    tween_picture: bool,
     motion_on: bool,
     motion: MotionFacts,
 }
@@ -1127,6 +1134,8 @@ impl GswRs {
             presentation: Presentation::default(),
             last_restore_draw: false,
             last_upload_bytes: (0, 0),
+            tween_records: Vec::new(),
+            tween_picture: false,
             motion_on: false,
             motion: MotionFacts::default(),
         })
@@ -1603,6 +1612,12 @@ impl GswRs {
         let mut v = Validator::new(span.bytes(&self.data), span.offset, opts).map_err(fail)?;
         v.set_no_prune(self.opts.no_prune);
         let s = v.session();
+        if self.opts.client_tweens && !s.client_tweens {
+            return Err("meta-schema: missing client_tweens grant".into());
+        }
+        if !self.opts.client_tweens && s.client_tweens {
+            return Err("meta-schema: unrequested client_tweens grant".into());
+        }
         let vp = &s.viewport;
         let size = vp.presentation_size.unwrap_or(vp.logical_size);
         let pres = [size[0].max(1) as u32, size[1].max(1) as u32];
@@ -1831,9 +1846,16 @@ impl GswRs {
             }
             Accepted::End => ACCEPT_END,
             Accepted::ItemMeta => ACCEPT_ITEM_META,
+            Accepted::Tween => ACCEPT_TWEEN,
             Accepted::ResourceHint { .. } => ACCEPT_RESOURCE_HINT,
             Accepted::ResourceUnhint { .. } => ACCEPT_RESOURCE_UNHINT,
             Accepted::Transaction => {
+                if self.opts.client_tweens {
+                    if let Some(r) = v.tween_record() {
+                        self.tween_records.push(r.clone());
+                    }
+                    self.tween_picture = true;
+                }
                 self.last_tx_record = self.accepted.len() - 1;
                 let st = v.state();
                 self.stats.seq = st.seq as u32;
@@ -2123,6 +2145,12 @@ impl GswRs {
     /// transaction the resync forces, at a later seq than the last accepted + 1. The validator
     /// then accepts the seq jump and prunes C to names(S) after that full.
     pub fn transport_skip(&mut self) {
+        // A resync ends old playback before accepting its new full and announcements.
+        self.tween_records.clear();
+        self.tween_picture = false;
+        if let Some(a) = self.applier.as_mut() {
+            a.reset_tweens_for_resync();
+        }
         if let Some(v) = self.validator.as_mut() {
             v.transport_skip();
         }
@@ -2148,8 +2176,11 @@ impl GswRs {
         // GRH: the executor still holds the GPU textures; the fresh applier reconciles against
         // them instead of uploading all of them again. The old applier's other state goes first.
         if let Some(mut old) = self.applier.take() {
-            // TAG2: the session's override table and removed-id log survive the rebuild.
+            // The override table, removed-id log and frozen display survive supersession.
             applier.inherit_overrides(&mut old);
+            // Supersession folds accepted records in call order and preserves the timeline.
+            // transport_skip already reset playback and frozen poses for a coding resync.
+            applier.tweens = std::mem::take(&mut old.tweens);
             if !self.opts.rebuild_reupload {
                 applier.inherit_residency(old);
             }
@@ -2213,6 +2244,8 @@ impl GswRs {
     /// (RS_RECEIVER_RECONNECT_MEMORY=keep), the verified payloads. The next message is a fresh
     /// session on stream `stream_index + 1`.
     pub fn live_reset(&mut self, keep_payloads: bool) -> i32 {
+        self.tween_records.clear();
+        self.tween_picture = false;
         self.validator = None;
         self.query.gen += 1;
         self.applier = None;
@@ -3218,6 +3251,42 @@ impl GswRs {
             .unwrap_or_default()
     }
 
+    /// Whether announced client tweens still need display ticks.
+    pub fn tweens_active(&self) -> bool {
+        self.applier.as_ref().is_some_and(|a| a.tweens.active())
+    }
+    /// The shell calls this before applying/drawing a new picture, or before an idle redraw.
+    /// `picture` must never be true merely because bytes arrived or payloads are pending.
+    pub fn tween_tick(&mut self, local_us: f64, picture: bool) -> i32 {
+        if !self.opts.client_tweens {
+            return 0;
+        }
+        let (Some(v), Some(a)) = (self.validator.as_ref(), self.applier.as_mut()) else {
+            return 0;
+        };
+        let new_picture = picture && self.tween_picture;
+        let input = if new_picture {
+            v.tween_time().map(|t| (t, self.tween_records.as_slice()))
+        } else {
+            None
+        };
+        let active = a.tweens.active();
+        a.tween_tick(v.state(), &self.payloads, local_us, input);
+        if new_picture {
+            self.tween_records.clear();
+            self.tween_picture = false;
+        }
+        self.stats.set_expected(a);
+        i32::from(active || a.tweens.active())
+    }
+    pub fn tween_diagnostics_json(&self) -> String {
+        let Some(a) = self.applier.as_ref() else {
+            return "{}".into();
+        };
+        let d = &a.tweens.diagnostics;
+        let (live, held) = a.tweens.counts();
+        format!("{{\"begins\":{},\"cancels\":{},\"claims_replaced\":{},\"completed\":{},\"retired_unowned\":{},\"unknown_cancels\":{},\"backward_anchor_holds\":{},\"tween_redraws\":{},\"live_tweens\":{},\"held_components\":{}}}",d.begins,d.cancels,d.claims_replaced,d.completed,d.retired_unowned,d.unknown_cancels,d.backward_anchor_holds,d.tween_redraws,live,held)
+    }
     /// TAG2 (§3.2): the client's override table, whole (packed: an id each, 16 floats each:
     /// 6 affine, 4 modulate, 1 visible, 1 frozen, 4 clip outsets).
     /// 0, or -1 (`error`: `override-table`). Composed at the next apply, or `refresh_overrides`.
@@ -3264,6 +3333,15 @@ impl GswRs {
             return 0;
         };
         u32::from(write_row(a, v.state(), id, &mut self.query.item))
+    }
+
+    /// Internal extension composition base: tweens included, extension overrides excluded.
+    /// Reuses the item scratch row, without changing public host query semantics or epochs.
+    pub fn query_display_transform(&mut self, id: u32) -> u32 {
+        let (Some(v), Some(a)) = (self.validator.as_ref(), self.applier.as_ref()) else { return 0; };
+        let Some(xform) = a.query_display_transform(v.state(),id) else { return 0; };
+        for (out,value) in self.query.item.iter_mut().zip(xform) { *out = value as f64; }
+        1
     }
 
     /// I2: the address of `query_item`'s row, fixed for this instance's lifetime (a caller's
@@ -4056,3 +4134,6 @@ impl GswRs {
         out
     }
 }
+
+#[cfg(test)]
+mod tween_tests;

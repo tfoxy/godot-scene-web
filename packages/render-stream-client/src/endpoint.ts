@@ -5,7 +5,7 @@
 /** The live protocol versions this client speaks (render-stream/11 through /16, including
  * /13 prediction, /14 item_meta v2, /15 resource hints and /16 viewport surfaces; W11t live
  * coding on each). */
-export type RenderStreamProtocol = 11 | 12 | 13 | 14 | 15 | 16;
+export type RenderStreamProtocol = 11 | 12 | 13 | 14 | 15 | 16 | 17;
 
 export interface RenderStreamEndpoint {
   /** ws(s) URL of the host's `/render-stream`, absolute or page-relative (an http(s) page URL's
@@ -80,7 +80,8 @@ export function validateEndpoint(value: unknown): RenderStreamEndpoint {
     e.protocol !== 13 &&
     e.protocol !== 14 &&
     e.protocol !== 15 &&
-    e.protocol !== 16
+    e.protocol !== 16 &&
+    e.protocol !== 17
   )
     fail(
       `protocol must be 11, 12, 13, 14, 15 or 16 (got ${JSON.stringify(e.protocol)})`,

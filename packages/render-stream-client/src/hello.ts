@@ -57,7 +57,8 @@ export function helloV9(
     | "render-stream/13"
     | "render-stream/14"
     | "render-stream/15"
-    | "render-stream/16" = "render-stream/9",
+    | "render-stream/16"
+    | "render-stream/17" = "render-stream/9",
   liveCoding = "",
 ): Record<string, unknown> {
   return {
@@ -88,6 +89,7 @@ export function coreStartOptions(
   viewports = true,
   transparentClear = false,
   damageRedraw = false,
+  clientTweens = false,
 ): string {
   return JSON.stringify({
     digest: "none",
@@ -101,11 +103,13 @@ export function coreStartOptions(
     ...(viewports ? {} : { viewports: false }),
     ...(transparentClear ? { transparent_clear: true } : {}),
     ...(damageRedraw ? { damage_redraw: true } : {}),
+    ...(clientTweens ? { client_tweens: true } : {}),
   });
 }
 
 /** What the client's hello states about itself. */
 export interface ClientHelloFacts {
+  clientTweens?: boolean;
   protocol: RenderStreamProtocol;
   creditWindow: 1 | 2;
   /** The credit stage; default `submitted`. */
@@ -140,7 +144,11 @@ export function clientProtocol(
   protocol: RenderStreamProtocol,
   itemMeta: ClientHelloFacts["itemMeta"],
   resourceHints = false,
+  clientTweens = false,
 ): RenderStreamProtocol {
+  if (clientTweens && protocol !== 17)
+    throw new TypeError("render-stream client: clientTweens needs protocol 17");
+  if (protocol === 17) return 17;
   if (itemMeta && protocol < 13)
     throw new TypeError(
       "render-stream client: item_meta (an extension's wants) needs protocol 13 or later",
@@ -208,6 +216,13 @@ export function clientHello(f: ClientHelloFacts): Record<string, unknown> {
       groups: [...f.itemMeta.groups],
       meta_keys: [...f.itemMeta.meta_keys],
     };
+  }
+  if (f.clientTweens) {
+    if (f.protocol !== 17)
+      throw new TypeError(
+        "render-stream client: clientTweens needs protocol 17",
+      );
+    hello.client_tweens = true;
   }
   return hello;
 }

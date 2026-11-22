@@ -2778,6 +2778,7 @@ pub fn to13_with(
             Decoded::End(_) => fix_end(rec, &out_lens, &in_lens, &mut out),
             Decoded::Resource(_) => out.extend_from_slice(rec),
             // A /12 decode never yields an item_meta record (an unknown type below /13).
+            Decoded::Tween(_) => unreachable!("tween at /12"),
             Decoded::ItemMeta(_) => unreachable!("item_meta at /12"),
             // Nor a hint record (an unknown type below /15).
             Decoded::ResourceHint(_) | Decoded::ResourceUnhint(_) => {
@@ -2819,6 +2820,7 @@ pub fn to12(data13: &[u8], no_reset: bool) -> Result<Vec<u8>, Error> {
             crate::validate::Accepted::Resource { .. } => out.extend_from_slice(rec),
             // TAG1: /12 has no item_meta record; dropped, and the end record's bytes_total and
             // max_record_bytes follow (`fix_end` over the output's record lengths).
+            crate::validate::Accepted::Tween => unreachable!("tween at /13"),
             crate::validate::Accepted::ItemMeta => {}
             // A /13 stream has no hint records (unknown types below /15).
             crate::validate::Accepted::ResourceHint { .. }

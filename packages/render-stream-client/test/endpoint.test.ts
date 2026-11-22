@@ -31,6 +31,10 @@ describe("validateEndpoint", () => {
     ).toBe("/render-stream");
   });
 
+  it("accepts protocol 17", () => {
+    expect(validateEndpoint({ ...ok, protocol: 17 }).protocol).toBe(17);
+  });
+
   it.each([
     ["not an object", null],
     ["unknown key", { ...ok, extra: 1 }],
@@ -40,7 +44,7 @@ describe("validateEndpoint", () => {
     ["uppercase token", { ...ok, token: "A".repeat(64) }],
     ["short token", { ...ok, token: "a".repeat(63) }],
     ["protocol 10", { ...ok, protocol: 10 }],
-    ["protocol 17", { ...ok, protocol: 17 }],
+    ["protocol 18", { ...ok, protocol: 18 }],
     ["protocol string", { ...ok, protocol: "12" }],
     ["presentation 0", { ...ok, presentation: [0, 1] }],
     ["presentation shape", { ...ok, presentation: [1] }],

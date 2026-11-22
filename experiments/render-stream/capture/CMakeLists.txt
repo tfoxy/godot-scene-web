@@ -507,6 +507,7 @@ add_executable(rs_live_test
   src/rs_canvas_texture_shim.cpp
   src/rs_histogram.cpp
   src/rs_live.cpp
+  src/rs_tweens.cpp
   src/rs_hints.cpp
   src/rs_item_meta.cpp
   src/rs_publish.cpp
@@ -548,6 +549,7 @@ add_executable(rs_live_window_test
   src/rs_canvas_texture_shim.cpp
   src/rs_histogram.cpp
   src/rs_live.cpp
+  src/rs_tweens.cpp
   src/rs_hints.cpp
   src/rs_item_meta.cpp
   src/rs_publish.cpp
@@ -583,6 +585,7 @@ add_executable(rs_live_host
   src/rs_canvas_texture_shim.cpp
   src/rs_histogram.cpp
   src/rs_live.cpp
+  src/rs_tweens.cpp
   src/rs_hints.cpp
   src/rs_item_meta.cpp
   src/rs_publish.cpp
@@ -1124,7 +1127,20 @@ target_include_directories(rs_process_test PRIVATE src)
 target_link_libraries(rs_process_test PRIVATE grc_warnings grc_platform)
 grc_add_test(NAME rs_process COMMAND rs_process_test)
 
+# Announced tween validation, component baselines and canonical records (/17).
+add_executable(rs_tweens_test test/rs_tweens_test.cpp src/rs_tweens.cpp src/rs2_codec.cpp)
+target_include_directories(rs_tweens_test PRIVATE src vendor)
+target_link_libraries(rs_tweens_test PRIVATE grc_warnings grc_codecs)
+target_compile_definitions(rs_tweens_test PRIVATE
+  GRC_GOLDEN17_DIR="${GRC_DATA_PREFIX}protocol/golden-17")
+grc_add_test(NAME rs_tweens COMMAND rs_tweens_test)
 
+target_sources(rs_tweens_test PRIVATE test/rs_tweens_host_test.cpp src/rs_tweens_host.cpp
+  src/rs_mirror.cpp src/rs_texture_delivery.cpp src/rs_shader_payload.cpp
+  src/rs_texture_payload.cpp src/rs_mesh_payload.cpp src/rs_sha256.cpp src/rs2_diff.cpp)
+target_link_libraries(rs_tweens_test PRIVATE Threads::Threads)
+
+# Collect the Windows manifest after every test target and golden definition exists.
 if(GRC_WINDOWS)
   include(cmake/windows-bundle.cmake)
 endif()

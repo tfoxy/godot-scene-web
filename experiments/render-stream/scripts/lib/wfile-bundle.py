@@ -57,8 +57,10 @@ def main():
         manifest['tests'].append({'name': 'wfile-sabotage', 'exe': 'wfile/wfile-driver.py', 'interpreter': 'python', 'args': ['--config', 'wfile/wfile.json', '--gate', 'gate8', '--rep', 'a', '--sabotage', 'decode-off'], 'env': {}, 'timeout_s': 900})
         manifest_path.write_text(json.dumps(manifest, indent=2) + '\n', encoding='utf-8')
     size = sum(p.stat().st_size for p in out.rglob('*') if p.is_file())
-    if size > 300_000_000:
-        raise ValueError(f'bundle exceeds 300 MB: {size} bytes')
+    # headroom for statically linked capture tests (about 3 MB each); the uploaded artifact compresses to about a third
+    bundle_limit = 320_000_000 if args.target == 'windows' else 300_000_000
+    if size > bundle_limit:
+        raise ValueError(f'bundle exceeds {bundle_limit // 1_000_000} MB: {size} bytes')
     print(f'wfile bundle: {dest}; total bundle bytes={size}')
     return 0
 

@@ -150,7 +150,13 @@ if rdata["raw_size"] <= rdata["virtual_size"]:
 sabotage[rdata["offset"] + rdata["raw_size"] - 1] ^= 1
 (bundle / "bin/calib_pe_self_test-rdata-sabotage.exe").write_bytes(sabotage)
 for directory in manifest["data"]:
-    shutil.copytree(rs / directory, bundle / directory)
+    if directory == "protocol/golden-17":
+        # The capture tween test reads only these records; the rest serve rs-core tests.
+        (bundle / directory).mkdir(parents=True, exist_ok=True)
+        for name in ("begin.record", "poses.record", "cancel-removed.record"):
+            shutil.copyfile(rs / directory / name, bundle / directory / name)
+    else:
+        shutil.copytree(rs / directory, bundle / directory)
 shutil.copyfile(build / "w-manifest.json", bundle / "manifest.json")
 shutil.copyfile(build / "render_stream_capture.gdextension", bundle / "render_stream_capture.gdextension")
 PYBUNDLE
@@ -175,8 +181,9 @@ manifest["tests"].append({"name": "wlive-probe", "exe": "wlive/fetch-cft-windows
                           "interpreter": "python", "args": ["--probe", "wlive/wlive-probe.html"], "env": {}})
 manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 size = sum(p.stat().st_size for p in bundle.rglob("*") if p.is_file())
-if size > 300_000_000:
-    raise ValueError(f"bundle exceeds 300 MB: {size} bytes")
+# headroom for statically linked capture tests (about 3 MB each); the uploaded artifact compresses to about a third
+if size > 320_000_000:
+    raise ValueError(f"bundle exceeds 320 MB: {size} bytes")
 print(f"wlive-probe bundle: total bundle bytes={size}")
 PYPROBE
 	python3 -I - "$B" "$HERE/w-imports.py" "$LLVM_MINGW_ROOT/bin/llvm-objdump" <<'PYIMPORTS'

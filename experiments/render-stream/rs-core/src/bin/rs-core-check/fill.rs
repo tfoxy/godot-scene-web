@@ -145,6 +145,7 @@ pub(crate) fn cmd_fill(args: &Args) -> ExitCode {
                     }
                 }
                 Accepted::End
+                | Accepted::Tween
                 | Accepted::ItemMeta
                 | Accepted::ResourceHint { .. }
                 | Accepted::ResourceUnhint { .. } => {}

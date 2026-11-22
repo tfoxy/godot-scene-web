@@ -912,6 +912,10 @@ class Mirror {
   bool knows_mesh(std::uint64_t rid) const;
   // LATE-RES (gap #5): whether `rid` names a live canvas item the mirror tracks.
   bool knows_item(std::uint64_t rid) const;
+  std::uint32_t published_item_id(std::uint64_t rid) const {
+    const auto *item = peek_item(rid);
+    return item && item->published ? item->state.id : 0;
+  }
 
   // --- pre-arm shaders and materials, adopted with origin
   // `adopted` through the same tables. Identity bookkeeping: no omit-op name, never dropped.

@@ -2,11 +2,11 @@
 //!
 //!   rs-core-check goldens [--dir experiments/render-stream/protocol] [--only 6]
 //!                         [--sabotage skip-payload-hash|early-prune|no-predict-reset]
-//!   rs-core-check transcode --to 12|13|14 [--stale] [--zr-sabotage overrun|short-run] <in> <out>
+//!   rs-core-check transcode --to 12|13|14|16 [--stale] [--zr-sabotage overrun|short-run] <in> <out>
 //!   rs-core-check transcode --roundtrip <recording.rs12>...
 //!   rs-core-check diff --inputs <inputs.json> [--out <dir>] [--dump <input>:<seq>]
 //!   rs-core-check bench (<recording> | --inputs <inputs.json>) [--repeats N] [--digest inline|deferred|none]
-//!   rs-core-check validate <recording>... [--version 2..16] [--recover]
+//!   rs-core-check validate <recording>... [--version 2..17] [--recover]
 //!                          [--item-meta-asked <request json>|none] [--item-meta-dump <path>]
 //!   rs-core-check apply-bench <recording> --store <dir> [--repeats N] [--cover off] [--noop off] [--tiles off] [--programs synthetic] [--max-texture-side N]
 //!   rs-core-check pick-bench <recording> --store <dir> [--seq N] [--repeats N]
@@ -65,10 +65,10 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Instant;
 
-#[path = "rs-core-check/fill.rs"]
-mod fill_cmd;
 #[path = "rs-core-check/calls.rs"]
 mod calls;
+#[path = "rs-core-check/fill.rs"]
+mod fill_cmd;
 use fill_cmd::cmd_fill;
 #[path = "rs-core-check/apply_digests.rs"]
 mod apply_digests;
@@ -98,13 +98,13 @@ static GLOBAL: Counting = Counting;
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage:\n  rs-core-check goldens [--dir <protocol dir>] [--only <2..16>] [--sabotage skip-payload-hash|early-prune|no-predict-reset]\n  \
-         rs-core-check transcode --to 12|13|14 [--stale] [--zr-sabotage overrun|short-run] <in> <out>\n  \
+        "usage:\n  rs-core-check goldens [--dir <protocol dir>] [--only <2..17>] [--sabotage skip-payload-hash|early-prune|no-predict-reset]\n  \
+         rs-core-check transcode --to 12|13|14|16 [--stale] [--zr-sabotage overrun|short-run] <in> <out>\n  \
          rs-core-check transcode --roundtrip <recording.rs12>...\n  \
          rs-core-check diff --inputs <inputs.json> [--out <dir>] [--dump <input>:<seq>]\n  \
          rs-core-check bench (<recording> | --inputs <inputs.json>) [--repeats N] [--digest inline|deferred|none]\n  \
          rs-core-check apply-digests <recording> --store <dir> [--apply-every N] [--programs synthetic|unregistered] [--group-cells omit] [--overrides off|synthetic] [--digest full|loose|off] [--recheck-every N] [--cover eager|deferred] [--sabotage settle_skips_refresh]\n  \
-         rs-core-check validate <recording>... [--version 2..16] [--item-meta-asked <json>|none] [--item-meta-dump <path>]\n  \
+         rs-core-check validate <recording>... [--version 2..17] [--item-meta-asked <json>|none] [--item-meta-dump <path>]\n  \
          rs-core-check material-diff <recording>... [--store <dir>] [--sabotage mra-skip-changed|mra-skip-binding] [--baseline]\n  \
          rs-core-check client-diff <recording>... [--store <dir>] [--sabotage ph2-skip-body-digest|ph2-skip-dep-texture|ph2-park-stale|ph2-skip-material-textures]\n  \
          rs-core-check draw-skip-diff <recording>... [--store <dir>] [--every N] [--sabotage ph3-drop-pending]\n  \
@@ -331,6 +331,7 @@ fn record_type(r: &Accepted) -> &'static str {
         Accepted::Transaction => "transaction",
         Accepted::End => "end",
         Accepted::ItemMeta => "item_meta",
+        Accepted::Tween => "tween",
         Accepted::ResourceHint { .. } => "resource_hint",
         Accepted::ResourceUnhint { .. } => "resource_unhint",
     }
@@ -378,7 +379,7 @@ fn cmd_diff(args: &Args) -> ExitCode {
         };
         let Some(version) = wire::version_of_magic(&data) else {
             eprintln!(
-                "rs-core-check diff: {}: not a render-stream/2..16 recording",
+                "rs-core-check diff: {}: not a render-stream/2..17 recording",
                 input.recording.display()
             );
             failed = true;
@@ -481,7 +482,7 @@ fn bench_one(
     digest: DigestPolicy,
 ) -> Result<(), wire::Error> {
     let version = wire::version_of_magic(data)
-        .ok_or_else(|| wire::Error::new("bad-magic", "not a render-stream/2..16 recording"))?;
+        .ok_or_else(|| wire::Error::new("bad-magic", "not a render-stream/2..17 recording"))?;
     let records = wire::split_records(data, version)?;
     let first = records
         .first()
@@ -643,6 +644,7 @@ fn cmd_transcode(args: &Args) -> ExitCode {
         Some("12") => 12u8,
         Some("13") => 13u8,
         Some("14") => 14u8,
+        Some("16") => 16u8,
         _ => return usage(),
     };
     let [input, output] = args.positional.as_slice() else {
@@ -673,7 +675,11 @@ fn cmd_transcode(args: &Args) -> ExitCode {
     // size_override keys dropped), then on as a /14 input.
     let from15 = wire::version_of_magic(&data) == Some(15);
     let from14 = wire::version_of_magic(&data) == Some(14);
-    let got = if from15 {
+    let got = if to == 16 && wire::version_of_magic(&data) == Some(17) {
+        render_stream_core::tweens::to16(&data)
+    } else if to == 16 || wire::version_of_magic(&data) == Some(17) {
+        Err(wire::Error::new("bad-magic", "the /17 transcode target is /16"))
+    } else if from15 {
         render_stream_core::v15::to14_from15(&data).and_then(|d14| match to {
             14 => Ok(d14),
             13 => item_meta::to13_from14(&d14),
@@ -944,6 +950,7 @@ fn cmd_pick_bench(args: &Args) -> ExitCode {
                     }
                 }
                 Accepted::End
+                | Accepted::Tween
                 | Accepted::ItemMeta
                 | Accepted::ResourceHint { .. }
                 | Accepted::ResourceUnhint { .. } => {}
@@ -1100,6 +1107,7 @@ fn cmd_apply_bench(args: &Args) -> ExitCode {
                     }
                 }
                 Accepted::End
+                | Accepted::Tween
                 | Accepted::ItemMeta
                 | Accepted::ResourceHint { .. }
                 | Accepted::ResourceUnhint { .. } => {}
@@ -1411,6 +1419,7 @@ fn cmd_walk_diff(args: &Args) -> ExitCode {
                         }
                     }
                     Accepted::End
+                    | Accepted::Tween
                     | Accepted::ItemMeta
                     | Accepted::ResourceHint { .. }
                     | Accepted::ResourceUnhint { .. } => {}
@@ -1729,6 +1738,7 @@ fn cmd_material_diff(args: &Args) -> ExitCode {
                         }
                     }
                     Accepted::End
+                    | Accepted::Tween
                     | Accepted::ItemMeta
                     | Accepted::ResourceHint { .. }
                     | Accepted::ResourceUnhint { .. } => {}
@@ -1988,6 +1998,7 @@ fn cmd_client_diff(args: &Args) -> ExitCode {
                         }
                     }
                     Accepted::End
+                    | Accepted::Tween
                     | Accepted::ItemMeta
                     | Accepted::ResourceHint { .. }
                     | Accepted::ResourceUnhint { .. } => {}
@@ -2298,6 +2309,7 @@ fn cmd_scissors(args: &Args) -> ExitCode {
                     }
                 }
                 Accepted::End
+                | Accepted::Tween
                 | Accepted::ItemMeta
                 | Accepted::ResourceHint { .. }
                 | Accepted::ResourceUnhint { .. } => {}
@@ -2387,6 +2399,7 @@ fn cmd_lowered(args: &Args) -> ExitCode {
                     }
                 }
                 Accepted::End
+                | Accepted::Tween
                 | Accepted::ItemMeta
                 | Accepted::ResourceHint { .. }
                 | Accepted::ResourceUnhint { .. } => {}
@@ -3007,6 +3020,7 @@ fn cmd_draw_skip_diff(args: &Args) -> ExitCode {
                         }
                     }
                     Accepted::End
+                    | Accepted::Tween
                     | Accepted::ItemMeta
                     | Accepted::ResourceHint { .. }
                     | Accepted::ResourceUnhint { .. } => {}

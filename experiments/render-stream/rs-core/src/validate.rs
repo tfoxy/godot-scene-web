@@ -34,11 +34,11 @@
 //! After a failed `accept` nothing has changed (the TypeScript validator may already have advanced
 //! its last-seen tables; it is never fed again after an error).
 
+use crate::item_meta;
 use crate::meta::{
     self, CmdMeta, DecodeBufs, Decoded, EndMeta, Op, ResourceHint, ResourceMeta, Session, TxMeta,
 };
 use crate::payload::{self, PayloadKind};
-use crate::item_meta;
 use crate::prof;
 use crate::state::*;
 use crate::wire::{self, F32s, F64s, I32s, MAGIC_LEN};
@@ -111,6 +111,7 @@ pub enum Accepted {
     /// TAG1: an `item_meta` record, held ([`Validator::item_meta_pending`]) until the transaction
     /// it describes is accepted, which then updates [`Validator::item_meta`]. Nothing to apply.
     ItemMeta,
+    Tween,
     /// /15: a `resource_hint` for `hash`, now in [`Validator::hints`] ([`Validator::hint`] reads
     /// it). Advisory: nothing to apply.
     ResourceHint { hash: Hash },
@@ -807,6 +808,10 @@ pub struct Validator {
     item_meta: ItemMetaTable,
     /// The accepted `item_meta` record awaiting its transaction.
     item_meta_pending: Option<Box<ItemMetaRecord>>,
+    tween_pending: Option<Box<crate::tweens::Record>>,
+    tween_ready: Option<Box<crate::tweens::Record>>,
+    tween_registry: crate::tweens::Registry,
+    tween_time: Option<i64>,
     // ---- /15 (render-stream-15.md "Resource hints"); empty below /15.
     /// The hints in effect: hinted and not unhinted since.
     hints: HashMap<Hash, Box<ResourceHint>>,
@@ -1874,6 +1879,7 @@ impl Validator {
                     Decoded::ResourceHint(_) => "resource_hint",
                     Decoded::ResourceUnhint(_) => "resource_unhint",
                     Decoded::Session(_) => "session",
+                    Decoded::Tween(_) => "tween",
                 };
                 return Err(Error::new(
                     "missing-session",
@@ -1995,6 +2001,10 @@ impl Validator {
             plain_ok: false,
             item_meta: ItemMetaTable::default(),
             item_meta_pending: None,
+            tween_pending: None,
+            tween_ready: None,
+            tween_registry: Default::default(),
+            tween_time: None,
             hints: HashMap::new(),
             hints_fresh: Vec::new(),
             viewports_on: session_viewports_on,
@@ -2033,6 +2043,15 @@ impl Validator {
     /// `full` record comes again before the full transaction that ends the resync.
     pub fn discard_item_meta_pending(&mut self) {
         self.item_meta_pending = None;
+        self.tween_pending = None;
+        self.tween_ready = None;
+        self.tween_registry = Default::default();
+    }
+    pub fn tween_record(&self) -> Option<&crate::tweens::Record> {
+        self.tween_ready.as_deref()
+    }
+    pub fn tween_time(&self) -> Option<i64> {
+        self.tween_time
     }
     pub fn session(&self) -> &Session {
         &self.session
@@ -2257,6 +2276,9 @@ impl Validator {
         self.skipping = true;
         // TAG1: a pending item_meta record described a transaction the transport skipped.
         self.item_meta_pending = None;
+        self.tween_pending = None;
+        self.tween_ready = None;
+        self.tween_registry = Default::default();
     }
 
     /// W11d: whether a transport skip awaits its full transaction.
@@ -2266,7 +2288,9 @@ impl Validator {
 
     /// `finish()`: the end-of-stream verdict.
     pub fn finish(&self) -> Result<(), Error> {
-        if self.end_seen {
+        if self.tween_pending.is_some() {
+            Err(Error::new("tween-association", "orphan tween at end of input"))
+        } else if self.end_seen {
             Ok(())
         } else {
             Err(Error::new(
@@ -2294,6 +2318,9 @@ impl Validator {
         {
             self.item_meta_precheck(offset)?;
         }
+        if !self.session.client_tweens && record.get(8..).is_some_and(|m|m.starts_with(b"{\"type\":\"tween\"")) {
+            return Err(Error::new("meta-schema","tween without grant"));
+        }
         let t = prof::start();
         let decoded = meta::decode_record(
             record,
@@ -2304,6 +2331,14 @@ impl Validator {
         );
         prof::add(prof::META, t);
         let decoded = decoded?;
+        if self.tween_pending.is_some()
+            && !matches!(decoded, Decoded::Transaction | Decoded::ItemMeta(_))
+        {
+            return Err(Error::new(
+                "tween-association",
+                "orphan or interposed tween record",
+            ));
+        }
         self.plain_ok = false;
         if self.opts.version >= 11 {
             self.pruned.clear();
@@ -2313,6 +2348,16 @@ impl Validator {
             self.pt_emits.clear();
         }
         let accepted = match decoded {
+            Decoded::Tween(r) => {
+                self.item_meta_orphan(offset, "a tween record")?;
+                if !self.session.client_tweens {
+                    return Err(Error::new("meta-schema", "tween without grant"));
+                }
+                self.bytes_total += record.len() as u64;
+                self.max_record_bytes = self.max_record_bytes.max(record.len() as u64);
+                self.tween_pending = Some(r);
+                Accepted::Tween
+            }
             Decoded::Session(_) => {
                 return Err(Error::new(
                     "duplicate-session",
@@ -2667,6 +2712,27 @@ impl Validator {
             let names = &self.names;
             self.carried.retain(|h, _| names.contains_key(h));
         }
+        if self.session.client_tweens && self.tx.t_us.is_none() {
+            return Err(Error::new("tween-association", "granted transaction missing t_us"));
+        }
+        if !self.session.client_tweens && self.tx.t_us.is_some() {
+            return Err(Error::new("meta-schema", "t_us requires a tween grant"));
+        }
+        if let Some(time) = self.tx.t_us {
+            if self.tween_time.is_some_and(|old| time < old) {
+                return Err(Error::new("tween-time", "decreasing t_us"));
+            }
+            if self
+                .tween_pending
+                .as_ref()
+                .is_some_and(|r| r.seq != self.tx.seq || r.frame != self.tx.frame || r.time != time)
+            {
+                return Err(Error::new(
+                    "tween-association",
+                    "tween transaction mismatch",
+                ));
+            }
+        }
         let t = prof::start();
         let pre = self.pre_checks(offset);
         prof::add(prof::PRE_CHECKS, t);
@@ -2715,11 +2781,35 @@ impl Validator {
         if result.is_ok() && !self.hints.is_empty() {
             result = self.check_hint_meta(offset);
         }
+        let registry = if result.is_ok() {
+            if let Some(time) = self.tx.t_us {
+                match self.tween_registry.transaction(
+                    time,
+                    self.tween_pending.as_deref(),
+                    &self.state,
+                ) {
+                    Ok(next) => Some(next),
+                    Err(e) => {
+                        result = Err(e);
+                        None
+                    }
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         if let Err(e) = result {
             self.rollback();
             return Err(e);
         }
         self.commit();
+        if let Some(registry) = registry {
+            self.tween_registry = registry;
+        }
+        self.tween_time = self.tx.t_us;
+        self.tween_ready = self.tween_pending.take();
         self.hints_fresh.clear();
         if self.item_meta_pending.is_some() || !self.item_meta.rows.is_empty() {
             self.item_meta_commit();

@@ -39,6 +39,7 @@ fn run(data: &[u8]) -> Result<(usize, u64), wire::Error> {
                 }
             }
             Accepted::End
+            | Accepted::Tween
             | Accepted::ItemMeta
             | Accepted::ResourceHint { .. }
             | Accepted::ResourceUnhint { .. } => {}

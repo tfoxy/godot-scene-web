@@ -1205,3 +1205,32 @@ describe("render-stream client item queries (I1/I2)", () => {
     expect(seen).toEqual([[1, 0, 0, 1, 10, 20], { x: 10, y: 20, w: 4, h: 4 }]);
   });
 });
+
+it("setGlobal composes over the displayed tween base while ItemQuery remains host state", () => {
+  class TweenBaseCore extends ExtCore {
+    queryDisplayedTransform(id: number): Affine2D | null {
+      return id === 2 ? [1, 0, 0, 1, 60, 20] : null;
+    }
+  }
+  let hostTransform: Affine2D | null = null;
+  const ext = new ExtensionHost([
+    {
+      id: "target",
+      beforeDraw(frame) {
+        hostTransform = frame.query.transform(2);
+        frame.overrides.translate(1, 5, 0);
+        frame.overrides.setGlobal(2, [1, 0, 0, 1, 100, 80]);
+      },
+    },
+  ]);
+  const core = new TweenBaseCore();
+  ext.bind(core);
+  ext.beforeDraw(1, 0);
+  expect(hostTransform).toEqual([1, 0, 0, 1, 10, 20]);
+  const table = core.tables.at(-1)!;
+  const offset = table.ids.indexOf(2) * 16;
+  const own = table.vals.slice(offset, offset + 6) as unknown as Affine2D;
+  expect(
+    mulAffine(own, mulAffine([1, 0, 0, 1, 5, 0], [1, 0, 0, 1, 60, 20])),
+  ).toEqual([1, 0, 0, 1, 100, 80]);
+});
