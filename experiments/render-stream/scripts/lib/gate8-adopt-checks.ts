@@ -1229,9 +1229,9 @@ export async function runG8a(
       const j = judgeTexCurrentUnupdated(
         lines,
         st?.resources as Record<string, unknown> | undefined,
-        await readJson<Parameters<typeof deferredHeldTextureProblems>[0]>(
+        (await readJson<Parameters<typeof deferredHeldTextureProblems>[0]>(
           join(root, "deferred/capture/evidence/hold.json"),
-        ),
+        )) ?? null,
       );
       problems = j.problems;
       detail = j.detail;

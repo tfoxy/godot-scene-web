@@ -1380,8 +1380,9 @@ export async function runG8htr(
   }
 
   // The eviction queue is per load, including never-armed standby seats.
-  const evict = (leg: string) =>
-    readJson<EvictEvidence>(join(cap(leg), "evidence", "evict.json"));
+  const evict = async (leg: string) =>
+    (await readJson<EvictEvidence>(join(cap(leg), "evidence", "evict.json"))) ??
+    null;
   const probe = async (dir: string) =>
     jsonl<TextureEvent>(await readText(join(dir, "events.jsonl"))).find(
       (e) => e.event === "imagetexture-probe",
@@ -1505,9 +1506,10 @@ export async function runG8htr(
     };
     costRounds.push({
       round: Number(n),
-      evict: await readJson<EvictEvidence>(
-        join(always, "evidence", "evict.json"),
-      ),
+      evict:
+        (await readJson<EvictEvidence>(
+          join(always, "evidence", "evict.json"),
+        )) ?? null,
       off:
         (await readJson<CaptureResult>(join(off, "evidence", "result.json")))
           ?.headless_texture_release ?? null,

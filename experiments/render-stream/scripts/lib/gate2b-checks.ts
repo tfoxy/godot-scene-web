@@ -1233,7 +1233,9 @@ export function checkUploadAccounting(
   for (const r of [cold, patch, inline]) {
     const per = perStepResources(expected, r, quit);
     for (const s of expected.steps) {
-      const have = per.find((p) => p.step === s.step) ?? { step: s.step };
+      const have: Partial<Record<string, number>> & { step: number } = per.find(
+        (p) => p.step === s.step,
+      ) ?? { step: s.step };
       for (const k of ACCOUNTED) {
         const want =
           r === inline && k === "fetched" ? 0 : s.receiver_resources[k];

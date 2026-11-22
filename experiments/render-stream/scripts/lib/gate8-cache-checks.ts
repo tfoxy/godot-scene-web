@@ -110,15 +110,17 @@ interface CacheEvidence {
 
 interface IndexRow {
   v?: number;
-  del?: number;
+  del?: 0;
   source: string;
   encoding: string;
   params: string;
-  hash?: string;
+  hash: string;
   bytes?: number;
   ext?: string;
   use?: number;
 }
+
+type DeletedIndexRow = Omit<IndexRow, "del" | "hash"> & { del: 1 };
 
 async function readText(path: string): Promise<string | undefined> {
   try {
@@ -187,7 +189,7 @@ function check(
  * `del` row removes it (src/rs_texture_cache.cpp). */
 export function foldIndex(text: string | undefined): Map<string, IndexRow> {
   const rows = new Map<string, IndexRow>();
-  for (const r of jsonl<IndexRow>(text)) {
+  for (const r of jsonl<IndexRow | DeletedIndexRow>(text)) {
     const key = `${r.source} ${r.encoding} ${r.params}`;
     if (r.del) rows.delete(key);
     else rows.set(key, r);

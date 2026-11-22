@@ -36,6 +36,7 @@ import {
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { Page } from "@playwright/test";
 import { build } from "esbuild";
 import {
   BROWSER_LAUNCH_ARGS,
@@ -219,10 +220,7 @@ async function main(): Promise<number> {
     );
     return page;
   };
-  const call = <T>(
-    page: import("playwright-core").Page,
-    fn: string,
-  ): Promise<T> =>
+  const call = <T>(page: Page, fn: string): Promise<T> =>
     page.evaluate(
       ([k, f]) =>
         (window as unknown as Record<string, Record<string, () => unknown>>)[k][
@@ -230,7 +228,7 @@ async function main(): Promise<number> {
         ](),
       [rsc, fn],
     ) as Promise<T>;
-  const statuses = (page: import("playwright-core").Page) =>
+  const statuses = (page: Page) =>
     page.evaluate(
       (k) => (window as unknown as Record<string, Api>)[k].statuses,
       rsc,

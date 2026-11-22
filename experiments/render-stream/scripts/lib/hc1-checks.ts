@@ -15,7 +15,7 @@ if (!out) throw new Error("hc1-checks: pass the run-hc1.sh output directory");
 interface Check {
   id: string;
   passed: boolean;
-  detail: string;
+  detail?: string;
 }
 const checks: Check[] = [];
 const add = (id: string, problems: string[], ok: string): void => {

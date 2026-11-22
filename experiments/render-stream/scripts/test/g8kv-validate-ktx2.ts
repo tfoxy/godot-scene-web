@@ -6,7 +6,7 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { checkKtx2Shape, decodeKtx2Payload } from "../lib/render-stream-2.ts";
+import { checkKtx2Shape, decodeKtx2Payload } from "../lib/render-stream-2";
 
 const dir = process.argv[2];
 if (!dir) throw new Error("usage: g8kv-validate-ktx2.ts <emit-dir>");

@@ -1,6 +1,6 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { type SpawnSyncReturns, spawnSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -241,7 +241,7 @@ if (args.recording || args.store || args.out) {
   );
   for (const sabotage of [false, true]) {
     const out = resolve(args.out, sabotage ? "slot-swap" : "slots");
-    const command = [
+    const command: string[] = [
       "--conditions=development",
       fileURLToPath(new URL("../damage-oracle.ts", import.meta.url)),
       "--recording",
@@ -262,7 +262,7 @@ if (args.recording || args.store || args.out) {
       ...(args["rs-build"] ? ["--rs-build", resolve(args["rs-build"])] : []),
       ...(sabotage ? ["--sabotage", "slot-swap"] : []),
     ];
-    const result = spawnSync(
+    const result: SpawnSyncReturns<string> = spawnSync(
       process.execPath,
       ["--import", "tsx", ...command],
       {

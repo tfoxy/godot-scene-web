@@ -2306,7 +2306,7 @@ async function main(): Promise<void> {
         mkdirSync(join(root, l), { recursive: true });
         if (l !== omit) writeFileSync(join(root, l, "exit-code.txt"), "0\n");
       }
-      const checks: Awaited<ReturnType<typeof ptLateChecks>> = [];
+      const checks: Parameters<typeof runG8ptLate>[6] = [];
       const px = {
         regions: {},
         background: [0, 0] as [number, number],

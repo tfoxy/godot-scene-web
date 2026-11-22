@@ -1679,11 +1679,12 @@ assert(
     floatRecoverSchedule(steps, lines, arm).length === 0,
     "recovery schedule passes",
   );
-  for (const args of [
+  const nullSchedules: Parameters<typeof floatRecoverSchedule>[] = [
     [null, lines, arm],
     [steps, null, arm],
     [steps, lines, null],
-  ] as const)
+  ];
+  for (const args of nullSchedules)
     assert(
       floatRecoverSchedule(...args).length > 0,
       "null recovery schedule input fails",
@@ -1769,12 +1770,13 @@ assert(
     recoverSkipProblems(hold, rids, arm, steps[1]).length === 0,
     "recovery skips pass",
   );
-  for (const args of [
+  const nullSkips: Parameters<typeof recoverSkipProblems>[] = [
     [null, rids, arm, steps[1]],
     [hold, null, arm, steps[1]],
     [hold, rids, null, steps[1]],
     [hold, rids, arm, null],
-  ] as const)
+  ];
+  for (const args of nullSkips)
     assert(
       recoverSkipProblems(...args).length > 0,
       "null recovery skip input fails",

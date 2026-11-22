@@ -585,7 +585,7 @@ export function rearmInflightProblems(
 export function quitPendingProblems(
   driver: Json,
   teardown: Json,
-  exit: string,
+  exit: string | null,
   log: string,
 ): string[] {
   const problems: string[] = [];
@@ -611,7 +611,7 @@ export function admissionProblems(
   driver: Json,
   teardown1: Json,
   teardown2: Json,
-  exit: string,
+  exit: string | null,
   mode: "standby" | "counted" | "sabotage" | "hot-sabotage",
   adoptedCode: string,
 ): string[] {

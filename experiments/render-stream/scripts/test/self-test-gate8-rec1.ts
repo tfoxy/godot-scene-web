@@ -289,6 +289,7 @@ async function main() {
     expect(
       cs[0]?.gating === false &&
         cs[0].passed === false &&
+        typeof cs[0].detail === "string" &&
         /skipped/.test(cs[0].detail),
       `${m}: non-gating skip (${cs[0]?.detail})`,
     );

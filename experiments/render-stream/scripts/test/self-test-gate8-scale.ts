@@ -165,6 +165,7 @@ try {
   writeFileSync(join(tap, "stream-3.rs2"), "bad magic");
   const badMagic = runScaleMirrorChecks(root)[0];
   assert.equal(badMagic.passed, false);
+  assert.ok(typeof badMagic.detail === "string");
   assert.match(badMagic.detail, /stream-3\.rs2: bad-magic/);
   rmSync(join(tap, "stream-3.rs2"));
   rmSync(join(tap, "stream-2.rs2"));

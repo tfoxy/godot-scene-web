@@ -67,8 +67,8 @@ import {
 import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
+import type { Page } from "@playwright/test";
 import { build } from "esbuild";
-import type { Page } from "playwright-core";
 import {
   BROWSER_LAUNCH_ARGS,
   checkBrowserProvenance,
