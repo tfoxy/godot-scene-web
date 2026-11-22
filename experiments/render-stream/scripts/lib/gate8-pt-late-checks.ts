@@ -468,9 +468,9 @@ export function ptRegistrySourceProblems(
   };
 }
 
-/** LATE-CMBT: the post-arm cell's process material was `unknown-shader` (its material_set_shader
- *  named a pre-arm shader RID); the capture re-keys it through the particle_process_material
- *  builtin, so the entry is ok on an ok process material whose shader carries the builtin. */
+/** LATE-CMBT: rendered readback recovers the pre-load shader before the synthetic fallback.
+ * Keep the real code, builtin key and authored host emitter state; a fallback counter alone
+ * cannot establish recovery. Pre-load emitters still need their separate re-issue contract. */
 export function ptLateCmbtProblems(
   stats: Record<string, number> | null,
   txs: readonly PtLateTx[],
@@ -478,8 +478,8 @@ export function ptLateCmbtProblems(
 ): string[] {
   const problems: string[] = [];
   if (!stats) problems.push("no stream.gate8.particles in result.json");
-  else if ((stats.unknown_shader_keyed ?? 0) < 1)
-    problems.push("unknown_shader_keyed is 0");
+  else if ((stats.unknown_shader_keyed ?? 0) !== 0)
+    problems.push("rendered shader used the synthetic unknown-shader fallback");
   const last = txs.at(-1);
   if (!last) return [...problems, "no transaction"];
   const entry = [...last.table.values()].find(
@@ -492,26 +492,27 @@ export function ptLateCmbtProblems(
     );
   if (entry.status !== "ok")
     problems.push(`entry ${entry.id}: status ${entry.status}`);
-  const m =
-    entry.process_material === null
-      ? undefined
-      : last.materials.get(entry.process_material);
-  if (!m) problems.push(`entry ${entry.id}: no process material`);
+  if (entry.seed !== lateShader.seed)
+    problems.push(
+      `entry ${entry.id}: seed ${entry.seed}, expected ${lateShader.seed}`,
+    );
+  if (entry.emitting !== true)
+    problems.push(
+      `entry ${entry.id}: emitting ${entry.emitting}, expected true`,
+    );
+  const shaderProblem = realShaderProblem(last, entry);
+  if (shaderProblem) problems.push(shaderProblem);
   else {
-    if (m.status !== "ok")
-      problems.push(
-        `entry ${entry.id}: process material ${entry.process_material} is ${m.status}`,
-      );
-    const s =
-      m.shader === null
-        ? undefined
-        : (last.shaders.get(m.shader) as
-            | { status?: string; builtin?: { kind?: string } | null }
-            | undefined);
-    if (s?.status !== "ok" || s.builtin?.kind !== "particle_process_material")
-      problems.push(
-        `entry ${entry.id}: process shader ${m.shader} is not an ok particle_process_material builtin`,
-      );
+    const material = last.materials.get(entry.process_material!)!;
+    const shader = last.shaders.get(material.shader!) as {
+      builtin: Record<string, unknown>;
+    };
+    for (const [name, expected] of Object.entries(lateShader.key)) {
+      if (JSON.stringify(shader.builtin[name]) !== JSON.stringify(expected))
+        problems.push(
+          `entry ${entry.id}: process shader builtin ${name} differs`,
+        );
+    }
   }
   return problems;
 }
@@ -1051,7 +1052,7 @@ export async function runG8ptLate(
   }
 
   // pt-late-cmbt (LATE-CMBT): a post-arm process material whose material_set_shader named a
-  // pre-arm shader RID is re-keyed through the particle_process_material builtin.
+  // pre-arm shader RID is recovered by rendered readback with its real code and builtin.
   {
     const leg = LATE_CMBT_CAPTURE;
     const stats = ppmStats(
@@ -1072,7 +1073,7 @@ export async function runG8ptLate(
     checks.push(
       check(
         "pt-late-cmbt",
-        "LATE-CMBT: the post-arm cell's process material (material_set_shader names a pre-arm shader RID) is keyed through its particle_process_material builtin, so its emitter is ok on an ok builtin process material",
+        "LATE-CMBT: rendered readback recovers the pre-arm process shader with its real code and builtin key; the created emitter keeps its authored seed and emitting state",
         problems,
         stats
           ? `${stats.unknown_shader_keyed ?? 0} unknown-shader process materials re-keyed`

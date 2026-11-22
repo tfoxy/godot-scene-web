@@ -84,7 +84,7 @@ def main():
                 else:
                     require(list(record["engine"]) == ["version_string", "sha256", "image_sha256", "codeview_id", "time_date_stamp", "size_of_image", "image_base", "dynamic_base", "platform", "flavor"], "PE engine keys/order")
                     require(record["rendering_server"]["placeholder_kind"] == ("code" if variant == "pe-code" else "null"), "placeholder kind")
-                require(record["rendering_server"]["slot_count"] == 161, "walk ran into adjacent vtable")
+                require(record["rendering_server"]["slot_count"] == synth.SLOT_COUNT, "walk ran into adjacent vtable")
                 require(record["rendering_server"]["object_prefix"] == 5, "prefix")
 
             test(f"golden-{variant}", golden)

@@ -8,6 +8,7 @@
 #include "iface.h"
 #include "rs_sha256.h"
 #include "rs_platform.h"
+#include "vtable.h"
 
 namespace grc {
 
@@ -629,7 +630,8 @@ bool check_fingerprint(const Calibration &calib, const ProcessFingerprint &fp,
 }
 
 bool check_slot_mask(const Calibration &calib, const ProcessFingerprint &fp,
-                     LiveVtableFacts *facts, std::vector<CheckResult> *checks) {
+                     LiveVtableFacts *facts, std::vector<CheckResult> *checks,
+                     const ShadowVtable *shadow) {
   bool ok = true;
 
   facts->singleton = singleton_object("RenderingServer");
@@ -641,7 +643,10 @@ bool check_slot_mask(const Calibration &calib, const ProcessFingerprint &fp,
 
   facts->live_vptr = reinterpret_cast<uint64_t>(*static_cast<void **>(facts->singleton));
   facts->expected_vptr = calib.concrete_vtable_vaddr + 16 + fp.load_bias;
-  const bool vptr_ok = facts->live_vptr == facts->expected_vptr;
+  const bool vptr_ok = facts->live_vptr == facts->expected_vptr ||
+      (shadow != nullptr && shadow->matches_original(
+          facts->singleton, reinterpret_cast<const void *>(facts->live_vptr),
+          reinterpret_cast<const void *>(facts->expected_vptr)));
   record(checks, "concrete_vptr", vptr_ok,
          "live " + format_hex(facts->live_vptr) + " expected " + format_hex(facts->expected_vptr));
   ok = ok && vptr_ok;

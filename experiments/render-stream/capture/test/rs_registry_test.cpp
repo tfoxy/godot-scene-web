@@ -1,6 +1,6 @@
 // The late-arm resource registry (rs_registry.h): the off gate,
 // kinds and families, erase on free and texture_replace, recreate, null creates, the per-family
-// cap and overflow, the accounting identity registry-live-bound judges (entries == creates - frees
+// cap and overflow, the accounting identity registry-live-bound judges (entries == carried + creates - frees
 // - replaced - recreated, on every timeline row), the timeline, both fault knobs, the evidence
 // shape, concurrent creates and frees from several threads, and the payloads: (LAR1) CanvasTexture,
 // (LAR2) multimesh, (LAR3) shader and material.
@@ -42,7 +42,7 @@ bool identity_holds() {
   const grc::rs::RegistryStats st = grc::rs::registry_stats();
   std::uint64_t total = 0;
   for (const grc::rs::RegistryFamilyStats &f : st.family) {
-    if (f.entries != f.creates - f.frees - f.replaced - f.recreated) {
+    if (f.entries != f.carried + f.creates - f.frees - f.replaced - f.recreated) {
       return false;
     }
     total += f.entries;
@@ -52,7 +52,7 @@ bool identity_holds() {
   }
   for (const grc::rs::RegistryRow &row : grc::rs::registry_timeline(nullptr)) {
     for (std::size_t i = 0; i < grc::rs::kRegistryFamilies; ++i) {
-      if (row.entries[i] != row.creates[i] - row.frees[i]) {
+      if (row.entries[i] != row.carried[i] + row.creates[i] - row.frees[i]) {
         return false;
       }
     }
@@ -1541,6 +1541,104 @@ int main() {
     // registry_configure clears the live flag.
     registry_configure(true, RegistryFault::None);
     expect(!registry_viewports() && registry_stats().viewport_payloads == 0, "vp: configure clears");
+  }
+
+  // Detach releases readable/payload-sized state but keeps exact unreadable descriptors.
+  {
+    registry_configure(true, RegistryFault::None);
+    constexpr std::uint64_t ct = 101, mm = 102, pt = 103, mat = 104, shader = 105, tex = 106;
+    registry_set_viewports(true);
+    registry_note_proxy_create(110, tex, 0);
+    registry_note_proxy_update(110, 109, 0);
+    registry_note_proxy_create(111, 0, 112);
+    registry_note_create(ct, RegistryKind::CanvasTexture);
+    registry_note_canvas_channel(ct, 0, tex);
+    registry_note_canvas_shading(ct, {0.1f, 0.2f, 0.3f, 1}, 0.7f);
+    registry_note_create(mm, RegistryKind::Multimesh);
+    registry_note_multimesh_allocate(mm, 3, 0, true, true, false);
+    registry_note_multimesh_mesh(mm, 107);
+    registry_note_create(pt, RegistryKind::Particles);
+    registry_note_particles(pt, RegistryParticlesOp::Amount, 42, 0, nullptr, 0);
+    registry_note_create(shader, RegistryKind::Shader);
+    registry_note_shader_code(shader, std::make_shared<int>(7));
+    registry_note_shader_default_texture(shader, "layers", tex, 0);
+    registry_note_shader_default_texture(shader, "layers", 109, 2);
+    registry_note_shader_default_texture(shader, "layers", tex, 1);
+    registry_note_shader_default_texture(shader, "layers", 0, 1);
+    registry_note_create(tex, RegistryKind::Texture2d);
+    registry_note_texture_size_override(tex, 13, 11);
+    registry_note_create(mat, RegistryKind::Material);
+    registry_note_material_shader(mat, shader);
+    registry_note_material_next_pass(mat, 108);
+    registry_note_material_priority(mat, 7);
+    int dropped = 0;
+    registry_note_material_param(mat, "fade", RegistryValue(new int(1), [&](const int *p) {
+      ++dropped;
+      // Destruction must happen outside the registry mutex.
+      registry_stats();
+      delete p;
+    }));
+    for (int cycle = 0; cycle < 3; ++cycle) {
+      registry_configure(true, RegistryFault::None, kRegistryDefaultCap, true);
+      RegistryCanvasTexture c;
+      RegistryMultimesh m;
+      RegistryParticles p;
+      RegistryMaterial b;
+      RegistryShader sh;
+      RegistryProxy proxy;
+      expect(registry_on() && registry_stats().entries == 7, "lean: unreadable descriptor kinds survive");
+      expect(registry_viewports() && registry_proxy(110, &proxy) && proxy.base == 109 && proxy.viewport == 0,
+             "lean: proxy keeps latest base and tracking stays enabled");
+      expect(registry_proxy(111, &proxy) && proxy.base == 0 && proxy.viewport == 112,
+             "lean: proxy viewport association survives");
+      expect(!registry_lookup(tex, nullptr), "lean: readable textures dropped");
+      std::uint32_t width = 0, height = 0;
+      expect(registry_texture_size_override(tex, &width, &height) && width == 13 && height == 11,
+             "lean: attached logical size survives without texture entry");
+      registry_note_texture_size_override(113, 17, 19);
+      expect(!registry_lookup(113, nullptr) && registry_texture_size_override(113, &width, &height) &&
+                 width == 17 && height == 19, "lean: logical size records without an entry");
+      registry_note_free(113);
+      expect(!registry_texture_size_override(113, &width, &height), "lean: free drops logical size");
+      // The source's logical size replaces the destination's, including an unset source.
+      registry_note_texture_size_override(114, 23, 29);
+      registry_note_texture_size_override(115, 31, 37);
+      registry_note_replace(114, 115);
+      expect(registry_texture_size_override(114, &width, &height) && width == 31 && height == 37 &&
+                 !registry_texture_size_override(115, &width, &height), "lean: replace moves source size");
+      registry_note_replace(114, 116);
+      expect(!registry_texture_size_override(114, &width, &height), "lean: replace clears absent size");
+      registry_frame(cycle + 1);
+      expect(identity_holds(), "lean: carried identity holds each cycle");
+      expect(registry_shader(shader, &sh) && !sh.code && sh.defaults.size() == 2 &&
+                 sh.defaults[0].name == "layers" && sh.defaults[0].index == 0 &&
+                 sh.defaults[0].texture == tex && sh.defaults[1].index == 2 &&
+                 sh.defaults[1].texture == 109,
+             "lean: sampler array bindings survive without code or cleared indices");
+      expect(registry_canvas_texture(ct, &c) && c.diffuse == tex && c.shading_set && c.shininess == 0.7f,
+             "lean: CanvasTexture descriptor survives");
+      expect(registry_multimesh(mm, &m) && m.instances == 3 && m.colors && m.custom && m.mesh == 107,
+             "lean: multimesh descriptor survives");
+      expect(registry_particles(pt, &p) && p.amount == 42, "lean: particle descriptor survives");
+      expect(registry_material(mat, &b) && b.shader == shader && b.next_pass == 108 &&
+                 b.priority == 7 && b.params.empty() && b.readback,
+             "lean: material bindings survive, values require readback");
+      expect(dropped == 1, "lean: parameter value released exactly once outside lock");
+      registry_names_release();
+    }
+    registry_note_free(ct);
+    registry_note_free(mm);
+    registry_note_free(pt);
+    registry_note_free(mat);
+    registry_note_free(shader);
+    registry_note_free(110);
+    registry_note_free(111);
+    registry_frame(4);
+    expect(identity_holds(), "lean: carried identity holds after frees");
+    expect(registry_stats().entries == 0, "lean: frees retire retained descriptors");
+    registry_configure(true, RegistryFault::None, kRegistryDefaultCap, true);
+    expect(identity_holds(), "lean: identity holds after next attach");
+    expect(registry_stats().entries == 0, "lean: freed RIDs do not return at next attach");
   }
 
   // Reconfigure resets everything (a test-only path: the capture configures once).

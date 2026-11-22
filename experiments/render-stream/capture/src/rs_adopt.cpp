@@ -335,6 +335,14 @@ enum BindId : int {
   // PM9 (late-arm multimesh adoption): the multimesh buffer read-back (LAR2: the allocation, mesh,
   // visible count and custom AABB come from the registry).
   kRsMultimeshGetBuffer,
+  kRsMultimeshGetVisibleInstances,
+  kRsMultimeshGetCustomAabb,
+  kRsShaderGetCode,
+  kRsShaderGetParameterList,
+  kRsShaderGetDefaultTexture,
+  kRsMaterialGetParam,
+  kRsParticlesGetEmitting,
+  kRsParticlesRestart,
   // PM9 (late-arm canvas texture adoption): the CanvasTexture resource's getters.
   kCtexGetDiffuseTexture,
   kCtexGetNormalTexture,
@@ -455,6 +463,14 @@ const BindSpec kBinds[kBindCount] = {
     {"RenderingServer", "mesh_get_custom_aabb", 974181306LL},     // (RID) -> AABB
     // PM9 (late-arm multimesh adoption), read-only and const.
     {"RenderingServer", "multimesh_get_buffer", 3964669176LL},  // (RID) -> PackedFloat32Array
+    {"RenderingServer", "multimesh_get_visible_instances", 2198884583LL},
+    {"RenderingServer", "multimesh_get_custom_aabb", 974181306LL},
+    {"RenderingServer", "shader_get_code", 642473191LL},
+    {"RenderingServer", "get_shader_parameter_list", 2684255073LL},
+    {"RenderingServer", "shader_get_default_texture_parameter", 1464608890LL},
+    {"RenderingServer", "material_get_param", 2621281810LL},
+    {"RenderingServer", "particles_get_emitting", 3521089500LL},
+    {"RenderingServer", "particles_restart", 2722037293LL},
     // PM9 (late-arm canvas texture adoption), every one read-only and const.
     {"CanvasTexture", "get_diffuse_texture", 3635182373LL},   // -> Texture2D
     {"CanvasTexture", "get_normal_texture", 3635182373LL},    // -> Texture2D
@@ -2191,7 +2207,8 @@ void adopt_texture_locked_out(std::uint64_t rid) {
     const bool registered = registry_texture(rid, &record);
     const Shape shape = reload_shape(shape_of(creation_image));
     const bool evicted = registered && record.facts.known && evicted_signature(shape, record.facts);
-    const bool unverifiable = !registry_lookup(rid, nullptr) && shape.width == 1 &&
+    const bool unverifiable = g_res_dummy_host.load(std::memory_order_relaxed) &&
+                              !registry_lookup(rid, nullptr) && shape.width == 1 &&
                               shape.height == 1 && shape.format == 0 && !shape.mipmaps;
     if (evicted || unverifiable) {
       ReloadEntry entry;
@@ -3328,6 +3345,14 @@ void adopt_multimesh_locked_out(std::uint64_t rid) {
     adopt.colors = reg.colors;
     adopt.custom = reg.custom;
     adopt.indirect = reg.indirect;
+    if (!g_res_dummy_host.load(std::memory_order_relaxed)) {
+      // Detached tracking retains allocation flags and mesh only. These getters recover edits
+      // made while detached without retaining instance-sized state or touching the host buffer.
+      std::int64_t visible = -1;
+      ptrcall(kRsMultimeshGetVisibleInstances, rs_singleton, a1, &visible);
+      reg.visible = static_cast<std::int32_t>(visible);
+      ptrcall(kRsMultimeshGetCustomAabb, rs_singleton, a1, reg.custom_aabb.data());
+    }
     adopt.visible = reg.visible;
     adopt.mesh = reg.mesh;
     adopt.custom_aabb = reg.custom_aabb;
@@ -4202,16 +4227,80 @@ bool adopt_shader_registered(std::uint64_t rid, const rs::RegistryShader &reg) {
   return m.knows_shader(rid);
 }
 
-// The shader `rid` from the registry, when it holds one (false: unregistered or unadoptable).
+// A server's declared parameter names, including generated particle uniforms. This is the
+// engine's list rather than a source scanner, so arrays and preprocessed declarations survive.
+struct ServerParameter {
+  std::string name;
+  std::int32_t texture_count = 0;
+};
+std::vector<ServerParameter> server_parameters(std::uint64_t shader, void *server) {
+  Builtin list(GDEXTENSION_VARIANT_TYPE_ARRAY);
+  const GDExtensionConstTypePtr args[] = {&shader};
+  ptrcall(kRsShaderGetParameterList, server, args, list.ptr());
+  std::vector<ServerParameter> result;
+  for (std::int64_t i = 0; i < array_size(list.ptr()); ++i) {
+    void *entry = g_iface.array_operator_index_const(list.ptr(), i);
+    if (entry == nullptr || g_iface.variant_get_type(entry) != GDEXTENSION_VARIANT_TYPE_DICTIONARY)
+      continue;
+    Builtin dict(GDEXTENSION_VARIANT_TYPE_DICTIONARY);
+    g_iface.get_variant_to_type_constructor(GDEXTENSION_VARIANT_TYPE_DICTIONARY)(dict.ptr(), entry);
+    VariantSlot name, type;
+    dict_get(dict.ptr(), "name", &name);
+    dict_get(dict.ptr(), "type", &type);
+    if (name.type() != GDEXTENSION_VARIANT_TYPE_STRING) continue;
+    Builtin text(GDEXTENSION_VARIANT_TYPE_STRING);
+    g_iface.get_variant_to_type_constructor(GDEXTENSION_VARIANT_TYPE_STRING)(text.ptr(), name.data);
+    const std::string key = utf8_of(text.ptr());
+    std::int64_t kind = 0;
+    variant_as(&type, GDEXTENSION_VARIANT_TYPE_INT, &kind);
+    if (key.empty() || kind == GDEXTENSION_VARIANT_TYPE_NIL) continue;  // group headings
+    std::int32_t count = kind == GDEXTENSION_VARIANT_TYPE_OBJECT ? 1 : 0;
+    result.push_back({key, count});
+  }
+  return result;
+}
+
+// Retained code covers headless and born captures. A rendered late attach reads the server's
+// preprocessed code and default textures once, before the material or emitter is published.
 bool materialize_shader(std::uint64_t rid) {
-  if (rid == 0) {
-    return false;
-  }
-  if (mirror_instance().knows_shader(rid)) {
-    return true;
-  }
+  if (rid == 0) return false;
+  Mirror &m = mirror_instance();
+  if (m.knows_shader(rid)) return true;
   rs::RegistryShader reg;
-  return rs::registry_on() && rs::registry_shader(rid, &reg) && adopt_shader_registered(rid, reg);
+  if (rs::registry_on() && rs::registry_shader(rid, &reg) && reg.code != nullptr)
+    return adopt_shader_registered(rid, reg);
+  if (g_res_dummy_host.load(std::memory_order_relaxed))
+    return rs::registry_on() && rs::registry_shader(rid, &reg) && adopt_shader_registered(rid, reg);
+  if (std::this_thread::get_id() != g_res_main) return false;
+  void *server = singleton_object("RenderingServer");
+  if (server == nullptr) return false;
+  Builtin code(GDEXTENSION_VARIANT_TYPE_STRING);
+  const GDExtensionConstTypePtr args[] = {&rid};
+  ptrcall(kRsShaderGetCode, server, args, code.ptr());
+  if (hooks_adopt_shader(rid, utf8_of(code.ptr()))) {
+    mat_stat([](AdoptMaterialStats &s) { ++s.shaders; });
+    // Lean descriptors retain indexed defaults whose array length has no public getter.
+    for (const auto &d : reg.defaults) {
+      hooks_adopt_default_texture(rid, d.name, d.texture, d.index);
+      mat_stat([](AdoptMaterialStats &s) { ++s.default_textures; });
+    }
+    for (const auto &param : server_parameters(rid, server)) {
+      StringName name(param.name.c_str());
+      for (std::int64_t index = 0; index < param.texture_count; ++index) {
+        std::uint64_t texture = 0;
+        const GDExtensionConstTypePtr defaults[] = {&rid, name.ptr(), &index};
+        ptrcall(kRsShaderGetDefaultTexture, server, defaults, &texture);
+        if (texture == 0) continue;
+        const auto retained = std::find_if(reg.defaults.begin(), reg.defaults.end(), [&](const auto &d) {
+          return d.name == param.name && d.index == index;
+        });
+        if (retained != reg.defaults.end()) continue;
+        hooks_adopt_default_texture(rid, param.name, texture, static_cast<std::int32_t>(index));
+        mat_stat([](AdoptMaterialStats &s) { ++s.default_textures; });
+      }
+    }
+  }
+  return m.knows_shader(rid);
 }
 
 // LAR3: a material the registry holds, adopted from its recorded shader binding (the shader
@@ -4227,7 +4316,24 @@ bool adopt_material_registered(std::uint64_t rid, const rs::RegistryMaterial &re
     materialize_shader(reg.shader);
   }
   std::vector<AdoptParam> params;
-  if (mat_sabotage() != AdoptMaterialSabotage::SkipParams) {
+  std::vector<std::unique_ptr<VariantSlot>> values;
+  if (reg.readback && !g_res_dummy_host.load(std::memory_order_relaxed) &&
+      std::this_thread::get_id() != g_res_main) return false;
+  if (reg.readback && !g_res_dummy_host.load(std::memory_order_relaxed) && reg.shader != 0 &&
+      mat_sabotage() != AdoptMaterialSabotage::SkipParams) {
+    void *server = singleton_object("RenderingServer");
+    if (server == nullptr) return false;
+    for (const auto &param : server_parameters(reg.shader, server)) {
+      auto value = std::make_unique<VariantSlot>();
+      StringName name(param.name.c_str());
+      const GDExtensionConstTypePtr args[] = {&rid, name.ptr()};
+      ptrcall(kRsMaterialGetParam, server, args, value->data);
+      // NIL means no override. Keep the shader's default, including its default texture.
+      if (value->type() == GDEXTENSION_VARIANT_TYPE_NIL) continue;
+      params.push_back({param.name, value->data});
+      values.push_back(std::move(value));
+    }
+  } else if (mat_sabotage() != AdoptMaterialSabotage::SkipParams) {
     params.reserve(reg.params.size());
     for (const rs::RegistryParam &p : reg.params) {
       params.push_back({p.name.str(), p.value.get()});
@@ -5135,6 +5241,10 @@ bool ref_process_material(std::uint64_t rid) {
   if (!rs::registry_material(rid, &reg)) {
     return false;  // older than the hooks: the LATE-RES re-link reads it from the node
   }
+  // A lean binding needs renderer getters even when its shared shader is already known.
+  // Leave it unrefused so materialize queues the reference for the main-thread drain.
+  if (reg.readback && !g_res_dummy_host.load(std::memory_order_relaxed) &&
+      std::this_thread::get_id() != g_res_main) return false;
   bool tried = false;
   const bool adopted = adopt_ppm_registered(rid, reg, &tried);
   if (tried && !adopted && refuse(rid, Refusal::ProcessMaterial)) {
@@ -5174,6 +5284,14 @@ void ref_particles(std::uint64_t particles) {
   if (rec.process_material != 0) {
     materialize(rec.process_material, RefKind::ProcessMaterial);
   }
+  void *server = nullptr;
+  const GDExtensionConstTypePtr args[] = {&particles};
+  if (rec.restart_on_adopt && !g_res_dummy_host.load(std::memory_order_relaxed)) {
+    server = singleton_object("RenderingServer");
+    if (server == nullptr) return;
+    // A completed one-shot must stay completed: the server may have stopped it internally.
+    ptrcall(kRsParticlesGetEmitting, server, args, &rec.emitting);
+  }
   Mirror::ParticlesAdopt a = pta_config(rec);
   bool waits = false;
   if (rec.subemitter != 0 && rec.subemitter != particles) {
@@ -5203,6 +5321,12 @@ void ref_particles(std::uint64_t particles) {
       pta_stat([](EmitterAdoptStats &s) { ++s.subemitters; });
     }
   }
+  // Adopt even a subemitter with no draw of its own. The parent is already known, so a cycle
+  // terminates at that known RID; the wait above links it before either restart is published.
+  if (waits) materialize(rec.subemitter, RefKind::Particles);
+  // Restart only after the dependency graph is installed. Reading emitting above keeps a
+  // completed one-shot stopped, even though its last observed setter still said true.
+  if (server != nullptr && rec.emitting) ptrcall(kRsParticlesRestart, server, args, nullptr);
   pta_stat([t0](EmitterAdoptStats &s) { s.adopt_ns += now_ns() - t0; });
 }
 
@@ -5255,11 +5379,17 @@ bool materialize(std::uint64_t rid, RefKind ref) {
   Mirror &m = mirror_instance();
   switch (ref) {
   case RefKind::Shader:
-    return materialize_shader(rid);  // LAR3: registry-only, any thread
+    if (materialize_shader(rid)) return true;
+    if (std::this_thread::get_id() != g_res_main) queue_offmain(rid, ref);
+    return false;
   case RefKind::Material:
-    return materialize_material(rid, false);  // LAR3: registry-only, any thread
+    if (materialize_material(rid, false)) return true;
+    if (std::this_thread::get_id() != g_res_main) queue_offmain(rid, ref);
+    return false;
   case RefKind::ProcessMaterial:
-    return ref_process_material(rid);  // LAR5: registry-only, any thread
+    if (ref_process_material(rid)) return true;
+    if (std::this_thread::get_id() != g_res_main) queue_offmain(rid, ref);
+    return false;
   case RefKind::Texture:
   case RefKind::Mesh:
   case RefKind::Multimesh:
@@ -5903,8 +6033,10 @@ std::size_t reresolve_from_registry(Mirror &mirror,
       ready = true;
     } else if (!ready && base != 0 && !rs::registry_proxy(base, nullptr)) {
       rs::RegistryKind kind = rs::RegistryKind::Texture2d;
-      if (!mirror.knows_texture(base) && rs::registry_lookup(base, &kind)) {
-        if (kind == rs::RegistryKind::TexturePlaceholder) {
+      if (!mirror.knows_texture(base)) {
+        // Lean detach releases readable image entries. The retained proxy still supplies its
+        // exact next-frame RID, so an unregistered image must reach the rendered getter too.
+        if (rs::registry_lookup(base, &kind) && kind == rs::RegistryKind::TexturePlaceholder) {
           hooks_adopt_placeholder(base, frame);
         } else {
           materialize(base, RefKind::Texture);  // gated as every reference is (GRC_ADOPT=arm)

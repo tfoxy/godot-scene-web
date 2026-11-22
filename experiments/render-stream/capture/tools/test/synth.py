@@ -11,8 +11,8 @@ ANCHORS = (0, 2, 3, 7, 40)
 GUID = bytes(range(16))
 IMAGE_BASE = 0x140000000
 STAMP = 0x5EED0001
-SLOT_COUNT = 161
 PREFIX = 5
+SLOT_COUNT = PREFIX + len(ANCHORS) + len(calibrate.WANTED_SLOTS)
 
 
 def declarations():

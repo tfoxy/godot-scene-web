@@ -31,6 +31,7 @@ std::atomic<uint64_t> g_engine_a{0};
 std::atomic<uint64_t> g_engine_b{0};
 std::atomic<uint64_t> g_hook_a{0};
 std::atomic<uint64_t> g_hook_b{0};
+std::atomic<uint64_t> g_lean_b{0};
 
 struct Fake {
   virtual int a(int x);
@@ -61,6 +62,11 @@ int hook_b(Fake *self, int x) {
   return reinterpret_cast<Fn>(g_orig_b)(self, x);
 }
 
+int lean_b(Fake *self, int x) {
+  g_lean_b.fetch_add(1, std::memory_order_relaxed);
+  return reinterpret_cast<Fn>(g_orig_b)(self, x);
+}
+
 // Through a volatile pointer, so every call loads the vptr (no devirtualisation).
 Fake *volatile g_object = nullptr;
 
@@ -74,12 +80,14 @@ void reset_counts() {
   g_engine_b = 0;
   g_hook_a = 0;
   g_hook_b = 0;
+  g_lean_b = 0;
 }
 
 std::vector<grc::SlotReplacement> replacements() {
   // Slot 0 (a) is a standby slot, slot 1 (b) a hot one.
   grc::SlotReplacement ra{0, reinterpret_cast<void *>(&hook_a), &g_orig_a, true};
   grc::SlotReplacement rb{1, reinterpret_cast<void *>(&hook_b), &g_orig_b, false};
+  rb.lean_hook = reinterpret_cast<void *>(&lean_b);
   return {ra, rb};
 }
 
@@ -99,6 +107,17 @@ void test_tables() {
   call_a(1);
   call_b(1);
   expect(g_hook_a == 0 && g_hook_b == 0, "engine table: no hook runs");
+
+  expect(shadow.publish(grc::ShadowVtable::Table::Lean), "publish lean");
+  reset_counts();
+  expect(call_a(1) == 2 && call_b(1) == 3, "lean: results unchanged");
+  expect(g_hook_a == 0 && g_hook_b == 0 && g_lean_b == 1,
+         "lean: independent registry thunk only, hot and standby slots bypassed");
+  expect(g_engine_a == 1 && g_engine_b == 1, "lean: engine sees each call once");
+  bool lean_shadow = false, lean_restored = false;
+  expect(shadow.disarm(&lean_shadow, &lean_restored) && lean_shadow && lean_restored,
+         "disarm from lean");
+  expect(vptr_of(&fake) == engine, "lean disarm restores engine");
 
   expect(shadow.publish(grc::ShadowVtable::Table::Standby), "publish standby");
   expect(vptr_of(&fake) == shadow.standby_address_point(), "standby published");
@@ -159,12 +178,13 @@ void test_flips() {
       calls.fetch_add(n, std::memory_order_relaxed);
     });
   }
-  const grc::ShadowVtable::Table order[3] = {grc::ShadowVtable::Table::Standby,
+  const grc::ShadowVtable::Table order[4] = {grc::ShadowVtable::Table::Standby,
                                              grc::ShadowVtable::Table::Armed,
-                                             grc::ShadowVtable::Table::Engine};
+                                             grc::ShadowVtable::Table::Engine,
+                                             grc::ShadowVtable::Table::Lean};
   bool all_published = true;
   for (int i = 0; i < 1000000; ++i) {
-    all_published = shadow.publish(order[i % 3]) && all_published;
+    all_published = shadow.publish(order[i % 4]) && all_published;
   }
   stop.store(true);
   for (std::thread &t : callers) {

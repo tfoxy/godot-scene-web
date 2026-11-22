@@ -34,21 +34,32 @@ Both options dictionaries must be empty. The singleton and library remain reside
 use these methods for repeated streaming sessions in one process.
 
 Attachment and streaming are separate states. Loading in `GRC_MODE=standby` starts attached.
+For a rendered host, load the extension before scene resources are created with
+`GRC_MODE=detached` to start in lean detached mode, then attach only when a receiver needs a stream.
+Both modes default to `GRC_ADOPT=arm`; set it explicitly when configuring the host.
 `arm()` starts a stream; `disarm()` ends it and returns to attached standby. To stop capture work,
 wait for `disarmed`, then call `detach()`. On the next request,
 call `attach()`, then `arm()`. An attach does not arm automatically. Each new arm is a new stream;
 receivers connect using its new `armed` information.
 
-`detach()` is synchronous: success means the engine's table is restored, hook admission is closed,
-the registry is stopped and cleared, capture workers have joined, the live hub and listeners are
-closed, and the capture frame callback is unregistered. A detached host executes no capture hooks
-or frame callbacks. The dormant singleton still accepts explicit control calls. The net module,
+`detach()` is synchronous: success means the lean table is installed, attachment hook admission is
+closed, capture workers have joined, the live hub and listeners are closed, and the capture frame
+callback is unregistered. The dormant singleton still accepts explicit control calls. The net module,
 if loaded, stays mapped; detach does not unload it.
 
+Lean detached mode retains descriptors that the renderer cannot return later: CanvasTexture
+channels and settings, texture logical size (size override), texture-proxy base and viewport bindings,
+multimesh allocation format and mesh binding, material-to-shader bindings,
+shader default-texture bindings (including their indices), and particle configuration and links.
+Registry-only hooks update these descriptors and retire freed RIDs. It releases attachment state
+and payload copies: image pixels, mesh and multimesh buffers, shader code and material parameter
+values. It runs no capture frame callback, mirror, encoder, payload worker or listener. Detach
+therefore leaves a small amount of descriptor tracking active; it does not unload the extension.
+
 `attach()` synchronously rebuilds capture state and restores standby interception and the frame
-callback. Resources created or changed while detached were not tracked; a host that needs existing
-scene content must enable `GRC_ADOPT=arm`, subject to the same adoption support as a late load.
-Consumer carriers destroyed by detach must be registered again before arming.
+callback. With `GRC_ADOPT=arm`, the next arm recovers the current scene and rendered resource data
+using the retained descriptors, as described below. Consumer carriers destroyed by detach must
+be registered again before arming.
 
 `state()["attachment_state"]` is `attached`, `detaching`, `detached`, `attaching` or `refused`.
 It is independent of `state()["state"]`, the stream phase; after a successful detach the stream
@@ -67,6 +78,51 @@ code and, on failure, `state()["last_refusal"]`.
 `arm()` while `attachment_state != attached` returns `3` with `last_refusal: capture-detached`.
 After engine shutdown, `arm()` and `disarm()` return `2` with `last_refusal: capture-shutdown`.
 
+## Late attach on a rendered host
+
+Load the extension early, before the resources it must track are created. A typical windowed host
+uses `GRC_MODE=detached`, `GRC_ADOPT=arm` and `GRC_ROOT_SIZE=observe`, alongside its calibration
+and sink configuration. For each session, on the main thread:
+
+1. Call `attach({})` and check for return code `0`.
+2. Register any consumer carriers, then call `arm()` with the normal stream options.
+3. Wait for `armed` and connect the receiver using that stream's information.
+4. When idle, call `disarm()`, wait for `disarmed`, then call `detach({})`.
+
+During arm and subsequent adoption of referenced RIDs, capture recovers these resources:
+
+| Resource | Recovery on a rendered host |
+| -------- | --------------------------- |
+| Scene nodes and canvas items | Walk the live tree and request redraw under the attached hooks. |
+| Textures and meshes | Read current payloads from the renderer. Supported compressed texture images are decoded for delivery. Texture proxies retain their identity and latest base/viewport binding, adopt their dependencies, and keep following frame updates after attach. |
+| CanvasTexture | Use retained channel and shading settings, then adopt its texture dependencies. |
+| Shaders and materials | Read shader code and current parameter values through renderer getters; use retained shader bindings and indexed default-texture bindings. |
+| Multimeshes, including CPU particle multimeshes | Use the retained allocation descriptor and mesh link; read the instance buffer, visible count and custom AABB from the renderer. The buffer stride is never used to infer format. |
+| GPU particles | Use retained configuration and dependency links; recover materials and draw-pass meshes, then restart active emitters before their first published snapshot. Completed one-shots remain stopped. |
+
+Readback runs on the main thread during adoption, once per adopted resource in that stream. It can
+stall the first publication while the GPU returns data; it does not add a recurring readback to
+each frame. Detach releases those payload copies, so a later stream reads the current data again.
+
+The consumer does not need to re-issue resource setters when lean tracking observed their creation.
+GPU particle adoption can restart the host's active effect, including its authored preprocess;
+it does not preserve the effect's previous simulation phase. Dependency and sub-emitter links are
+installed before the restart. Only emitters whose `particles_get_emitting` is true at adoption are
+restarted. A stopped emitter with live particles remaining (a one-shot tail or a just-stopped
+continuous emitter) is adopted stopped: the receiver shows none of those remaining particles,
+while the host can show them for at most one lifetime.
+
+Loading the extension for the first time after resource creation has narrower support. Renderer
+readback cannot recover descriptors that have no getter: untracked multimeshes and GPU emitters
+remain typed `preload-multimesh` / `preload-particles` refusals, and runtime CanvasTextures or raw
+material bindings without a recoverable owner can also be refused. Attaching late to an already
+loaded lean capture is the supported path for these resources. Calling only `particles_restart()`
+or re-sending a few setters cannot supply the missing creation descriptor.
+
+Headless hosts retain the existing dummy-renderer adoption limits: the readbacks above require a
+real renderer holding the current resource data. Use attached standby when a headless host must
+retain resource updates that the dummy renderer cannot return.
+
 ## Capture environment
 
 Set before the capture's GDExtension loads.
@@ -76,7 +132,7 @@ Set before the capture's GDExtension loads.
 | Variable | Effect |
 | -------- | ------ |
 | `GRC_CALIBRATION` | The calibration record for the exact engine binary. The hooks install only when it matches. |
-| `GRC_MODE` | `validate` (default: check the seam, publish nothing), `arm` (hook and stream now), or `standby` (load and wait for an arm). |
+| `GRC_MODE` | `validate` (default: check the seam, publish nothing), `arm` (hook and stream now), `standby` (load attached and wait for an arm), or `detached` (load with lean descriptor tracking; call `attach()` before `arm()`). |
 | `GRC_EVIDENCE_DIR` | Where the capture writes `result.json` and its `evidence/` files. |
 | `GRC_STREAM_VERSION` | Wire version of the sinks (default `6`; `6`, `8` to `18`). Later versions are opt-in. Up to `15` the live listener offers the chosen version first and older ones after it; `18` lists `.18`, `.17`, then `.16`; `17` lists `.17` then `.16`; `16` lists only `.16`. Each connection uses its selected subprotocol's version. `15` adds resource hints and the texture size override ([render-stream-15.md](render-stream-15.md)); `16` adds viewport surfaces ([render-stream-16.md](render-stream-16.md)); `17` adds client tweens ([render-stream-17.md](render-stream-17.md)); `18` widens the credit window to 1..8 ([render-stream-18.md](render-stream-18.md)). |
 | `GRC_VIEWPORTS` | `on` (default) or `off`, read at load. On, the capture mirrors non-root viewports (a `SubViewport`, a `SubViewportContainer`, an embedded window) and a `GRC_STREAM_VERSION=16`, `17` or `18` stream carries them; the session says `"viewports":"on"`, or `"unavailable"` when the calibration record lacks a hook of the viewport family (the behaviour is then the off one). `off` keeps the typed `non-root-viewport` behaviour of earlier versions and sends an empty viewport table. A client's `viewports: false` option is the receiver-side switch; the stream is the same either way, so the host needs no restart to try either. |

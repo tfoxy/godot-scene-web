@@ -1690,7 +1690,19 @@ async function main(): Promise<void> {
     };
     const cmbt = (): PtLateTx => ({
       ...good(),
-      table: new Map([[9, ent(9, 14, null, "created")]]),
+      table: new Map([
+        [9, { ...ent(9, 14, null, "created"), seed: 1011, emitting: true }],
+      ]),
+      shaders: new Map([
+        [
+          5,
+          {
+            status: "ok",
+            synthetic: false,
+            builtin: { kind: "particle_process_material", ...lateShader.key },
+          },
+        ],
+      ]),
       materials: new Map([
         [
           9,
@@ -1703,17 +1715,57 @@ async function main(): Promise<void> {
       ]),
     });
     expect(
-      ptLateCmbtProblems({ unknown_shader_keyed: 1 }, [cmbt()], lateShader)
+      ptLateCmbtProblems({ unknown_shader_keyed: 0 }, [cmbt()], lateShader)
         .length === 0,
-      "ptLateCmbtProblems: a keyed post-arm process material passes",
+      "ptLateCmbtProblems: a read-back real shader passes without synthetic re-keying",
     );
+    const cmbtSynthetic = cmbt();
+    cmbtSynthetic.shaders.set(5, {
+      status: "ok",
+      synthetic: true,
+      builtin: { kind: "particle_process_material", ...lateShader.key },
+    });
+    expect(
+      ptLateCmbtProblems(
+        { unknown_shader_keyed: 1 },
+        [cmbtSynthetic],
+        lateShader,
+      ).some((p) => p.includes("synthetic")),
+      "ptLateCmbtProblems: the old synthetic fallback fails rendered recovery",
+    );
+    const cmbtStopped = cmbt();
+    cmbtStopped.table.get(9)!.emitting = false;
     expect(
       ptLateCmbtProblems(
         { unknown_shader_keyed: 0 },
-        [cmbt()],
+        [cmbtStopped],
         lateShader,
-      ).some((p) => p.includes("unknown_shader_keyed")),
-      "ptLateCmbtProblems: no re-keyed material fails",
+      ).some((p) => p.includes("emitting")),
+      "ptLateCmbtProblems: a stopped host emitter fails",
+    );
+    const cmbtSeed = cmbt();
+    cmbtSeed.table.get(9)!.seed = 99;
+    expect(
+      ptLateCmbtProblems(
+        { unknown_shader_keyed: 0 },
+        [cmbtSeed],
+        lateShader,
+      ).some((p) => p.includes("seed")),
+      "ptLateCmbtProblems: a changed host seed fails",
+    );
+    const cmbtKey = cmbt();
+    cmbtKey.shaders.set(5, {
+      status: "ok",
+      synthetic: false,
+      builtin: { kind: "particle_process_material", emission_shape: "box" },
+    });
+    expect(
+      ptLateCmbtProblems(
+        { unknown_shader_keyed: 0 },
+        [cmbtKey],
+        lateShader,
+      ).some((p) => p.includes("emission_shape")),
+      "ptLateCmbtProblems: a wrong process-material key fails",
     );
     const cmbtUnknown = cmbt();
     cmbtUnknown.materials.set(9, {

@@ -1,5 +1,5 @@
 extends Node
-## Runner-owned rendered fixture. All detached samples call the dormant singleton directly.
+## Runner-owned rendered fixture. All detached samples read the resident singleton directly.
 
 var _api: Object
 var _out: String
@@ -12,14 +12,15 @@ var _texture: ImageTexture
 var _marker: Sprite2D
 var _canvas: Node2D
 var _armed_info: Dictionary = {}
+var _lean_particles: RID
+var _lean_material: RID
+var _lean_shader: RID
+var _lean_mm: RID
+var _lean_ct: RID
 
 
 func _ready() -> void:
 	_out = OS.get_environment("RS_RESIDENT_OUT")
-	_api = Engine.get_singleton("RenderStreamCapture")
-	_api.connect("armed", _armed)
-	_api.connect("disarmed", _disarmed)
-	_api.connect("arm_failed", _arm_failed)
 	_image = Image.create(128, 128, false, Image.FORMAT_RGBA8)
 	_texture = ImageTexture.create_from_image(_image)
 	_canvas = Node2D.new()
@@ -30,7 +31,38 @@ func _ready() -> void:
 	rect.color = Color.CORNFLOWER_BLUE
 	_canvas.add_child(rect)
 	_make_marker()
-	_arm()
+	# The extension first loads after a rendered scene already exists.
+	_phase = "before-load"
+
+
+func _load_lean() -> void:
+	var status: GDExtensionManager.LoadStatus = GDExtensionManager.load_extension(OS.get_environment("GRC_EXTENSION"))
+	if status != GDExtensionManager.LOAD_STATUS_OK:
+		push_error("resident attach probe: extension load " + str(status))
+		get_tree().quit(1)
+		return
+	_api = Engine.get_singleton("RenderStreamCapture")
+	_api.connect("armed", _armed)
+	_api.connect("disarmed", _disarmed)
+	_api.connect("arm_failed", _arm_failed)
+	_save("load-detached.json", {"frame": _frame, "state": _api.call("state")})
+	_lean_ct = RenderingServer.canvas_texture_create()
+	RenderingServer.canvas_texture_set_channel(_lean_ct, RenderingServer.CANVAS_TEXTURE_CHANNEL_DIFFUSE, _texture.get_rid())
+	RenderingServer.canvas_texture_set_shading_parameters(_lean_ct, Color.WHITE, 0.5)
+	_lean_mm = RenderingServer.multimesh_create()
+	RenderingServer.multimesh_allocate_data(_lean_mm, 1, RenderingServer.MULTIMESH_TRANSFORM_2D, true, true)
+	_lean_particles = RenderingServer.particles_create()
+	RenderingServer.particles_set_mode(_lean_particles, RenderingServer.PARTICLES_MODE_2D)
+	RenderingServer.particles_set_amount(_lean_particles, 4)
+	_lean_shader = RenderingServer.shader_create()
+	RenderingServer.shader_set_code(_lean_shader, "shader_type canvas_item; uniform float fade = 1.0;")
+	_lean_material = RenderingServer.material_create()
+	RenderingServer.material_set_shader(_lean_material, _lean_shader)
+	RenderingServer.material_set_next_pass(_lean_material, RID())
+	RenderingServer.material_set_render_priority(_lean_material, 3)
+	_phase = "initial-detached"
+	_since = _frame
+	_sample()
 
 
 func _make_marker() -> void:
@@ -76,11 +108,23 @@ func _process(_delta: float) -> void:
 	_image.set_pixel(0, 0, Color.RED if _frame % 2 else Color.BLUE)
 	_texture.update(_image)
 	_canvas.queue_redraw()
+	if _lean_particles.is_valid():
+		RenderingServer.particles_set_emission_transform(_lean_particles, Transform3D(Basis.IDENTITY, Vector3(_frame, 0, 0)))
+		# These values are readable and must not enter the detached table.
+		RenderingServer.material_set_param(_lean_material, "fade", float(_frame % 2))
+		RenderingServer.multimesh_set_buffer(_lean_mm, PackedFloat32Array([1, 0, 0, 0, 0, 1, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0]))
 	var item: RID = RenderingServer.canvas_item_create()
 	RenderingServer.canvas_item_set_parent(item, _canvas.get_canvas_item())
 	RenderingServer.canvas_item_add_rect(item, Rect2(-20, -20, 4, 4), Color.WHITE)
 	RenderingServer.free_rid(item)
-	if _phase == "streaming" and FileAccess.file_exists(_out.path_join("stream-%d.done" % _round)):
+	if _phase == "before-load" and _frame == 10:
+		_load_lean()
+	elif _phase == "initial-detached":
+		_sample()
+		if _frame >= _since + 120:
+			_invoke("attach", {})
+			_arm()
+	elif _phase == "streaming" and FileAccess.file_exists(_out.path_join("stream-%d.done" % _round)):
 		get_viewport().get_texture().get_image().save_png(_out.path_join("native-%d.png" % _round))
 		_save("streamed-%d.json" % _round, {"frame": _frame, "state": _api.call("state")})
 		_phase = "disarming"
@@ -103,8 +147,8 @@ func _process(_delta: float) -> void:
 				get_tree().quit()
 				return
 			_round += 1
-			_invoke("attach", {})
 			_make_marker()
+			_invoke("attach", {})
 			_arm()
 	if _frame > 18000:
 		_check(false, "fixture deadline: " + _phase)
@@ -113,7 +157,7 @@ func _process(_delta: float) -> void:
 func _sample() -> void:
 	# These are independent live reads on EVERY busy detached frame, never counters.json.
 	_write("detached-samples.jsonl", {"round": _round, "frame": _frame,
-		"t_us": Time.get_ticks_usec(), "state": _api.call("state")})
+		"t_us": Time.get_ticks_usec(), "initial": _phase == "initial-detached", "state": _api.call("state")})
 
 
 func _invoke(method: String, options: Dictionary) -> void:
@@ -140,3 +184,9 @@ func _write(name: String, row: Dictionary) -> void:
 	file.seek_end()
 	file.store_line(JSON.stringify(row))
 	file.close()
+
+
+func _exit_tree() -> void:
+	for rid: RID in [_lean_ct, _lean_mm, _lean_particles, _lean_material, _lean_shader]:
+		if rid.is_valid():
+			RenderingServer.free_rid(rid)

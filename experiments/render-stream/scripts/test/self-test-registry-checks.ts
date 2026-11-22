@@ -174,6 +174,36 @@ function good(): {
 }
 {
   const g = good();
+  // A CanvasTexture carried into a fresh attachment has no create-hook call there.
+  g.reg.families.canvas_texture = fam(1, 0, 0, { carried: 1, null_creates: 1 });
+  g.reg.entries++;
+  for (const row of g.reg.timeline.rows) {
+    row.entries[1] = 1;
+    row.carried = zero();
+    row.carried[1] = 1;
+  }
+  expect(
+    registryLiveBound("carried", g.reg, g.counts).problems.length === 0,
+    "carried entry passes totals and timeline without a new create",
+  );
+  delete g.reg.families.canvas_texture.carried;
+  for (const row of g.reg.timeline.rows) delete row.carried;
+  const sabotage = registryLiveBound(
+    "dropped-carried",
+    g.reg,
+    g.counts,
+  ).problems;
+  expect(
+    sabotage.some((p) => p.includes("canvas_texture ends")),
+    "dropped carried fails totals",
+  );
+  expect(
+    sabotage.some((p) => p.includes("frame 1 canvas_texture")),
+    "dropped carried fails timeline",
+  );
+}
+{
+  const g = good();
   g.counts.mesh_create_from_surfaces = 1; // a create the registry did not record
   expect(
     registryLiveBound("miss", g.reg, g.counts).problems.some((p) =>
@@ -574,12 +604,12 @@ expect(
     ...src.matchAll(/\nvoid hook_(canvas_texture_set_\w+)\(/g),
   ].map((m) => m[1]);
   expect(
-    setters.length === 3,
-    `three hooked canvas_texture setters (${setters.join(", ")})`,
+    setters.length === 4,
+    `four hooked canvas_texture setters (${setters.join(", ")})`,
   );
   for (const h of setters)
     expect(
-      /rs::registry_note_canvas_(channel|filter|repeat)\(canvas_texture\.id, /.test(
+      /rs::registry_note_canvas_(channel|filter|repeat|shading)\((canvas_texture|rid)\.id, /.test(
         body(h) ?? "",
       ),
       `hook_${h} records into the registry`,
@@ -608,7 +638,8 @@ expect(
   // LAR2 (K1 for the multimesh payload): every hooked multimesh setter that changes the state an
   // adoption carries records into the registry (allocate, mesh, visible, custom AABB, both buffer
   // sets, the four instance setters), and the adoption hands Mirror::MultimeshAdopt every recorded
-  // field -- no getter but the buffer's.
+  // field. Rendered recovery also reads visible count and custom AABB; allocation flags and mesh
+  // still come from the registry, and the dummy uses only recorded state.
   const mmTaps: Record<string, RegExp> = {
     multimesh_allocate_data:
       /rs::registry_note_multimesh_allocate\(multimesh\.id, instances, format, colors, custom, indirect\)/,
@@ -663,10 +694,15 @@ expect(
     );
   }
   expect(
-    !/kRsMultimeshGet(InstanceCount|VisibleInstances|Mesh|CustomAabb)\b/.test(
+    !/kRsMultimeshGet(InstanceCount|Mesh)\b/.test(adopt) &&
+      !/multimesh_format_via_node|infer_multimesh_format/.test(adopt),
+    "multimesh allocation and mesh stay recorded, no node format read or honest stride guess",
+  );
+  expect(
+    /if \(!g_res_dummy_host\.load\(std::memory_order_relaxed\)\) \{[^}]*ptrcall\(kRsMultimeshGetVisibleInstances[^}]*ptrcall\(kRsMultimeshGetCustomAabb/.test(
       adopt,
-    ) && !/multimesh_format_via_node|infer_multimesh_format/.test(adopt),
-    "no multimesh getter but the buffer's, no node format read, no honest stride guess (LAR2)",
+    ),
+    "only a rendered host reads multimesh visible count and AABB at adoption",
   );
 }
 

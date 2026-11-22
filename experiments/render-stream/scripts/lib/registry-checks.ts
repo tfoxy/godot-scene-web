@@ -4,7 +4,7 @@
  *
  *   registry-live-bound  evidence/registry.json (capture/src/rs_registry.h) against the hook
  *                        counters (evidence/counters.json): per family, on every timeline row and
- *                        at the end, entries == creates - frees (frees counting free calls that
+ *                        at the end, entries == carried + creates - frees (frees counting free calls that
  *                        named a registered RID, texture_replace sources and recreates), so a free
  *                        always erases and the registry is bounded by live engine resources; at
  *                        the end, creates + overflow + null_creates == the family's create-hook
@@ -29,6 +29,7 @@
 export interface RegistryFamily {
   entries: number;
   peak: number;
+  carried?: number; // Absent in evidence from before lean attachment preservation.
   creates: number;
   frees: number;
   replaced: number;
@@ -55,6 +56,7 @@ export interface RegistryEvidence {
     rows: {
       frame: number;
       entries: number[];
+      carried?: number[];
       creates: number[];
       frees: number[];
     }[];
@@ -160,10 +162,11 @@ export function registryLiveBound(
     total += v.entries;
     creates += v.creates;
     frees += v.frees + v.replaced;
-    const live = v.creates - v.frees - v.replaced - v.recreated;
+    const live =
+      (v.carried ?? 0) + v.creates - v.frees - v.replaced - v.recreated;
     if (v.entries !== live)
       problems.push(
-        `${name}: ${f} ends with ${v.entries} entries for ${v.creates} creates - ${v.frees} frees - ${v.replaced} replaced - ${v.recreated} recreated = ${live} live`,
+        `${name}: ${f} ends with ${v.entries} entries for ${v.carried ?? 0} carried + ${v.creates} creates - ${v.frees} frees - ${v.replaced} replaced - ${v.recreated} recreated = ${live} live`,
       );
     if (v.overflow !== 0)
       problems.push(`${name}: ${f} overflowed ${v.overflow} times`);
@@ -203,10 +206,13 @@ export function registryLiveBound(
       problems.push(`${name}: timeline frame ${row.frame} after ${lastFrame}`);
     lastFrame = row.frame;
     for (let i = 0; i < families.length; ++i) {
-      if (row.entries[i] !== row.creates[i] - row.frees[i]) {
+      if (
+        row.entries[i] !==
+        (row.carried?.[i] ?? 0) + row.creates[i] - row.frees[i]
+      ) {
         if (rowProblems++ < 5)
           problems.push(
-            `${name}: frame ${row.frame} ${families[i]}: ${row.entries[i]} entries for ${row.creates[i]} creates - ${row.frees[i]} frees`,
+            `${name}: frame ${row.frame} ${families[i]}: ${row.entries[i]} entries for ${row.carried?.[i] ?? 0} carried + ${row.creates[i]} creates - ${row.frees[i]} frees`,
           );
       }
     }
@@ -758,6 +764,7 @@ export function standbyHotZero(
 export const STANDBY_HOOKS: readonly string[] = [
   "canvas_texture_create",
   "canvas_texture_set_channel",
+  "canvas_texture_set_shading_parameters",
   "canvas_texture_set_texture_filter",
   "canvas_texture_set_texture_repeat",
   "draw",
@@ -765,7 +772,9 @@ export const STANDBY_HOOKS: readonly string[] = [
   "instance_set_scenario",
   "material_create",
   "material_create_from_shader",
+  "material_set_next_pass",
   "material_set_param",
+  "material_set_render_priority",
   "material_set_shader",
   "mesh_create",
   "mesh_create_from_surfaces",

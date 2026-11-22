@@ -278,6 +278,7 @@ struct State {
   // LS2's arm()); every arm passes through standby first. GRC_STANDBY_FAULT is the test-only
   // sabotage of the standby table (rs_standby.h).
   bool standby = false;
+  bool preserve_lean = false;
   bool api_pending_arm = false;
   rs::StandbyFault standby_fault = rs::StandbyFault::None;
 
@@ -941,6 +942,7 @@ std::string result_json() {
     json.key("vtable").object_begin();
     json.field("published", std::string(t == ShadowVtable::Table::Armed     ? "armed"
                                         : t == ShadowVtable::Table::Standby ? "standby"
+                                        : t == ShadowVtable::Table::Lean ? "lean"
                                                                             : "engine"));
     json.field("armed_slots", static_cast<int64_t>(g_state.shadow.armed_slots()));
     json.field("standby_slots", static_cast<int64_t>(g_state.shadow.standby_slots()));
@@ -5518,6 +5520,8 @@ bool arm_prepare() {
 }
 
 // Environment arms remain inline; API arms arrive at the same frame boundary as deferred arms.
+bool attachment_detach();
+
 void arm_now(const char *source) {
   const bool api = std::string(source) == "api";
   const uint64_t start_ns = monotonic_ns();
@@ -5644,7 +5648,8 @@ bool attempt(const char *phase) {
     }
     g_state.derived_record = serialize_derived_calibration(g_state.calib, table);
   }
-  if (!check_slot_mask(g_state.calib, g_state.fp, &g_state.facts, &g_state.checks)) {
+  if (!check_slot_mask(g_state.calib, g_state.fp, &g_state.facts, &g_state.checks,
+                       &g_state.shadow)) {
     refuse("slot-mask-mismatch");
     return true;
   }
@@ -5838,7 +5843,7 @@ bool attempt(const char *phase) {
     }
   }
 
-  if (g_state.mode != "arm" && g_state.mode != "standby") {
+  if (g_state.mode != "arm" && g_state.mode != "standby" && g_state.mode != "detached") {
     decide("validated", std::string());
     return true;
   }
@@ -5895,7 +5900,7 @@ bool attempt(const char *phase) {
       // GRC_MODE=standby implies GRC_ADOPT=arm (an arm from standby
       // adopts what the registry recorded); an explicit value is taken as given.
       const bool adopt = adopt_env != nullptr ? std::string(adopt_env) == "arm"
-                                              : g_state.mode == "standby";
+                                              : (g_state.mode == "standby" || g_state.mode == "detached");
       rs::AdoptFault fault = rs::AdoptFault::None;
       std::string fault_error;
       rs::RegistryFault registry_fault = rs::RegistryFault::None;
@@ -5912,7 +5917,7 @@ bool attempt(const char *phase) {
           registry_fault = rs::RegistryFault::SkipParticles;  // LAR5
         }
       }
-      rs::registry_configure(adopt, registry_fault);
+      rs::registry_configure(adopt, registry_fault, rs::kRegistryDefaultCap, g_state.preserve_lean);
       // VS2: the viewport family is recorded (standby included) only when viewports are live.
       rs::registry_set_viewports(g_viewports.live);
       if (adopt) {
@@ -6004,10 +6009,11 @@ bool attempt(const char *phase) {
                   : std::string()) +
              ")");
   }
-  if (g_state.mode == "standby") {
+  if (g_state.mode == "standby" || g_state.mode == "detached") {
     // LS1: loaded, the standby table published, nothing streaming; LS2's arm() leaves this state.
     g_state.standby = true;
     decide("standby", std::string());
+    if (g_state.mode == "detached") g_api->detach({}, attachment_detach);
     return true;
   }
   // LATE-SPINE: the vtable is patched (the hooks observe resource creation) but the arm itself
@@ -6793,6 +6799,13 @@ cap::Value::Object api_state() {
   }
   auto snapshot = g_api->state(g_state.frames_total, std::move(registry));
   snapshot["frame_callback_registered"] = g_frame_registered;
+  const auto table = g_state.shadow.published();
+  snapshot["table"] = table == ShadowVtable::Table::Lean ? "lean" :
+      table == ShadowVtable::Table::Standby ? "standby" :
+      table == ShadowVtable::Table::Armed ? "armed" : "engine";
+  cap::Value::Object methods;
+  for (const auto &[name, count] : hooks_method_counts()) methods[name] = std::int64_t(count);
+  snapshot["hook_methods"] = std::move(methods);
   snapshot["engine_table"] = g_state.shadow.published() == ShadowVtable::Table::Engine;
   snapshot["hook_calls"] = std::int64_t(hooks_total_calls());
   snapshot["hook_entries"] = std::int64_t(hooks_entries());
@@ -6861,7 +6874,7 @@ void attachment_callbacks(bool frame) {
 bool attachment_detach() {
   // No new thunk may touch attachment data, even if its vptr was fetched before restoration.
   hooks_attachment_close();
-  if (g_state.shadow.built() && !g_state.shadow.publish(ShadowVtable::Table::Engine)) return false;
+  if (g_state.shadow.built() && !g_state.shadow.publish(ShadowVtable::Table::Lean)) return false;
   if (g_state.pump_connected) {
     rs::predraw_pump_disconnect();
     g_state.pump_connected = false;
@@ -6880,7 +6893,7 @@ bool attachment_detach() {
   if (g_live.carriers != nullptr) g_live.carriers->stop();
   arm_release();
   for (auto &r : live::carrier_registry().close()) r.vtable.destroy(r.vtable.self);
-  rs::registry_configure(false, rs::RegistryFault::None);
+  rs::registry_configure(true, rs::RegistryFault::None, rs::kRegistryDefaultCap, true);
   rs::registry_names_release();
   rs::hold_set_active(false);
   rs::canvas_texture_shim().configure(rs::CanvasTextureShimMode::Off, g_state.display_server);
@@ -6901,7 +6914,7 @@ bool attachment_attach() {
   // The immutable tables belong to this process's RenderingServer, never a fresh singleton.
   if (g_state.shadow.built() &&
       (singleton_object("RenderingServer") != g_state.facts.singleton ||
-       !g_state.shadow.publish(ShadowVtable::Table::Engine))) return false;
+       g_state.shadow.published() != ShadowVtable::Table::Lean)) return false;
   State fresh;
   fresh.shadow = g_state.shadow;
   fresh.calibration_path = g_state.calibration_path;
@@ -6911,6 +6924,7 @@ bool attachment_attach() {
   fresh.evidence_ready = g_state.evidence_ready;
   fresh.validation_log_error = g_state.validation_log_error;
   fresh.mode = "standby";
+  fresh.preserve_lean = true;
   fresh.disarm_after_frames = g_state.disarm_after_frames;
   g_state = std::move(fresh);
   auto *net = g_live.net_module;
@@ -7290,7 +7304,7 @@ void initialize(void * /*userdata*/, GDExtensionInitializationLevel level) {
     if (!live::gd_carrier_class_register(&why)) {
       log_line("carrier class: " + why);
     }
-    if (!cap::gd_capture_register(api_invoke, g_state.mode == "standby" || g_state.mode == "arm", &why,
+    if (!cap::gd_capture_register(api_invoke, g_state.mode == "standby" || g_state.mode == "arm" || g_state.mode == "detached", &why,
         [](const std::string &method, const rs::tweens::Value &value) {
           const auto now = rs::tweens::ticks_usec();
           if (method == "tween_begin") g_live.hub->tweens().begin(value,now,rs::tweens::resolve_node);
@@ -7345,6 +7359,12 @@ void deinitialize(void * /*userdata*/, GDExtensionInitializationLevel level) {
     }
     return attachment_detach();
   });
+  hooks_attachment_close();
+  hooks_lean_close();
+  if (g_state.shadow.built()) g_state.shadow.publish(ShadowVtable::Table::Engine);
+  while (!hooks_attachment_drained()) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  while (!hooks_lean_drained()) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  rs::registry_configure(false, rs::RegistryFault::None);
   api_evidence();
   cap::gd_capture_unregister();
   live::gd_carrier_class_unregister();

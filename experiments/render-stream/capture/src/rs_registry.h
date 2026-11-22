@@ -29,7 +29,7 @@
 //   - Accounting per family: `creates` counts recorded creates, `frees` counts free calls naming a
 //     registered RID of the family, `replaced` the texture_replace sources erased, `recreated` a
 //     create of a value already present (overwritten; never seen on Godot, whose RID values are not
-//     reused). So, at every instant, entries == creates - frees - replaced - recreated, and
+//     reused). So, at every instant, entries == carried + creates - frees - replaced - recreated, and
 //     creates + overflow + null_creates == the family's create-hook calls. registry-live-bound
 //     (run-gate8.sh g8a) judges both on every timeline row.
 //
@@ -116,6 +116,7 @@ constexpr std::size_t kRegistryTimelineCap = 1024;                 // timeline r
 struct RegistryFamilyStats {
   std::uint64_t entries = 0;
   std::uint64_t peak = 0;
+  std::uint64_t carried = 0;  // live entries retained at the attachment boundary
   std::uint64_t creates = 0;
   std::uint64_t frees = 0;
   std::uint64_t replaced = 0;
@@ -177,6 +178,7 @@ struct RegistryStats {
 struct RegistryRow {
   std::uint64_t frame = 0;
   std::uint32_t entries[kRegistryFamilies] = {};
+  std::uint32_t carried[kRegistryFamilies] = {};
   std::uint32_t creates[kRegistryFamilies] = {};
   std::uint32_t frees[kRegistryFamilies] = {};  // frees + replaced + recreated
 };
@@ -186,8 +188,10 @@ extern std::atomic<bool> g_registry_on;
 inline bool registry_on() { return g_registry_on.load(std::memory_order_relaxed); }
 
 // Once, before the vptr store (entry.cpp attempt()). `adopt` is GRC_ADOPT=arm. Resets the
-// registry (tests call it between cases).
-void registry_configure(bool adopt, RegistryFault fault, std::size_t cap = kRegistryDefaultCap);
+// registry (tests call it between cases). preserve_lean keeps only unreadable descriptors and
+// material bindings; payload-sized shader code, parameters, images and names are not retained.
+void registry_configure(bool adopt, RegistryFault fault, std::size_t cap = kRegistryDefaultCap,
+                        bool preserve_lean = false);
 
 // The hooks (only when registry_on()). A null `rid` counts null_creates and records nothing.
 void registry_note_create(std::uint64_t rid, RegistryKind kind);
@@ -213,6 +217,9 @@ struct RegistryCanvasTexture {
   std::uint64_t specular = 0;
   std::int32_t filter = 0;  // RS::CanvasItemTextureFilter, DEFAULT until set
   std::int32_t repeat = 0;  // RS::CanvasItemTextureRepeat, DEFAULT until set
+  std::array<float, 4> base_color = {1, 1, 1, 1};
+  float shininess = 1;
+  bool shading_set = false;
   bool diffuse_set = false;
   bool normal_set = false;
   bool specular_set = false;
@@ -225,6 +232,8 @@ struct RegistryCanvasTexture {
 void registry_note_canvas_channel(std::uint64_t rid, std::int32_t channel, std::uint64_t texture);
 void registry_note_canvas_filter(std::uint64_t rid, std::int32_t filter);
 void registry_note_canvas_repeat(std::uint64_t rid, std::int32_t repeat);
+void registry_note_canvas_shading(std::uint64_t rid, const std::array<float, 4> &color,
+                                  float shininess);
 
 // The recorded CanvasTexture of a live RID (false: `rid` is not a registered CanvasTexture).
 bool registry_canvas_texture(std::uint64_t rid, RegistryCanvasTexture *out);
@@ -301,6 +310,9 @@ void registry_note_texture_path(std::uint64_t rid, RegistryValue path);
 // the source's (texture_storage.cpp copies the struct).
 void registry_note_texture_size_override(std::uint64_t rid, std::int32_t width,
                                          std::int32_t height);
+// Reads a logical size even when lean mode retained no texture entry.
+bool registry_texture_size_override(std::uint64_t rid, std::uint32_t *width,
+                                    std::uint32_t *height);
 bool registry_texture_set_released(std::uint64_t rid, bool released);
 bool registry_texture(std::uint64_t rid, RegistryTextureRecord *out);
 // Copies every texture-family record in slot order under the lock. The caller owns the copied
@@ -358,6 +370,7 @@ struct RegistryDefaultTexture {
 // shader_set_code's String; the preprocessed code, the same string a born capture carries, so no
 // #include is ever left to resolve) and its default textures, by (name, index) as the engine keys
 // them (a RID() texture erases one). A fresh shader_create has no code (`code` null).
+// Detached descriptors retain defaults only: sampler array lengths have no public getter.
 struct RegistryShader {
   RegistryValue code;
   std::vector<RegistryDefaultTexture> defaults;
@@ -388,10 +401,13 @@ struct RegistryParam {
 };
 
 // A material's payload: the shader material_create_from_shader or the last material_set_shader
-// named (0: none), and its parameters in first-set order. next_pass and render_priority are not
-// recorded: no hook taps them, and a canvas material uses neither.
+// named (0: none), its pass/priority bindings and its parameters in first-set order.
+// A lean binding has no retained parameter values; a rendered arm must read them back.
 struct RegistryMaterial {
   std::uint64_t shader = 0;
+  std::uint64_t next_pass = 0;
+  std::int32_t priority = 0;
+  bool readback = false;
   std::vector<RegistryParam> params;
 };
 
@@ -400,6 +416,9 @@ void registry_note_shader_code(std::uint64_t rid, RegistryValue code);
 void registry_note_shader_default_texture(std::uint64_t rid, const std::string &name,
                                           std::uint64_t texture, std::int32_t index);
 void registry_note_material_shader(std::uint64_t rid, std::uint64_t shader);
+void registry_note_material_next_pass(std::uint64_t rid, std::uint64_t next_pass);
+void registry_note_material_priority(std::uint64_t rid, std::int32_t priority);
+void registry_note_material_readback(std::uint64_t rid);
 // `value` null: the call erased the parameter (NIL or RID()). Nothing under registry-skip-params.
 void registry_note_material_param(std::uint64_t rid, RegistryName name, RegistryValue value);
 // By text: interns the name first (the ctests; the hooks use the key form below).
@@ -449,6 +468,8 @@ constexpr std::array<float, kRegistryParticleFloats> kRegistryParticleDefaults =
     1.0f,  0.0f,  0.0f,  0.0f, 1.0f, 0.0f, 0.0f,  0.0f, 1.0f, 0.0f, 0.0f, 0.0f,  // 16-27
     0.0f,  0.0f,  0.0f};                                                  // 28-30
 struct RegistryParticles {
+  bool restart_on_adopt = false;  // a rendered late attach restores configuration, then phase
+
   bool mode_2d = false;  // RS::PARTICLES_MODE_2D was set
   bool emitting = false;
   bool one_shot = false;
@@ -499,9 +520,10 @@ void registry_note_particles(std::uint64_t rid, RegistryParticlesOp op, std::int
 
 // The recorded emitter of a live RID (false: `rid` is not a registered emitter).
 bool registry_particles(std::uint64_t rid, RegistryParticles *out);
+void registry_note_particles_restart_on_adopt(std::uint64_t rid);
 
 // VS2 (viewport-surfaces-design.md Q3b, Q4): the viewport family. Recorded only after
-// registry_set_viewports(true) (at load, after registry_configure, which clears it: viewports
+// registry_set_viewports(true) (at load, after registry_configure; lean preservation retains it: viewports
 // live = speaks /16 and the twenty hooks planned); before that every note below records nothing
 // and the family stays out of the evidence.
 //   Viewport      viewport_create (registry_note_create with RegistryKind::Viewport); its

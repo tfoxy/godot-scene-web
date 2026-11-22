@@ -125,6 +125,7 @@ void expected_list() {
   const std::vector<std::string> expected = {
       "canvas_texture_create",
       "canvas_texture_set_channel",
+      "canvas_texture_set_shading_parameters",
       "canvas_texture_set_texture_filter",
       "canvas_texture_set_texture_repeat",
       "draw",
@@ -132,7 +133,9 @@ void expected_list() {
       "instance_set_scenario",
       "material_create",
       "material_create_from_shader",
+      "material_set_next_pass",
       "material_set_param",
+      "material_set_render_priority",
       "material_set_shader",
       "mesh_create",
       "mesh_create_from_surfaces",

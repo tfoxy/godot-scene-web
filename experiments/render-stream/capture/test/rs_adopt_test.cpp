@@ -45,6 +45,9 @@ using grc::rs2::Xform;
 
 int g_failures = 0;
 int g_checks = 0;
+int g_shader_adopt_calls = 0;
+bool g_material_adopt_to_mirror = false;
+bool g_texture_readback_adopt = false;
 
 void check(bool condition, const std::string &what) {
   ++g_checks;
@@ -402,6 +405,7 @@ struct MultimeshHookCall {
   bool colors = false, custom = false, indirect = false;
   size_t floats = 0;
   float first = 0.0f;
+  std::array<float, 6> aabb{};
 };
 std::vector<MultimeshHookCall> g_multimesh_hook_args;
 // LAR5: what the emitter hook was handed.
@@ -422,6 +426,7 @@ bool hooks_test_inflight_delay(std::unique_lock<std::mutex> *) { return true; }
 bool hooks_reload_scope_begin() { return g_reload_scope_allowed; }
 void hooks_reload_scope_end(ReloadScopeCounts *out) { *out = {1, 1, 0}; }
 bool hooks_adopt_texture(uint64_t, void *image, rs2::AdoptedContent content, const char *source, bool *) {
+  if (g_texture_readback_adopt && image != nullptr) return true;
   if (g_reload_adopt && content == rs2::AdoptedContent::Current &&
       (std::string(source) == "reload" || (g_hold_adopt && std::string(source) == "hold"))) {
     g_reload_adopt_image = image;
@@ -454,11 +459,14 @@ bool hooks_adopt_mesh(uint64_t, const std::vector<rs::AdoptSurface> &, const flo
 // G8m: the material path's hooks (never reached here: the engine walk does not run).
 void hooks_internal_begin(std::string *, uint64_t *) {}
 void hooks_internal_end() {}
-bool hooks_adopt_shader(uint64_t, const std::string &) { return false; }
+bool hooks_adopt_shader(uint64_t, const std::string &) { ++g_shader_adopt_calls; return false; }
 bool hooks_adopt_shader_refused(uint64_t, rs2::ShaderReason) { return false; }
 void hooks_adopt_default_texture(uint64_t, const std::string &, uint64_t, int32_t) {}
-bool hooks_adopt_material(uint64_t, uint64_t, const std::vector<rs::AdoptParam> &) {
-  return false;
+bool hooks_adopt_material(uint64_t rid, uint64_t shader, const std::vector<rs::AdoptParam> &) {
+  if (!g_material_adopt_to_mirror) return false;
+  rs::mirror_instance().material_adopt(rid, 1);
+  rs::mirror_instance().material_set_shader(rid, shader, 1);
+  return rs::mirror_instance().knows_material(rid);
 }
 void hooks_adopt_item_material(uint64_t, uint64_t) {}
 // VS2: the real hooks tap the process-wide mirror and the hook log; here only the mirror.
@@ -493,7 +501,7 @@ bool hooks_adopt_multimesh(uint64_t rid, rs::Mirror::MultimeshAdopt a) {
   g_multimesh_hook_calls.push_back(rid);
   g_multimesh_hook_args.push_back({rid, a.mesh, a.instances, a.format, a.visible, a.colors,
                                    a.custom, a.indirect, a.buffer.size(),
-                                   a.buffer.empty() ? 0.0f : a.buffer[0]});
+                                   a.buffer.empty() ? 0.0f : a.buffer[0], a.custom_aabb});
   return false;
 }
 bool hooks_adopt_canvas_texture(uint64_t rid, uint64_t diffuse, uint64_t normal, uint64_t specular,
@@ -1098,7 +1106,8 @@ void test_fake_binds() {
 }
 
 // a multimesh is adopted from the registry's
-// recorded allocation, mesh, visible count and custom AABB, with only the buffer read back.
+// recorded allocation and mesh, reading back buffer, visible count and custom AABB on a
+// rendered host. The dummy retains visible/AABB values because its getters return no state.
 //   - 2d + custom and 3d (both 12 floats an instance, which PM9's stride guess read as 2d +
 //     colors) reach the hook with their recorded format;
 //   - an unregistered multimesh (pre-load) is refused `preload-multimesh` without a read;
@@ -1126,6 +1135,15 @@ void test_multimesh_from_registry() {
       reads.push_back(rid);
       fake::put_packed_floats(ret, buffers[rid]);
     };
+    w.overrides["RenderingServer.multimesh_get_visible_instances"] =
+        [&](fake::Object *, FakeArgs args, void *ret) {
+          *static_cast<std::int64_t *>(ret) = fake::arg_u64(args, 0) == kCustom ? 7 : -1;
+        };
+    w.overrides["RenderingServer.multimesh_get_custom_aabb"] =
+        [](fake::Object *, FakeArgs, void *ret) {
+          const std::array<float, 6> aabb{1, 2, 3, 4, 5, 6};
+          std::memcpy(ret, aabb.data(), sizeof(aabb));
+        };
   };
   const auto record = [&]() {
     grc::rs::registry_configure(true, grc::rs::RegistryFault::None);
@@ -1160,7 +1178,8 @@ void test_multimesh_from_registry() {
   check(g_multimesh_hook_args.size() == 2 && g_multimesh_hook_args[0].rid == kCustom &&
             g_multimesh_hook_args[0].format == 0 && !g_multimesh_hook_args[0].colors &&
             g_multimesh_hook_args[0].custom && g_multimesh_hook_args[0].instances == 13 &&
-            g_multimesh_hook_args[0].mesh == kMesh && g_multimesh_hook_args[0].visible == 9 &&
+            g_multimesh_hook_args[0].mesh == kMesh && g_multimesh_hook_args[0].visible == 7 &&
+            g_multimesh_hook_args[0].aabb == std::array<float, 6>{1, 2, 3, 4, 5, 6} &&
             g_multimesh_hook_args[0].floats == 13 * 12 && g_multimesh_hook_args[1].rid == k3d &&
             g_multimesh_hook_args[1].format == 1 && !g_multimesh_hook_args[1].colors &&
             !g_multimesh_hook_args[1].custom && g_multimesh_hook_args[1].instances == 14,
@@ -1262,7 +1281,69 @@ void test_multimesh_from_registry() {
   check(reads.empty() && g_multimesh_hook_args.empty() && st.refused_preload_multimesh == 2,
         "mm registry-off: every multimesh refused preload, unread");
   stream_end();
+  // A lean shader retains indexed defaults, not code. A worker reference must queue its
+  // rendered getter instead of installing an empty shader from that partial descriptor.
+  grc::rs::registry_configure(true, grc::rs::RegistryFault::None);
+  grc::rs::registry_note_create(0x7fff, grc::rs::RegistryKind::Shader);
+  grc::rs::registry_note_shader_default_texture(0x7fff, "paints", 0x7ffe, 1);
+  begin(grc::rs::AdoptFault::None, false);
+  g_shader_adopt_calls = 0;
+  std::thread shader_worker([] { grc::rs::materialize(0x7fff, grc::rs::RefKind::Shader); });
+  shader_worker.join();
+  check(g_shader_adopt_calls == 0 && grc::rs::adopt_resource_stats().offmain_queued == 1,
+        "queue: lean shader waits for main-thread code readback");
+  stream_end();
   grc::rs::registry_configure(false, grc::rs::RegistryFault::None);
+}
+
+// A known shared shader must not turn an off-main lean material readback into a permanent
+// ProcessMaterial refusal. Both material reference kinds defer their getter to the main drain.
+void test_offmain_lean_material() {
+  using namespace grc::rs;
+  constexpr uint64_t shader = 0x7ff0, process = 0x7ff1, canvas = 0x7ff2;
+  std::vector<uint64_t> unused;
+  fake_rendering_server(&unused);
+  registry_configure(true, RegistryFault::None);
+  for (auto rid : {process, canvas}) {
+    registry_note_create(rid, RegistryKind::Material);
+    registry_note_material_shader(rid, shader);
+  }
+  registry_configure(true, RegistryFault::None, kRegistryDefaultCap, true);
+  RegistryMaterial reg;
+  check(registry_material(process, &reg) && reg.readback, "lean material: readback descriptor");
+  stream_begin();  // rendered host (dummy_host=false)
+  auto &m = mirror_instance();
+  Mirror::ParticlesOptions options;
+  options.enabled = true;
+  m.set_particles(options);
+  m.shader_create(shader, 1);
+  g_material_adopt_to_mirror = true;
+  const auto main_thread = std::this_thread::get_id();
+  unsigned reads = 0;
+  fake::world().overrides["RenderingServer.get_shader_parameter_list"] =
+      [&](fake::Object *, FakeArgs, void *) {
+        check(std::this_thread::get_id() == main_thread, "lean material: getter on main thread");
+        ++reads;
+      };
+  std::thread worker([&] {
+    materialize(process, RefKind::ProcessMaterial);
+    materialize(canvas, RefKind::Material);
+  });
+  worker.join();
+  check(!m.knows_material(process) && !m.knows_material(canvas) && reads == 0 &&
+            adopt_resource_stats().offmain_queued == 2,
+        "lean material: worker references defer without readback");
+  check(adopt_emitter_stats().ppm_refused == 0 && adopt_emitter_stats().ppm_refused_material == 0,
+        "lean material: deferral is not a ProcessMaterial refusal");
+  adopt_frame_drain();
+  check(m.knows_material(process) && m.knows_material(canvas),
+        "lean material: main drain adopts both material reference kinds");
+  check(reads == 2 && adopt_resource_stats().offmain_drained == 2 &&
+            adopt_emitter_stats().ppm_refused == 0 && adopt_emitter_stats().ppm_refused_material == 0,
+        "lean material: main drain reads once each without ProcessMaterial refusal");
+  g_material_adopt_to_mirror = false;
+  stream_end();
+  registry_configure(false, RegistryFault::None);
 }
 
 // LAR1: CanvasTextures adopted from the registry share atlas pages. No getter runs on a registered
@@ -1986,7 +2067,7 @@ void test_warm_census_revalidation() {
 // A placeholder discovered after the arm pass must never be published as the original texture.
 void test_reload_materialize_guards() {
   auto &w = fake::world();
-  const auto run = [&](bool registered, bool known, bool mipmaps, grc::rs::AdoptFault fault) {
+  const auto run = [&](bool registered, bool known, bool mipmaps, grc::rs::AdoptFault fault, bool dummy = true) {
     constexpr uint64_t rid = 0xdead1234;
     grc::rs::registry_configure(true, grc::rs::RegistryFault::None);
     if (registered) grc::rs::registry_note_texture_create(rid, {64, 64, 17, false, known}, false);
@@ -2009,23 +2090,33 @@ void test_reload_materialize_guards() {
     grc::rs::mirror_enable(false);
     grc::rs::mirror_enable(true);
     grc::rs::mirror_instance().set_root(kRootViewport, kRootCanvas, kIdentity);
-    grc::rs::adopt_resources_begin(fault, true);
+    g_texture_readback_adopt = !registered && !dummy;
+    grc::rs::adopt_resources_begin(fault, dummy);
     grc::rs::materialize(rid, grc::rs::RefKind::Texture);
-    grc::rs::materialize(rid, grc::rs::RefKind::Texture);
+    if (dummy || registered) grc::rs::materialize(rid, grc::rs::RefKind::Texture);
     const auto json = grc::rs::adopt_reload_json(1, 1);
-    const bool guarded = !mipmaps && fault != grc::rs::AdoptFault::ReloadOff && (!registered || known);
+    const bool guarded = !mipmaps && fault != grc::rs::AdoptFault::ReloadOff && ((!registered && dummy) || (registered && known));
     const auto stats = grc::rs::adopt_resource_stats();
+    const auto reload_stats = grc::rs::adopt_reload_finish();
+    if (!registered && !dummy) {
+      check(stats.textures == 1 && stats.textures_refused == 0, "rendered 1x1 L8: adopted real unregistered image");
+      check(reload_stats.refused.evicted_unverifiable == 0, "rendered 1x1 L8: no eviction refusal");
+    }
     check(stats.textures_refused == (guarded ? 1u : 0u), "reload guard: refuse once only when provable");
+    if (dummy && !registered && guarded)
+      check(reload_stats.refused.evicted_unverifiable == 1,
+            "dummy 1x1 L8: eviction placeholder remains refused");
     if (guarded) check(json.find(registered ? "evicted-mid-arm" : "evicted-unverifiable") != std::string::npos,
                        "reload guard: typed refusal evidence");
     grc::rs::adopt_resource_freed(rid);
     if (guarded) check(grc::rs::adopt_resource_stats().refused_live == 0, "reload guard: free forgets refusal");
-    grc::rs::adopt_reload_finish();
     grc::rs::adopt_resources_end();
     grc::rs::adopt_release();
+    g_texture_readback_adopt = false;
     check(grc::rs::adopt_held() == 0, "reload guard: release clears evidence and sources");
     w.reset_calls();
   };
+  run(false, false, false, grc::rs::AdoptFault::None, false);
   run(true, true, false, grc::rs::AdoptFault::None);
   run(false, false, false, grc::rs::AdoptFault::None);
   run(true, false, false, grc::rs::AdoptFault::None);
@@ -2412,6 +2503,20 @@ void test_proxy_materialize() {
         "viewport: refused typed `viewport` (unless the mirror maps it)");
   check(grc::rs::resolve_unresolved_proxies(2) == 0,
         "node route: a no-op without adopt_set_viewports_live (no engine)");
+  // Lean tracking drops readable image entries. A later proxy frame can name such an image
+  // before any draw referenced it: its absence from the registry must not block the getter.
+  constexpr uint64_t kNext = 0x6202, kItem = 0x6401;
+  auto &mirror = grc::rs::mirror_instance();
+  check(!grc::rs::registry_lookup(kNext, nullptr), "proxy next frame: image has no registry entry");
+  grc::rs::registry_note_proxy_update(kP2, kNext, 0);
+  mirror.texture_proxy_update(kP2, kNext, 0, 2);
+  mirror.canvas_item_create(kItem, 2);
+  mirror.add_texture_rect(kItem, {0, 0, 8, 8}, kP2, false, grc::rs2::kWhite, false, 2);
+  grc::rs::adopt_set_viewports_live(true);
+  grc::rs::resolve_unresolved_proxies(3);
+  check(std::find(reads.begin(), reads.end(), kNext) != reads.end(),
+        "proxy next frame: unregistered base reaches renderer readback");
+  grc::rs::adopt_set_viewports_live(false);
   stream_end();
   grc::rs::mirror_instance().set_viewports(false);
   grc::rs::registry_set_viewports(false);
@@ -2487,6 +2592,7 @@ int main() {
   test_reentry_admission();
   test_fake_binds();
   test_multimesh_from_registry();
+  test_offmain_lean_material();
   test_canvas_texture_channels_not_reread();
   test_canvas_texture_registry_gating();
   test_refused_ppm_not_retried();

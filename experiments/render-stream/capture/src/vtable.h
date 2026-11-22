@@ -1,13 +1,15 @@
 // Shadow-vtable tables, published by one pointer store.
 //
 // Building copies the live vtable (from two words before the address point, so that offset-to-top
-// and the typeinfo pointer come along) into two heap tables and replaces slots in each: the armed
+// and the typeinfo pointer come along) into three heap tables and replaces slots in each: the armed
 // table replaces every slot the calibration record names, the standby table only the ones marked
 // `standby` (the registry's tracked slots, the shims' slots,
-// texture_set_path and draw). Both share the same original function pointers. Publishing a table
+// texture_set_path and draw). The lean table replaces only unreadable descriptor hooks with
+// independent registry-only thunks.
+// All tables share the same original function pointers. Publishing a table
 // is one aligned pointer-sized release store into the singleton object's first word: arm, standby
 // and restore are each that one store. No engine code, no engine data and no page protection is
-// touched. Neither table is ever freed (another thread can be mid-dispatch through either).
+// touched. Tables are never freed (another thread can be mid-dispatch through any of them).
 
 #pragma once
 
@@ -24,20 +26,22 @@ struct SlotReplacement {
   void **original_out;
   // LS1: the slot is also replaced in the standby table.
   bool standby = false;
+  // Independent registry-only thunk, safe while attachment admission is closed.
+  void *lean_hook = nullptr;
 };
 
 class ShadowVtable {
  public:
-  enum class Table { Engine, Standby, Armed };
+  enum class Table { Engine, Lean, Standby, Armed };
 
-  // LS1: builds both tables from the live vptr, once, and fills every `original_out`. Publishes
+  // LS1: builds all tables from the live vptr, once, and fills every `original_out`. Publishes
   // nothing. `slot_count` is the number of virtual slots from the address point, as recorded by the
   // calibration.
   bool build(void *object, size_t slot_count, const std::vector<SlotReplacement> &replacements,
              std::string *error);
 
   // One release store of `table`'s address point. False (nothing written) when the tables are not
-  // built or the object's vptr is none of the engine's, the standby and the armed address points
+  // built or the object's vptr is none of the engine's, lean, standby and armed address points
   // (someone else re-patched it).
   bool publish(Table table);
 
@@ -45,7 +49,7 @@ class ShadowVtable {
   bool arm(void *object, size_t slot_count, const std::vector<SlotReplacement> &replacements,
            std::string *error);
 
-  // Restores the engine's address point from any patched state (standby or armed) if, and only
+  // Restores the engine's address point from any patched state (lean, standby or armed) if, and only
   // if, the object still carries one of ours. `was_shadow` reports whether it did. The tables stay
   // built.
   bool disarm(bool *was_shadow, bool *restored);
@@ -58,9 +62,15 @@ class ShadowVtable {
   const void *shadow_address_point() const { return armed_point_; }
   const void *standby_address_point() const { return standby_point_; }
   const void *original_address_point() const { return original_point_; }
+  // Authorize a live owned table only for the object and engine table used at build time.
+  bool matches_original(void *object, const void *live, const void *original) const {
+    return built() && object == object_ && original == original_point_ &&
+           (live == lean_point_ || live == standby_point_ || live == armed_point_);
+  }
 
  private:
   void *object_ = nullptr;
+  void **lean_point_ = nullptr;
   void **standby_point_ = nullptr;   // standby table + 2
   void **armed_point_ = nullptr;     // armed table + 2
   void **original_point_ = nullptr;  // the engine's own address point

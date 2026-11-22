@@ -11,6 +11,8 @@
 
 namespace grc {
 
+class ShadowVtable;
+
 struct Calibration {
   std::string schema;
 
@@ -84,11 +86,13 @@ bool check_fingerprint(const Calibration &calib, const ProcessFingerprint &fp,
                        std::vector<CheckResult> *checks);
 
 // 3. Live layout: the singleton's vptr must be exactly the recorded concrete
-//    vtable address point, the recorded anchors must hold code addresses inside
+//    vtable address point, or an owned shadow built from that exact table for
+//    this singleton. The recorded anchors must hold code addresses inside
 //    the main binary, and every slot to be hooked must still be pure-virtual in
 //    the abstract vtable. Reads only; calls nothing.
 bool check_slot_mask(const Calibration &calib, const ProcessFingerprint &fp,
-                     LiveVtableFacts *facts, std::vector<CheckResult> *checks);
+                     LiveVtableFacts *facts, std::vector<CheckResult> *checks,
+                     const ShadowVtable *shadow = nullptr);
 
 // 4. Behavioural cross-check: a read-only virtual named by the record, called
 //    both through its vtable slot and through its ClassDB method bind, must

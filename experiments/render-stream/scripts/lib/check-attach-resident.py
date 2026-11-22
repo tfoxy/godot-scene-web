@@ -51,6 +51,57 @@ def check(root):
     require(len({r["pid"] for r in ready}) == 1, "host process changed")
     events = [json.loads(line) for line in (root / "events.jsonl").read_text().splitlines()]
     require([r["round"] for r in events if r["event"] == "new-content"] == [0, 1, 2], "new-content events")
+    initial = load(root / "load-detached.json")
+    require(initial["frame"] == 10, "capture was not loaded mid-session")
+    require(initial["state"]["attachment_state"] == "detached" and initial["state"]["table"] == "lean",
+            "mid-session load did not enter lean-detached")
+    initial_rows = [r for r in rows if r.get("initial")]
+    require(len(initial_rows) >= 121, "initial lean-detached samples missing")
+    # Pin the detached method allowlist independently of the capture's own hook selection.
+    lean = {"free", "texture_set_size_override", "texture_replace", "texture_proxy_create", "texture_proxy_update", "canvas_texture_create", "canvas_texture_set_channel",
+            "canvas_texture_set_shading_parameters", "canvas_texture_set_texture_filter",
+            "canvas_texture_set_texture_repeat", "multimesh_create", "multimesh_allocate_data",
+            "multimesh_set_mesh", "material_create", "material_create_from_shader",
+            "material_set_shader", "material_set_next_pass", "material_set_render_priority",
+            "shader_set_default_texture_parameter",
+            "particles_create", "particles_set_mode", "particles_set_emitting", "particles_set_amount",
+            "particles_set_amount_ratio", "particles_set_lifetime", "particles_set_one_shot",
+            "particles_set_pre_process_time", "particles_set_explosiveness_ratio",
+            "particles_set_randomness_ratio", "particles_set_custom_aabb", "particles_set_speed_scale",
+            "particles_set_use_local_coordinates", "particles_set_process_material", "particles_set_fixed_fps",
+            "particles_set_interpolate", "particles_set_fractional_delta", "particles_set_collision_base_size",
+            "particles_set_seed", "particles_set_transform_align", "particles_set_trails",
+            "particles_set_trail_bind_poses", "particles_set_subemitter", "particles_set_draw_order",
+            "particles_set_draw_passes", "particles_set_draw_pass_mesh", "particles_set_emission_transform",
+            "particles_set_emitter_velocity", "particles_set_interp_to_end"}
+
+    def detached(samples, label):
+        for key, value in {"attachment_state": "detached", "engine_table": False, "table": "lean",
+                           "frame_callback_registered": False, "texture_workers_running": False,
+                           "hub_active": False, "listener_active": False, "capture_threads": 0, "clients": 0}.items():
+            require(all(r["state"].get(key) == value for r in samples), f"{label} detached {key} != {value}")
+        for family in ("texture", "mesh"):
+            require(all(r["state"]["registry"].get(family, {"entries": 0})["entries"] == 0 for r in samples),
+                    f"{label} readable {family} retained")
+        require(all(r["state"]["registry"]["canvas_texture"]["entries"] > 0 for r in samples),
+                f"{label} lost retained CanvasTexture")
+        for a, b in zip(samples, samples[1:]):
+            before, after = a["state"]["hook_methods"], b["state"]["hook_methods"]
+            require(all(after[k] == v for k, v in before.items() if k not in lean),
+                    f"{label} non-lean method hooked")
+            require(b["state"]["frame_callbacks"] == a["state"]["frame_callbacks"],
+                    f"{label} frame callback ran")
+        delta = {k: samples[-1]["state"]["hook_methods"][k] - v
+                 for k, v in samples[0]["state"]["hook_methods"].items()}
+        require(delta["free"] > 0 and delta["particles_set_emission_transform"] > 0,
+                f"{label} busy lean counters dead")
+        return {k: v for k, v in delta.items() if v}
+
+    initial_delta = detached(initial_rows, "initial")
+    require(initial_rows[0]["state"]["hook_methods"]["canvas_texture_set_shading_parameters"] > 0,
+            "CanvasTexture shading hook omitted")
+    require(initial_rows[0]["state"]["hook_methods"]["material_set_render_priority"] > 0,
+            "material priority hook omitted")
     first = None
     for index in range(3):
         state = ready[index]["state"]
@@ -84,28 +135,19 @@ def check(root):
         color = [(255, 0, 0, 255), (0, 255, 0, 255), (0, 0, 255, 255)][index]
         marker = image.crop((400, 100, 464, 164))
         require(all(pixel == color for pixel in marker.getdata()), f"round {index} new content missing")
-        samples = [r for r in rows if r["round"] == index]
+        samples = [r for r in rows if r["round"] == index and not r.get("initial")]
         require(len(samples) >= 121, f"round {index}: fewer than 120 busy detached frames")
         require(all(b["frame"] == a["frame"] + 1 for a, b in zip(samples, samples[1:])), f"round {index} sample gaps")
         require(all(b["t_us"] > a["t_us"] for a, b in zip(samples, samples[1:])), f"round {index} clock did not advance")
-        for key, value in {"attachment_state": "detached", "engine_table": True,
-                           "frame_callback_registered": False,
-                           "texture_workers_running": False, "hub_active": False,
-                           "listener_active": False, "capture_threads": 0, "clients": 0}.items():
-            require(all(r["state"].get(key) == value for r in samples), f"round {index} detached {key} != {value}")
-        require(all(all(v["entries"] == 0 for v in r["state"]["registry"].values()) for r in samples),
-                f"round {index} registry not empty")
-        for key in ("hook_calls", "hook_entries", "frame_callbacks"):
-            values = [r["state"][key] for r in samples]
-            require(max(values) == min(values), f"round {index}: {key} grew while detached")
+        delta = detached(samples, f"round {index}")
         offline_state = load(root / f"offline-{index}.json")
         require(offline_state["connect_errno"] == errno.ECONNREFUSED,
                 f"round {index} listener probe failed")
         require(offline_state["capture_threads"] == [] and offline_state["library_mapped"], f"round {index} OS state")
         results.append({"round": index, "detached_frames": len(samples) - 1,
-                        "hook_calls_per_frame": 0, "frame_callbacks_per_frame": 0,
+                        "hook_method_deltas": delta, "frame_callbacks_per_frame": 0,
                         "transactions": len(report["transactions"]), "new_content_rgba": color})
-    result = {"status": "pass", "checks": checks, "cycles": 2, "streams": 3, "rounds": results}
+    result = {"status": "pass", "checks": checks, "cycles": 2, "streams": 3, "initial_hook_method_deltas": initial_delta, "rounds": results}
     (root / "resident-result.json").write_text(json.dumps(result, indent=2) + "\n")
     print(json.dumps(result))
 

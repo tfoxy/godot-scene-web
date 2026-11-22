@@ -255,6 +255,7 @@ using FnRidInt = void (*)(void *, RID, int);
 using FnRidEnum = void (*)(void *, RID, int32_t);
 //   1541: virtual void canvas_texture_set_channel(RID p_canvas_texture,
 //                                                 CanvasTextureChannel p_channel, RID p_texture) = 0;
+using FnCanvasTextureShading = void (*)(void *, RID, const Color *, float);
 using FnCanvasTextureSetChannel = void (*)(void *, RID, int32_t, RID);
 //   1586: virtual void canvas_item_add_lcd_texture_rect_region(RID p_item, const Rect2 &p_rect,
 //             RID p_texture, const Rect2 &p_src_rect, const Color &p_modulate = Color(1, 1, 1)) = 0;
@@ -423,6 +424,7 @@ enum HookId : size_t {
   kViewportSetDefaultTextureRepeat,
   kCanvasTextureCreate,
   kCanvasTextureSetChannel,
+  kCanvasTextureSetShadingParameters,
   kCanvasTextureSetTextureFilter,
   kCanvasTextureSetTextureRepeat,
   kSetDefaultTextureFilter,
@@ -445,6 +447,8 @@ enum HookId : size_t {
   kMaterialCreate,
   kMaterialCreateFromShader,
   kMaterialSetShader,
+  kMaterialSetNextPass,
+  kMaterialSetRenderPriority,
   kSetCanvasModulate,
   kSetUseParentMaterial,
   kSetInstanceShaderParameter,
@@ -557,6 +561,7 @@ bool is_viewport_hook(size_t id) { return id >= kFirstViewportHook && id <= kLas
 
 void *g_original[kHookCount] = {};
 HookAdmission g_attachment_admission;
+HookAdmission g_lean_admission;
 std::atomic<uint64_t> g_hook_entries{0};
 std::atomic<uint64_t> g_count[kHookCount];
 bool g_omitted[kHookCount] = {};
@@ -3900,6 +3905,8 @@ RID hook_material_create_from_shader(void *self, RID next_pass, int32_t priority
       self, next_pass, priority, shader);
   registry_create(result.id, rs::RegistryKind::Material);
   if (rs::registry_on()) {
+    rs::registry_note_material_next_pass(result.id, next_pass.id);
+    rs::registry_note_material_priority(result.id, priority);
     if (shader.id != 0) {
       rs::registry_note_material_shader(result.id, shader.id);  // LAR3
     }
@@ -4308,10 +4315,12 @@ void hook_set_use_identity_transform(void *self, RID item, bool enable) {
 void adopt_size_override(uint64_t rid) {
   if (!g_size_override_hooked || !rs::registry_on()) return;
   rs::RegistryTextureRecord record;
+  std::uint32_t width = 0, height = 0;
   if (rs::registry_texture(rid, &record) && record.override_w != 0) {
-    mirror().texture_set_size_override(rid, record.override_w, record.override_h, current_frame(),
-                                       false);
-  }
+    width = record.override_w;
+    height = record.override_h;
+  } else if (!rs::registry_texture_size_override(rid, &width, &height)) return;
+  mirror().texture_set_size_override(rid, width, height, current_frame(), false);
 }
 
 void hook_texture_set_size_override(void *self, RID texture, int width, int height) {
@@ -5776,6 +5785,496 @@ void *as_ptr(F *function) {
   return reinterpret_cast<void *>(function);
 }
 
+void hook_canvas_texture_set_shading_parameters(void *self, RID rid, const Color *color,
+                                                  float shininess) {
+  bump(kCanvasTextureSetShadingParameters);
+  original<FnCanvasTextureShading>(kCanvasTextureSetShadingParameters)(self, rid, color, shininess);
+  if (rs::registry_on() && color)
+    rs::registry_note_canvas_shading(rid.id, {color->r, color->g, color->b, color->a}, shininess);
+}
+
+void hook_material_set_next_pass(void *self, RID rid, RID next) {
+  bump(kMaterialSetNextPass);
+  original<FnSetMaterial>(kMaterialSetNextPass)(self, rid, next);
+  if (rs::registry_on()) rs::registry_note_material_next_pass(rid.id, next.id);
+}
+
+void hook_material_set_render_priority(void *self, RID rid, int priority) {
+  bump(kMaterialSetRenderPriority);
+  original<FnRidInt>(kMaterialSetRenderPriority)(self, rid, priority);
+  if (rs::registry_on()) rs::registry_note_material_priority(rid.id, priority);
+}
+
+// Registry-only thunks. They never enter attachment-owned logs, mirrors, workers or adoption.
+// These RIDs have no complete descriptor getter. Buffers, images, meshes and shader code are
+// deliberately absent: a rendered host can read those back when it arms.
+
+RID lean_canvas_texture_create(void *self) {
+  bump(kCanvasTextureCreate);
+  const RID result = original<FnCreate>(kCanvasTextureCreate)(self);
+  registry_create(result.id, rs::RegistryKind::CanvasTexture);
+  return result;
+}
+
+RID lean_multimesh_create(void *self) {
+  bump(kMultimeshCreate);
+  const RID result = original<FnCreate>(kMultimeshCreate)(self);
+  registry_create(result.id, rs::RegistryKind::Multimesh);
+  return result;
+}
+
+RID lean_particles_create(void *self) {
+  bump(kParticlesCreate);
+  const RID result = original<FnCreate>(kParticlesCreate)(self);
+  registry_create(result.id, rs::RegistryKind::Particles);
+  if (rs::registry_on()) rs::registry_note_particles_restart_on_adopt(result.id);
+  return result;
+}
+
+RID lean_material_create(void *self) {
+  bump(kMaterialCreate);
+  const RID result = original<FnCreate>(kMaterialCreate)(self);
+  registry_create(result.id, rs::RegistryKind::Material);
+  if (rs::registry_on()) rs::registry_note_material_readback(result.id);
+  return result;
+}
+
+RID lean_material_create_from_shader(void *self, RID next, int32_t priority, RID shader) {
+  bump(kMaterialCreateFromShader);
+  const RID result = original<FnMaterialCreateFromShader>(kMaterialCreateFromShader)(self, next, priority, shader);
+  registry_create(result.id, rs::RegistryKind::Material);
+  if (rs::registry_on()) {
+    rs::registry_note_material_shader(result.id, shader.id);
+    rs::registry_note_material_next_pass(result.id, next.id);
+    rs::registry_note_material_priority(result.id, priority);
+    rs::registry_note_material_readback(result.id);
+  }
+  return result;
+}
+
+void lean_material_set_shader(void *self, RID material, RID shader) {
+  bump(kMaterialSetShader);
+  original<FnSetMaterial>(kMaterialSetShader)(self, material, shader);
+  if (rs::registry_on()) rs::registry_note_material_shader(material.id, shader.id);
+}
+
+// Sampler arrays expose no length through RS getters. Keep only the load-time bindings;
+// shader code and material values still come from the rendered server at attach.
+void lean_shader_set_default_texture_parameter(void *self, RID shader, const void *name,
+                                                RID texture, int32_t index) {
+  bump(kShaderSetDefaultTextureParameter);
+  original<FnShaderSetDefaultTextureParameter>(kShaderSetDefaultTextureParameter)(
+      self, shader, name, texture, index);
+  if (!rs::registry_on()) return;
+  if (!rs::registry_lookup(shader.id, nullptr))
+    registry_create(shader.id, rs::RegistryKind::Shader);
+  rs::registry_note_shader_default_texture(shader.id, rs::decode_string_name(name), texture.id, index);
+}
+
+void lean_free(void *self, RID rid) {
+  bump(kFree);
+  if (rs::registry_on()) rs::registry_note_free(rid.id);
+  original<FnFree>(kFree)(self, rid);
+}
+
+void lean_canvas_texture_set_channel(void *self, RID canvas_texture, int32_t channel,
+                                     RID texture) {
+  bump(kCanvasTextureSetChannel);
+  original<FnCanvasTextureSetChannel>(kCanvasTextureSetChannel)(self, canvas_texture, channel,
+                                                                texture);
+  if (rs::registry_on()) rs::registry_note_canvas_channel(canvas_texture.id, channel, texture.id);
+}
+
+void lean_canvas_texture_set_texture_filter(void *self, RID canvas_texture, int32_t filter) {
+  bump(kCanvasTextureSetTextureFilter);
+  original<FnRidEnum>(kCanvasTextureSetTextureFilter)(self, canvas_texture, filter);
+  if (rs::registry_on()) rs::registry_note_canvas_filter(canvas_texture.id, filter);
+}
+
+void lean_canvas_texture_set_texture_repeat(void *self, RID canvas_texture, int32_t repeat) {
+  bump(kCanvasTextureSetTextureRepeat);
+  original<FnRidEnum>(kCanvasTextureSetTextureRepeat)(self, canvas_texture, repeat);
+  if (rs::registry_on()) rs::registry_note_canvas_repeat(canvas_texture.id, repeat);
+}
+
+void lean_multimesh_allocate_data(void *self, RID multimesh, int instances, int32_t format,
+                                  bool colors, bool custom, bool indirect) {
+  bump(kMultimeshAllocateData);
+  original<FnMultimeshAllocateData>(kMultimeshAllocateData)(self, multimesh, instances, format,
+                                                            colors, custom, indirect);
+  if (rs::registry_on()) rs::registry_note_multimesh_allocate(multimesh.id, instances, format, colors, custom, indirect);
+}
+
+void lean_multimesh_set_mesh(void *self, RID multimesh, RID mesh) {
+  bump(kMultimeshSetMesh);
+  original<FnSetMaterial>(kMultimeshSetMesh)(self, multimesh, mesh);
+  if (rs::registry_on()) rs::registry_note_multimesh_mesh(multimesh.id, mesh.id);
+}
+
+void lean_particles_set_mode(void *self, RID p, int32_t mode) {
+  bump(kParticlesSetMode);
+  original<FnRidEnum>(kParticlesSetMode)(self, p, mode);
+  if (!rs::registry_on()) return;
+  using R = rs::RegistryParticlesOp;
+  rs::registry_note_particles(p.id, R::Mode, mode, 0, nullptr, 0);
+}
+
+void lean_particles_set_emitting(void *self, RID p, bool enable) {
+  bump(kParticlesSetEmitting);
+  original<FnRidBool>(kParticlesSetEmitting)(self, p, enable);
+  if (!rs::registry_on()) return;
+  using R = rs::RegistryParticlesOp;
+  rs::registry_note_particles(p.id, R::Emitting, enable, 0, nullptr, 0);
+}
+
+void lean_particles_set_amount(void *self, RID p, int amount) {
+  bump(kParticlesSetAmount);
+  original<FnRidInt>(kParticlesSetAmount)(self, p, amount);
+  if (!rs::registry_on()) return;
+  using R = rs::RegistryParticlesOp;
+  rs::registry_note_particles(p.id, R::Amount, amount, 0, nullptr, 0);
+}
+
+void lean_particles_set_amount_ratio(void *self, RID p, float ratio) {
+  bump(kParticlesSetAmountRatio);
+  original<FnRidFloat>(kParticlesSetAmountRatio)(self, p, ratio);
+  if (!rs::registry_on()) return;
+  using R = rs::RegistryParticlesOp;
+  const float value = static_cast<float>(ratio);
+  std::size_t at = 0, count = 0;
+  if (rs::Mirror::particles_float_slots(PtOp::SetAmountRatio, &at, &count))
+    rs::registry_note_particles(p.id, R::Floats, at, 0, &value, 1);
+}
+
+void lean_particles_set_lifetime(void *self, RID p, double lifetime) {
+  bump(kParticlesSetLifetime);
+  original<FnRidDouble>(kParticlesSetLifetime)(self, p, lifetime);
+  if (!rs::registry_on()) return;
+  using R = rs::RegistryParticlesOp;
+  const float value = static_cast<float>(lifetime);
+  std::size_t at = 0, count = 0;
+  if (rs::Mirror::particles_float_slots(PtOp::SetLifetime, &at, &count))
+    rs::registry_note_particles(p.id, R::Floats, at, 0, &value, 1);
+}
+
+void lean_particles_set_one_shot(void *self, RID p, bool one_shot) {
+  bump(kParticlesSetOneShot);
+  original<FnRidBool>(kParticlesSetOneShot)(self, p, one_shot);
+  if (!rs::registry_on()) return;
+  using R = rs::RegistryParticlesOp;
+  rs::registry_note_particles(p.id, R::OneShot, one_shot, 0, nullptr, 0);
+}
+
+void lean_particles_set_pre_process_time(void *self, RID p, double time) {
+  bump(kParticlesSetPreProcessTime);
+  original<FnRidDouble>(kParticlesSetPreProcessTime)(self, p, time);
+  if (!rs::registry_on()) return;
+  using R = rs::RegistryParticlesOp;
+  const float value = static_cast<float>(time);
+  std::size_t at = 0, count = 0;
+  if (rs::Mirror::particles_float_slots(PtOp::SetPreProcessTime, &at, &count))
+    rs::registry_note_particles(p.id, R::Floats, at, 0, &value, 1);
+}
+
+void lean_particles_set_explosiveness_ratio(void *self, RID p, float ratio) {
+  bump(kParticlesSetExplosivenessRatio);
+  original<FnRidFloat>(kParticlesSetExplosivenessRatio)(self, p, ratio);
+  if (!rs::registry_on()) return;
+  using R = rs::RegistryParticlesOp;
+  const float value = static_cast<float>(ratio);
+  std::size_t at = 0, count = 0;
+  if (rs::Mirror::particles_float_slots(PtOp::SetExplosivenessRatio, &at, &count))
+    rs::registry_note_particles(p.id, R::Floats, at, 0, &value, 1);
+}
+
+void lean_particles_set_randomness_ratio(void *self, RID p, float ratio) {
+  bump(kParticlesSetRandomnessRatio);
+  original<FnRidFloat>(kParticlesSetRandomnessRatio)(self, p, ratio);
+  if (!rs::registry_on()) return;
+  using R = rs::RegistryParticlesOp;
+  const float value = static_cast<float>(ratio);
+  std::size_t at = 0, count = 0;
+  if (rs::Mirror::particles_float_slots(PtOp::SetRandomnessRatio, &at, &count))
+    rs::registry_note_particles(p.id, R::Floats, at, 0, &value, 1);
+}
+
+void lean_particles_set_custom_aabb(void *self, RID p, const AABB *aabb) {
+  bump(kParticlesSetCustomAabb);
+  original<FnMeshSetCustomAabb>(kParticlesSetCustomAabb)(self, p, aabb);
+  if (!rs::registry_on()) return;
+  using R = rs::RegistryParticlesOp;
+  if (aabb == nullptr) return;
+  const float floats[] = {aabb->position.x, aabb->position.y, aabb->position.z,
+                          aabb->size.x, aabb->size.y, aabb->size.z};
+  std::size_t at = 0, count = 0;
+  if (rs::Mirror::particles_float_slots(PtOp::SetCustomAabb, &at, &count))
+    rs::registry_note_particles(p.id, R::Floats, at, 0, floats, 6);
+}
+
+void lean_particles_set_speed_scale(void *self, RID p, double scale) {
+  bump(kParticlesSetSpeedScale);
+  original<FnRidDouble>(kParticlesSetSpeedScale)(self, p, scale);
+  if (!rs::registry_on()) return;
+  using R = rs::RegistryParticlesOp;
+  const float value = static_cast<float>(scale);
+  std::size_t at = 0, count = 0;
+  if (rs::Mirror::particles_float_slots(PtOp::SetSpeedScale, &at, &count))
+    rs::registry_note_particles(p.id, R::Floats, at, 0, &value, 1);
+}
+
+void lean_particles_set_use_local_coordinates(void *self, RID p, bool enable) {
+  bump(kParticlesSetUseLocalCoordinates);
+  original<FnRidBool>(kParticlesSetUseLocalCoordinates)(self, p, enable);
+  if (!rs::registry_on()) return;
+  using R = rs::RegistryParticlesOp;
+  rs::registry_note_particles(p.id, R::Local, enable, 0, nullptr, 0);
+}
+
+void lean_particles_set_process_material(void *self, RID p, RID material) {
+  bump(kParticlesSetProcessMaterial);
+  original<FnSetMaterial>(kParticlesSetProcessMaterial)(self, p, material);
+  if (!rs::registry_on()) return;
+  using R = rs::RegistryParticlesOp;
+  rs::registry_note_particles(p.id, R::ProcessMaterial, 0, material.id, nullptr, 0);
+}
+
+void lean_particles_set_fixed_fps(void *self, RID p, int fps) {
+  bump(kParticlesSetFixedFps);
+  original<FnRidInt>(kParticlesSetFixedFps)(self, p, fps);
+  if (!rs::registry_on()) return;
+  using R = rs::RegistryParticlesOp;
+  rs::registry_note_particles(p.id, R::FixedFps, fps, 0, nullptr, 0);
+}
+
+void lean_particles_set_interpolate(void *self, RID p, bool enable) {
+  bump(kParticlesSetInterpolate);
+  original<FnRidBool>(kParticlesSetInterpolate)(self, p, enable);
+  if (!rs::registry_on()) return;
+  using R = rs::RegistryParticlesOp;
+  rs::registry_note_particles(p.id, R::Interpolate, enable, 0, nullptr, 0);
+}
+
+void lean_particles_set_fractional_delta(void *self, RID p, bool enable) {
+  bump(kParticlesSetFractionalDelta);
+  original<FnRidBool>(kParticlesSetFractionalDelta)(self, p, enable);
+  if (!rs::registry_on()) return;
+  using R = rs::RegistryParticlesOp;
+  rs::registry_note_particles(p.id, R::FractionalDelta, enable, 0, nullptr, 0);
+}
+
+void lean_particles_set_collision_base_size(void *self, RID p, float size) {
+  bump(kParticlesSetCollisionBaseSize);
+  original<FnRidFloat>(kParticlesSetCollisionBaseSize)(self, p, size);
+  if (!rs::registry_on()) return;
+  using R = rs::RegistryParticlesOp;
+  const float value = static_cast<float>(size);
+  std::size_t at = 0, count = 0;
+  if (rs::Mirror::particles_float_slots(PtOp::SetCollisionBaseSize, &at, &count))
+    rs::registry_note_particles(p.id, R::Floats, at, 0, &value, 1);
+}
+
+void lean_particles_set_seed(void *self, RID p, uint32_t seed) {
+  bump(kParticlesSetSeed);
+  original<FnRidU32>(kParticlesSetSeed)(self, p, seed);
+  if (!rs::registry_on()) return;
+  using R = rs::RegistryParticlesOp;
+  rs::registry_note_particles(p.id, R::Seed, seed, 0, nullptr, 0);
+}
+
+void lean_particles_set_transform_align(void *self, RID p, int32_t align) {
+  bump(kParticlesSetTransformAlign);
+  original<FnRidEnum>(kParticlesSetTransformAlign)(self, p, align);
+  if (!rs::registry_on()) return;
+  using R = rs::RegistryParticlesOp;
+  rs::registry_note_particles(p.id, R::TransformAlign, align, 0, nullptr, 0);
+}
+
+void lean_particles_set_trails(void *self, RID p, bool enable, float length) {
+  bump(kParticlesSetTrails);
+  original<FnParticlesSetTrails>(kParticlesSetTrails)(self, p, enable, length);
+  if (!rs::registry_on()) return;
+  using R = rs::RegistryParticlesOp;
+  rs::registry_note_particles(p.id, R::Trails, enable, 0, &length, 1);
+}
+
+void lean_particles_set_trail_bind_poses(void *self, RID p, const Vector<Transform3D> *poses) {
+  bump(kParticlesSetTrailBindPoses);
+  original<FnParticlesSetTrailBindPoses>(kParticlesSetTrailBindPoses)(self, p, poses);
+  if (!rs::registry_on()) return;
+  using R = rs::RegistryParticlesOp;
+  std::vector<float> floats;
+  for (int64_t i = 0, n = poses != nullptr ? poses->size() : 0; i < n; ++i) {
+    const auto t = xform3_floats(poses->ptr()[i]);
+    floats.insert(floats.end(), t.begin(), t.end());
+  }
+  rs::registry_note_particles(p.id, R::TrailBindPoses, 0, 0, floats.data(), floats.size());
+}
+
+void lean_particles_set_subemitter(void *self, RID p, RID sub) {
+  bump(kParticlesSetSubemitter);
+  original<FnSetMaterial>(kParticlesSetSubemitter)(self, p, sub);
+  if (!rs::registry_on()) return;
+  using R = rs::RegistryParticlesOp;
+  rs::registry_note_particles(p.id, R::Subemitter, 0, sub.id, nullptr, 0);
+}
+
+void lean_particles_set_draw_order(void *self, RID p, int32_t order_value) {
+  bump(kParticlesSetDrawOrder);
+  original<FnRidEnum>(kParticlesSetDrawOrder)(self, p, order_value);
+  if (!rs::registry_on()) return;
+  using R = rs::RegistryParticlesOp;
+  rs::registry_note_particles(p.id, R::DrawOrder, order_value, 0, nullptr, 0);
+}
+
+void lean_particles_set_draw_passes(void *self, RID p, int count) {
+  bump(kParticlesSetDrawPasses);
+  original<FnRidInt>(kParticlesSetDrawPasses)(self, p, count);
+  if (!rs::registry_on()) return;
+  using R = rs::RegistryParticlesOp;
+  rs::registry_note_particles(p.id, R::DrawPasses, count, 0, nullptr, 0);
+}
+
+void lean_particles_set_draw_pass_mesh(void *self, RID p, int pass, RID mesh) {
+  bump(kParticlesSetDrawPassMesh);
+  original<FnParticlesSetDrawPassMesh>(kParticlesSetDrawPassMesh)(self, p, pass, mesh);
+  if (!rs::registry_on()) return;
+  using R = rs::RegistryParticlesOp;
+  rs::registry_note_particles(p.id, R::DrawPassMesh, pass, mesh.id, nullptr, 0);
+}
+
+void lean_particles_set_emission_transform(void *self, RID p, const Transform3D *transform) {
+  bump(kParticlesSetEmissionTransform);
+  original<FnParticlesSetTransform3d>(kParticlesSetEmissionTransform)(self, p, transform);
+  if (!rs::registry_on()) return;
+  using R = rs::RegistryParticlesOp;
+  if (transform == nullptr) return;
+  const auto floats = xform3_floats(*transform);
+  std::size_t at = 0, count = 0;
+  if (rs::Mirror::particles_float_slots(PtOp::SetEmissionTransform, &at, &count))
+    rs::registry_note_particles(p.id, R::Floats, at, 0, floats.data(), 12);
+}
+
+void lean_particles_set_emitter_velocity(void *self, RID p, const Vector3 *velocity) {
+  bump(kParticlesSetEmitterVelocity);
+  original<FnParticlesSetVector3>(kParticlesSetEmitterVelocity)(self, p, velocity);
+  if (!rs::registry_on()) return;
+  using R = rs::RegistryParticlesOp;
+  if (velocity == nullptr) return;
+  const float floats[] = {velocity->x, velocity->y, velocity->z};
+  std::size_t at = 0, count = 0;
+  if (rs::Mirror::particles_float_slots(PtOp::SetEmitterVelocity, &at, &count))
+    rs::registry_note_particles(p.id, R::Floats, at, 0, floats, 3);
+}
+
+void lean_particles_set_interp_to_end(void *self, RID p, float interp) {
+  bump(kParticlesSetInterpToEnd);
+  original<FnRidFloat>(kParticlesSetInterpToEnd)(self, p, interp);
+  if (!rs::registry_on()) return;
+  using R = rs::RegistryParticlesOp;
+  const float value = static_cast<float>(interp);
+  std::size_t at = 0, count = 0;
+  if (rs::Mirror::particles_float_slots(PtOp::SetInterpToEnd, &at, &count))
+    rs::registry_note_particles(p.id, R::Floats, at, 0, &value, 1);
+}
+
+// A proxy's base binding has no renderer getter. Retain its identity and latest target while
+// detached, including frame-rate updates from AnimatedTexture, without touching stream state.
+RID lean_texture_proxy_create(void *self, RID base) {
+  bump(kTextureProxyCreate);
+  const uint64_t adjacent = take_adjacent_viewport(base.id);
+  const RID result = original<FnRidToRid>(kTextureProxyCreate)(self, base);
+  if (rs::registry_on() && rs::registry_viewports())
+    rs::registry_note_proxy_create(result.id, base.id, adjacent);
+  return result;
+}
+
+void lean_texture_proxy_update(void *self, RID proxy, RID base) {
+  bump(kTextureProxyUpdate);
+  const uint64_t adjacent = take_adjacent_viewport(base.id);
+  original<FnSetMaterial>(kTextureProxyUpdate)(self, proxy, base);
+  if (rs::registry_on() && rs::registry_viewports())
+    rs::registry_note_proxy_update(proxy.id, base.id, adjacent);
+}
+
+// These lean thunks record only descriptors; no adoption, readback, mirror or payload work.
+void lean_texture_set_size_override(void *self, RID texture, int width, int height) {
+  bump(kTextureSetSizeOverride);
+  if (rs::registry_on()) rs::registry_note_texture_size_override(texture.id, width, height);
+  original<FnTextureSetSizeOverride>(kTextureSetSizeOverride)(self, texture, width, height);
+}
+
+void lean_texture_replace(void *self, RID texture, RID by_texture) {
+  bump(kTextureReplace);
+  if (rs::registry_on()) rs::registry_note_replace(texture.id, by_texture.id);
+  original<FnSetMaterial>(kTextureReplace)(self, texture, by_texture);
+}
+
+template <HookId Id, auto Hook> struct LeanThunk;
+template <HookId Id, typename R, typename... Args, R (*Hook)(Args...)>
+struct LeanThunk<Id, Hook> {
+  static R call(Args... args) {
+    HookAdmission::Reader reader(g_lean_admission);
+    if (!reader || internal_work())
+      return original<R (*)(Args...)>(Id)(std::forward<Args>(args)...);
+    g_hook_entries.fetch_add(1, std::memory_order_relaxed);
+    return Hook(std::forward<Args>(args)...);
+  }
+};
+
+void *lean_hook(HookId id) {
+  switch (id) {
+  case kTextureSetSizeOverride: return as_ptr(&LeanThunk<kTextureSetSizeOverride, &lean_texture_set_size_override>::call);
+  case kTextureReplace: return as_ptr(&LeanThunk<kTextureReplace, &lean_texture_replace>::call);
+  case kTextureProxyCreate: return as_ptr(&LeanThunk<kTextureProxyCreate, &lean_texture_proxy_create>::call);
+  case kTextureProxyUpdate: return as_ptr(&LeanThunk<kTextureProxyUpdate, &lean_texture_proxy_update>::call);
+  case kCanvasTextureCreate: return as_ptr(&LeanThunk<kCanvasTextureCreate, &lean_canvas_texture_create>::call);
+  case kMultimeshCreate: return as_ptr(&LeanThunk<kMultimeshCreate, &lean_multimesh_create>::call);
+  case kParticlesCreate: return as_ptr(&LeanThunk<kParticlesCreate, &lean_particles_create>::call);
+  case kMaterialCreate: return as_ptr(&LeanThunk<kMaterialCreate, &lean_material_create>::call);
+  case kMaterialCreateFromShader: return as_ptr(&LeanThunk<kMaterialCreateFromShader, &lean_material_create_from_shader>::call);
+  case kMaterialSetShader: return as_ptr(&LeanThunk<kMaterialSetShader, &lean_material_set_shader>::call);
+  case kMaterialSetNextPass: return as_ptr(&LeanThunk<kMaterialSetNextPass, &hook_material_set_next_pass>::call);
+  case kMaterialSetRenderPriority: return as_ptr(&LeanThunk<kMaterialSetRenderPriority, &hook_material_set_render_priority>::call);
+  case kCanvasTextureSetShadingParameters: return as_ptr(&LeanThunk<kCanvasTextureSetShadingParameters, &hook_canvas_texture_set_shading_parameters>::call);
+  case kShaderSetDefaultTextureParameter: return as_ptr(&LeanThunk<kShaderSetDefaultTextureParameter, &lean_shader_set_default_texture_parameter>::call);
+  case kFree: return as_ptr(&LeanThunk<kFree, &lean_free>::call);
+  case kCanvasTextureSetChannel: return as_ptr(&LeanThunk<kCanvasTextureSetChannel, &lean_canvas_texture_set_channel>::call);
+  case kCanvasTextureSetTextureFilter: return as_ptr(&LeanThunk<kCanvasTextureSetTextureFilter, &lean_canvas_texture_set_texture_filter>::call);
+  case kCanvasTextureSetTextureRepeat: return as_ptr(&LeanThunk<kCanvasTextureSetTextureRepeat, &lean_canvas_texture_set_texture_repeat>::call);
+  case kMultimeshAllocateData: return as_ptr(&LeanThunk<kMultimeshAllocateData, &lean_multimesh_allocate_data>::call);
+  case kMultimeshSetMesh: return as_ptr(&LeanThunk<kMultimeshSetMesh, &lean_multimesh_set_mesh>::call);
+  case kParticlesSetMode: return as_ptr(&LeanThunk<kParticlesSetMode, &lean_particles_set_mode>::call);
+  case kParticlesSetEmitting: return as_ptr(&LeanThunk<kParticlesSetEmitting, &lean_particles_set_emitting>::call);
+  case kParticlesSetAmount: return as_ptr(&LeanThunk<kParticlesSetAmount, &lean_particles_set_amount>::call);
+  case kParticlesSetAmountRatio: return as_ptr(&LeanThunk<kParticlesSetAmountRatio, &lean_particles_set_amount_ratio>::call);
+  case kParticlesSetLifetime: return as_ptr(&LeanThunk<kParticlesSetLifetime, &lean_particles_set_lifetime>::call);
+  case kParticlesSetOneShot: return as_ptr(&LeanThunk<kParticlesSetOneShot, &lean_particles_set_one_shot>::call);
+  case kParticlesSetPreProcessTime: return as_ptr(&LeanThunk<kParticlesSetPreProcessTime, &lean_particles_set_pre_process_time>::call);
+  case kParticlesSetExplosivenessRatio: return as_ptr(&LeanThunk<kParticlesSetExplosivenessRatio, &lean_particles_set_explosiveness_ratio>::call);
+  case kParticlesSetRandomnessRatio: return as_ptr(&LeanThunk<kParticlesSetRandomnessRatio, &lean_particles_set_randomness_ratio>::call);
+  case kParticlesSetCustomAabb: return as_ptr(&LeanThunk<kParticlesSetCustomAabb, &lean_particles_set_custom_aabb>::call);
+  case kParticlesSetSpeedScale: return as_ptr(&LeanThunk<kParticlesSetSpeedScale, &lean_particles_set_speed_scale>::call);
+  case kParticlesSetUseLocalCoordinates: return as_ptr(&LeanThunk<kParticlesSetUseLocalCoordinates, &lean_particles_set_use_local_coordinates>::call);
+  case kParticlesSetProcessMaterial: return as_ptr(&LeanThunk<kParticlesSetProcessMaterial, &lean_particles_set_process_material>::call);
+  case kParticlesSetFixedFps: return as_ptr(&LeanThunk<kParticlesSetFixedFps, &lean_particles_set_fixed_fps>::call);
+  case kParticlesSetInterpolate: return as_ptr(&LeanThunk<kParticlesSetInterpolate, &lean_particles_set_interpolate>::call);
+  case kParticlesSetFractionalDelta: return as_ptr(&LeanThunk<kParticlesSetFractionalDelta, &lean_particles_set_fractional_delta>::call);
+  case kParticlesSetCollisionBaseSize: return as_ptr(&LeanThunk<kParticlesSetCollisionBaseSize, &lean_particles_set_collision_base_size>::call);
+  case kParticlesSetSeed: return as_ptr(&LeanThunk<kParticlesSetSeed, &lean_particles_set_seed>::call);
+  case kParticlesSetTransformAlign: return as_ptr(&LeanThunk<kParticlesSetTransformAlign, &lean_particles_set_transform_align>::call);
+  case kParticlesSetTrails: return as_ptr(&LeanThunk<kParticlesSetTrails, &lean_particles_set_trails>::call);
+  case kParticlesSetTrailBindPoses: return as_ptr(&LeanThunk<kParticlesSetTrailBindPoses, &lean_particles_set_trail_bind_poses>::call);
+  case kParticlesSetSubemitter: return as_ptr(&LeanThunk<kParticlesSetSubemitter, &lean_particles_set_subemitter>::call);
+  case kParticlesSetDrawOrder: return as_ptr(&LeanThunk<kParticlesSetDrawOrder, &lean_particles_set_draw_order>::call);
+  case kParticlesSetDrawPasses: return as_ptr(&LeanThunk<kParticlesSetDrawPasses, &lean_particles_set_draw_passes>::call);
+  case kParticlesSetDrawPassMesh: return as_ptr(&LeanThunk<kParticlesSetDrawPassMesh, &lean_particles_set_draw_pass_mesh>::call);
+  case kParticlesSetEmissionTransform: return as_ptr(&LeanThunk<kParticlesSetEmissionTransform, &lean_particles_set_emission_transform>::call);
+  case kParticlesSetEmitterVelocity: return as_ptr(&LeanThunk<kParticlesSetEmitterVelocity, &lean_particles_set_emitter_velocity>::call);
+  case kParticlesSetInterpToEnd: return as_ptr(&LeanThunk<kParticlesSetInterpToEnd, &lean_particles_set_interp_to_end>::call);
+  default: return nullptr;
+  }
+}
+
 // All installed slots share attachment admission, including standby and internal calls.
 template <HookId Id, auto Hook> struct AttachmentThunk;
 template <HookId Id, typename R, typename... Args, R (*Hook)(Args...)>
@@ -5783,7 +6282,12 @@ struct AttachmentThunk<Id, Hook> {
   static R call(Args... args) {
     g_hook_entries.fetch_add(1, std::memory_order_relaxed);
     HookAdmission::Reader reader(g_attachment_admission);
-    if (!reader) return original<R (*)(Args...)>(Id)(std::forward<Args>(args)...);
+    if (!reader) {
+      // A delayed dispatch through an attached table must still retain unreadable state.
+      if (void *lean = lean_hook(Id))
+        return reinterpret_cast<R (*)(Args...)>(lean)(std::forward<Args>(args)...);
+      return original<R (*)(Args...)>(Id)(std::forward<Args>(args)...);
+    }
     return Hook(std::forward<Args>(args)...);
   }
 };
@@ -5838,6 +6342,7 @@ const HookSpec kSpecs[] = {
     {kViewportSetDefaultTextureFilter, "viewport_set_default_canvas_item_texture_filter", as_ptr(&AttachmentThunk<kViewportSetDefaultTextureFilter, &hook_viewport_set_default_texture_filter>::call)},
     {kViewportSetDefaultTextureRepeat, "viewport_set_default_canvas_item_texture_repeat", as_ptr(&AttachmentThunk<kViewportSetDefaultTextureRepeat, &hook_viewport_set_default_texture_repeat>::call)},
     {kCanvasTextureCreate, "canvas_texture_create", as_ptr(&AttachmentThunk<kCanvasTextureCreate, &hook_canvas_texture_create>::call)},
+    {kCanvasTextureSetShadingParameters, "canvas_texture_set_shading_parameters", as_ptr(&AttachmentThunk<kCanvasTextureSetShadingParameters, &hook_canvas_texture_set_shading_parameters>::call)},
     {kCanvasTextureSetChannel, "canvas_texture_set_channel", as_ptr(&AttachmentThunk<kCanvasTextureSetChannel, &hook_canvas_texture_set_channel>::call)},
     {kCanvasTextureSetTextureFilter, "canvas_texture_set_texture_filter", as_ptr(&AttachmentThunk<kCanvasTextureSetTextureFilter, &hook_canvas_texture_set_texture_filter>::call)},
     {kCanvasTextureSetTextureRepeat, "canvas_texture_set_texture_repeat", as_ptr(&AttachmentThunk<kCanvasTextureSetTextureRepeat, &hook_canvas_texture_set_texture_repeat>::call)},
@@ -5857,6 +6362,8 @@ const HookSpec kSpecs[] = {
     {kShaderSetDefaultTextureParameter, "shader_set_default_texture_parameter", as_ptr(&AttachmentThunk<kShaderSetDefaultTextureParameter, &hook_shader_set_default_texture_parameter>::call)},
     {kMaterialCreate, "material_create", as_ptr(&AttachmentThunk<kMaterialCreate, &hook_material_create>::call)},
     {kMaterialCreateFromShader, "material_create_from_shader", as_ptr(&AttachmentThunk<kMaterialCreateFromShader, &hook_material_create_from_shader>::call)},
+    {kMaterialSetNextPass, "material_set_next_pass", as_ptr(&AttachmentThunk<kMaterialSetNextPass, &hook_material_set_next_pass>::call)},
+    {kMaterialSetRenderPriority, "material_set_render_priority", as_ptr(&AttachmentThunk<kMaterialSetRenderPriority, &hook_material_set_render_priority>::call)},
     {kMaterialSetShader, "material_set_shader", as_ptr(&AttachmentThunk<kMaterialSetShader, &hook_material_set_shader>::call)},
     {kSetCanvasModulate, "canvas_set_modulate", as_ptr(&AttachmentThunk<kSetCanvasModulate, &hook_set_canvas_modulate>::call)},
     {kSetUseParentMaterial, "canvas_item_set_use_parent_material", as_ptr(&AttachmentThunk<kSetUseParentMaterial, &hook_set_use_parent_material>::call)},
@@ -6978,6 +7485,7 @@ bool hooks_plan(const Calibration &calib, HookPlan *plan) {
     replacement.original_out = &g_original[spec.id];
     // LS1 (rs_standby.h): also installed in the standby table.
     replacement.standby = rs::standby_hook(spec.name);
+    replacement.lean_hook = lean_hook(spec.id);
     plan->replacements.push_back(replacement);
     plan->planned.push_back(spec.name);
   }
@@ -7149,6 +7657,9 @@ void hooks_attachment_release() {
         g_canvas_item_mirrorings, g_canvas_item_repeats, g_canvas_set_parents);
 }
 
+void hooks_lean_close() { g_lean_admission.close(); }
+bool hooks_lean_drained() { return g_lean_admission.drained(); }
+
 void hooks_attachment_close() { g_attachment_admission.close(); }
 bool hooks_attachment_drained() { return g_attachment_admission.drained(); }
 void hooks_attachment_open() { g_attachment_admission.open(); }
@@ -7164,6 +7675,12 @@ void hooks_attachment_reset() {
   g_frame.store(1, std::memory_order_relaxed);
   g_log_frame.store(0, std::memory_order_relaxed);
   hooks_reset_texture_cache_notes();
+}
+
+std::map<std::string, uint64_t> hooks_method_counts() {
+  std::map<std::string, uint64_t> out;
+  for (const auto &spec : kSpecs) out[spec.name] = g_count[spec.id].load(std::memory_order_relaxed);
+  return out;
 }
 
 uint64_t hooks_total_calls() {

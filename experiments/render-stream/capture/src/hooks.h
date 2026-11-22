@@ -16,6 +16,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -271,4 +272,7 @@ bool hooks_attachment_drained();
 void hooks_attachment_open();
 void hooks_attachment_reset();
 uint64_t hooks_entries();
+std::map<std::string, uint64_t> hooks_method_counts();
+void hooks_lean_close();
+bool hooks_lean_drained();
 }  // namespace grc

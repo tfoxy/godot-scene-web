@@ -1314,7 +1314,7 @@ export async function runG8a(
     checks.push(
       check(
         "registry-live-bound",
-        "on the deferred, standby (LS1: GRC_MODE=standby, GRC_ADOPT implied), born-adopt and late captures (GRC_ADOPT=arm), evidence/registry.json holds entries == creates - frees - replaced - recreated per family on every timeline row and at the end (a free always erases: the registry is bounded by live engine resources), records every tracked create (creates + overflow + null_creates == the family's create-hook calls in counters.json), never overflows or drops a row; the deferred and standby legs record at least the loader's own creates per family; the deferred leg records a tracked free before its arm; born (GRC_ADOPT=off) writes no registry evidence",
+        "on the deferred, standby (LS1: GRC_MODE=standby, GRC_ADOPT implied), born-adopt and late captures (GRC_ADOPT=arm), evidence/registry.json holds entries == carried + creates - frees - replaced - recreated per family on every timeline row and at the end (a free always erases: the registry is bounded by live engine resources), records every tracked create (creates + overflow + null_creates == the family's create-hook calls in counters.json), never overflows or drops a row; the deferred and standby legs record at least the loader's own creates per family; the deferred leg records a tracked free before its arm; born (GRC_ADOPT=off) writes no registry evidence",
         problems,
         d
           ? `deferred: ${d.rows} rows, ${d.creates} creates, ${d.frees} frees (${d.pre_arm_frees} before the arm), peak ${d.peak}, ~${d.bytes_estimate} B`

@@ -125,6 +125,8 @@ struct State {
   // texture_set_size_override's logical size (width << 16 | height) of textures whose
   // Entry::extra has kHasOverride (render-stream-15.md "Size override").
   RidMap<std::uint32_t> overrides;
+  // Logical sizes outlive readable texture entries across a lean detach. No image payload.
+  RidMap<std::uint32_t> lean_overrides;
   std::uint64_t path_capacity = 0;
   std::uint64_t path_sets = 0;
   std::uint64_t texture_facts = 0;
@@ -554,7 +556,7 @@ const char *registry_fault_name(RegistryFault fault) {
   return "?";
 }
 
-void registry_configure(bool adopt, RegistryFault fault, std::size_t cap) {
+void registry_configure(bool adopt, RegistryFault fault, std::size_t cap, bool preserve_lean) {
   State &s = state();
   RidMap<RegistryShader> old_shaders;      // released after the lock (RegistryValue)
   RidMap<RegistryMaterial> old_materials;
@@ -562,10 +564,52 @@ void registry_configure(bool adopt, RegistryFault fault, std::size_t cap) {
   RidMap<RegistryHold> old_holds;
   std::array<PendingSlot, kHoldPendingMaxEntries> old_pending;
   std::lock_guard<std::mutex> lock(s.mutex);
+  RidMap<Entry> lean_map;
+  RidMap<RegistryCanvasTexture> lean_canvas;
+  RidMap<RegistryMultimesh> lean_multimesh;
+  RidMap<RegistryParticles> lean_particles;
+  RidMap<RegistryMaterial> lean_materials;
+  RidMap<RegistryShader> lean_shaders;
+  RidMap<RegistryProxy> lean_proxies;
+  const bool lean_viewports = preserve_lean && s.viewports;
+  if (preserve_lean) {
+    s.overrides.for_each([&](const auto &slot) { s.lean_overrides[slot.first] = slot.second; });
+    s.map.for_each([&](const auto &slot) {
+      const auto kind = slot.second.kind;
+      if (kind == RegistryKind::CanvasTexture || kind == RegistryKind::Multimesh ||
+          kind == RegistryKind::Particles || kind == RegistryKind::Material ||
+          kind == RegistryKind::TextureProxy)
+        lean_map[slot.first] = slot.second;
+    });
+    s.map.for_each([&](const auto &slot) {
+      if (slot.second.kind != RegistryKind::TextureProxy) return;
+      const auto proxy = s.vp.find(slot.first);
+      if (proxy != s.vp.end()) lean_proxies[slot.first] = proxy->second;
+    });
+    s.material.for_each([&](const auto &slot) {
+      RegistryMaterial binding;
+      binding.shader = slot.second.shader;
+      binding.next_pass = slot.second.next_pass;
+      binding.priority = slot.second.priority;
+      binding.readback = true;
+      lean_materials[slot.first] = std::move(binding);
+    });
+    s.shader.for_each([&](const auto &slot) {
+      if (slot.second.defaults.empty()) return;
+      RegistryShader binding;
+      binding.defaults = slot.second.defaults;
+      lean_shaders[slot.first] = std::move(binding);
+      lean_map[slot.first] = s.map.find(slot.first)->second;
+    });
+    std::swap(lean_canvas, s.canvas);
+    std::swap(lean_multimesh, s.multimesh);
+    std::swap(lean_particles, s.particles);
+  }
   std::swap(old_shaders, s.shader);
   std::swap(old_materials, s.material);
   std::swap(old_paths, s.paths);
   s.overrides.clear();
+  if (!preserve_lean) s.lean_overrides.clear();
   std::swap(old_holds, s.holds);
   std::swap(old_pending, s.pending);
   s.holds_capacity = 0;
@@ -597,7 +641,7 @@ void registry_configure(bool adopt, RegistryFault fault, std::size_t cap) {
   s.particles_capacity = 0;
   s.particles_sets = 0;
   s.particles_elements = 0;
-  s.viewports = false;  // VS2: registry_set_viewports, after this
+  s.viewports = lean_viewports;  // retain the proxy-note gate across lean transitions
   s.vp.clear();
   s.vp_rt.clear();
   s.vp_capacity = 0;
@@ -611,6 +655,35 @@ void registry_configure(bool adopt, RegistryFault fault, std::size_t cap) {
   s.row_generation = 0;
   s.timeline.clear();
   s.timeline_dropped = 0;
+  if (preserve_lean) {
+    std::swap(lean_map, s.map);
+    std::swap(lean_shaders, s.shader);
+    std::swap(lean_materials, s.material);
+    std::swap(lean_proxies, s.vp);
+    std::swap(lean_canvas, s.canvas);
+    std::swap(lean_multimesh, s.multimesh);
+    std::swap(lean_particles, s.particles);
+    s.particles.for_each([&](const auto &slot) {
+      s.particles.find(slot.first)->second.restart_on_adopt = true;
+    });
+    s.map.for_each([&](const auto &slot) {
+      auto &family = s.family[index(registry_family(slot.second.kind))];
+      ++family.carried;
+      family.peak = ++family.entries;
+      ++s.entries;
+      track_growth(s.entries - 1, &s.capacity);
+    });
+    for (std::size_t i = 0; i < s.shader.size(); ++i) track_growth(i, &s.shader_capacity);
+    for (std::size_t i = 0; i < s.material.size(); ++i) track_growth(i, &s.material_capacity);
+    for (std::size_t i = 0; i < s.vp.size(); ++i) track_growth(i, &s.vp_capacity);
+    for (std::size_t i = 0; i < s.canvas.size(); ++i) track_growth(i, &s.canvas_capacity);
+    for (std::size_t i = 0; i < s.multimesh.size(); ++i) track_growth(i, &s.multimesh_capacity);
+    for (std::size_t i = 0; i < s.particles.size(); ++i) track_growth(i, &s.particles_capacity);
+    s.particles.for_each([&](const auto &slot) {
+      s.particles_elements += particles_elements(slot.second);
+    });
+    s.peak = s.entries;
+  }
   g_registry_on.store(adopt && s.fault != RegistryFault::Off, std::memory_order_relaxed);
 }
 
@@ -750,9 +823,31 @@ void registry_note_texture_size_override(std::uint64_t rid, std::int32_t width,
   State &s = state();
   std::lock_guard<std::mutex> lock(s.mutex);
   const auto it = s.map.find(rid);
-  if (it == s.map.end() || registry_family(it->second.kind) != RegistryFamily::Texture) return;
-  s.overrides[rid] = static_cast<std::uint32_t>(width) << 16 | static_cast<std::uint32_t>(height);
+  const auto packed = static_cast<std::uint32_t>(width) << 16 | static_cast<std::uint32_t>(height);
+  if (it == s.map.end() || registry_family(it->second.kind) != RegistryFamily::Texture) {
+    if (rid != 0) s.lean_overrides[rid] = packed;
+    return;
+  }
+  s.lean_overrides.erase(rid);
+  s.overrides[rid] = packed;
   it->second.extra |= kHasOverride;
+}
+
+bool registry_texture_size_override(std::uint64_t rid, std::uint32_t *width,
+                                    std::uint32_t *height) {
+  State &s = state();
+  std::lock_guard<std::mutex> lock(s.mutex);
+  auto found = s.overrides.find(rid);
+  std::uint32_t packed = 0;
+  if (found != s.overrides.end()) packed = found->second;
+  else {
+    const auto lean = s.lean_overrides.find(rid);
+    if (lean == s.lean_overrides.end()) return false;
+    packed = lean->second;
+  }
+  *width = packed >> 16;
+  *height = packed & 0xffff;
+  return true;
 }
 
 bool registry_texture_set_released(std::uint64_t rid, bool released) {
@@ -798,6 +893,7 @@ void registry_note_free(std::uint64_t rid) {
   State &s = state();
   Dropped dropped;  // released after the lock
   std::lock_guard<std::mutex> lock(s.mutex);
+  s.lean_overrides.erase(rid);
   const auto it = s.map.find(rid);
   if (it == s.map.end()) {
     return;  // untracked (a canvas item, a viewport...), pre-load, overflowed or internal
@@ -832,6 +928,24 @@ HoldSkip registry_note_replace(std::uint64_t texture, std::uint64_t by_texture,
   if (by_texture == texture) return HoldSkip::None;
   const auto it = s.map.find(by_texture);
   const auto into = s.map.find(texture);
+  // Replacement copies the source storage, including its logical size, and frees the source.
+  // Either RID can lack an entry after lean detach; retain only the scalar descriptor here.
+  const auto source = s.lean_overrides.find(by_texture);
+  const auto regular = s.overrides.find(by_texture);
+  const std::uint32_t size = regular != s.overrides.end() ? regular->second :
+                            source != s.lean_overrides.end() ? source->second : 0;
+  s.lean_overrides.erase(by_texture);
+  s.lean_overrides.erase(texture);
+  if (into == s.map.end()) {
+    if (size != 0) s.lean_overrides[texture] = size;
+  } else if (registry_family(into->second.kind) == RegistryFamily::Texture &&
+             it == s.map.end()) {
+    override_erase_locked(s, texture, into->second);
+    if (size != 0) {
+      s.overrides[texture] = size;
+      into->second.extra |= kHasOverride;
+    }
+  }
   HoldSkip skip = HoldSkip::Unregistered;
   if (it == s.map.end()) {
     if (into != s.map.end()) {
@@ -1171,6 +1285,18 @@ void registry_note_canvas_repeat(std::uint64_t rid, std::int32_t repeat) {
   ++s.canvas_sets;
 }
 
+void registry_note_canvas_shading(std::uint64_t rid, const std::array<float, 4> &color,
+                                  float shininess) {
+  State &s = state();
+  std::lock_guard<std::mutex> lock(s.mutex);
+  auto *c = canvas_locked(s, rid);
+  if (!c) return;
+  c->base_color = color;
+  c->shininess = shininess;
+  c->shading_set = true;
+  ++s.canvas_sets;
+}
+
 bool registry_canvas_texture(std::uint64_t rid, RegistryCanvasTexture *out) {
   State &s = state();
   std::lock_guard<std::mutex> lock(s.mutex);
@@ -1350,6 +1476,31 @@ void registry_note_material_shader(std::uint64_t rid, std::uint64_t shader) {
   }
   it->second.shader = shader;
   ++s.material_sets;
+}
+
+void registry_note_material_next_pass(std::uint64_t rid, std::uint64_t next_pass) {
+  State &s = state();
+  std::lock_guard<std::mutex> lock(s.mutex);
+  const auto it = s.material.find(rid);
+  if (it == s.material.end()) return;
+  it->second.next_pass = next_pass;
+  ++s.material_sets;
+}
+
+void registry_note_material_priority(std::uint64_t rid, std::int32_t priority) {
+  State &s = state();
+  std::lock_guard<std::mutex> lock(s.mutex);
+  const auto it = s.material.find(rid);
+  if (it == s.material.end()) return;
+  it->second.priority = priority;
+  ++s.material_sets;
+}
+
+void registry_note_material_readback(std::uint64_t rid) {
+  State &s = state();
+  std::lock_guard<std::mutex> lock(s.mutex);
+  const auto it = s.material.find(rid);
+  if (it != s.material.end()) it->second.readback = true;
 }
 
 namespace {
@@ -1622,6 +1773,13 @@ void registry_note_particles(std::uint64_t rid, RegistryParticlesOp op, std::int
   ++s.particles_sets;
 }
 
+void registry_note_particles_restart_on_adopt(std::uint64_t rid) {
+  State &s = state();
+  std::lock_guard<std::mutex> lock(s.mutex);
+  const auto it = s.particles.find(rid);
+  if (it != s.particles.end()) it->second.restart_on_adopt = true;
+}
+
 bool registry_particles(std::uint64_t rid, RegistryParticles *out) {
   State &s = state();
   std::lock_guard<std::mutex> lock(s.mutex);
@@ -1750,6 +1908,7 @@ void registry_frame(std::uint64_t frame) {
   for (std::size_t i = 0; i < kRegistryFamilies; ++i) {
     const RegistryFamilyStats &f = s.family[i];
     row.entries[i] = clamp32(f.entries);
+    row.carried[i] = clamp32(f.carried);
     row.creates[i] = clamp32(f.creates);
     row.frees[i] = clamp32(f.frees + f.replaced + f.recreated);
   }
@@ -1853,6 +2012,7 @@ std::string registry_json() {
     json.key(registry_family_name(static_cast<RegistryFamily>(i))).object_begin();
     json.key("entries").unsigned_integer(f.entries);
     json.key("peak").unsigned_integer(f.peak);
+    json.key("carried").unsigned_integer(f.carried);
     json.key("creates").unsigned_integer(f.creates);
     json.key("frees").unsigned_integer(f.frees);
     json.key("replaced").unsigned_integer(f.replaced);
@@ -1945,6 +2105,11 @@ std::string registry_json() {
     json.key("entries").array_begin();
     for (std::size_t i = 0; i < reported; ++i) {
       json.unsigned_integer(row.entries[i]);
+    }
+    json.array_end();
+    json.key("carried").array_begin();
+    for (std::size_t i = 0; i < reported; ++i) {
+      json.unsigned_integer(row.carried[i]);
     }
     json.array_end();
     json.key("creates").array_begin();

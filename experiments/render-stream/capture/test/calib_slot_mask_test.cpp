@@ -3,9 +3,11 @@
 #include "calib_live.h"
 #include "iface.h"
 #include "rs_platform.h"
+#include "vtable.h"
 #include <array>
 #include <cstdio>
 #include <cstring>
+#include <span>
 #include <fstream>
 #if !defined(_WIN32)
 #include <sys/mman.h>
@@ -172,8 +174,11 @@ int main(int argc, char **argv) {
   g_iface.global_get_singleton = singleton;
   for (const std::string kind : {"null", "code", "bind"}) {
     const bool is_code = kind != "null";
-    std::array<void *, 42> abstract{}, concrete{};
-    concrete.fill(reinterpret_cast<void *>(&code));
+    std::array<void *, 42> abstract{};
+    // ShadowVtable copies the two ABI prefix words before the address point too.
+    std::array<void *, 44> concrete_storage{};
+    std::span<void *> concrete(concrete_storage.data() + 2, 42);
+    for (auto &slot : concrete) slot = reinterpret_cast<void *>(&code);
     abstract.fill(is_code ? reinterpret_cast<void *>(&pure) : nullptr);
     Calibration c;
     c.slot_count = concrete.size(); c.object_prefix = 1; c.anchors_total = 17;
@@ -204,6 +209,33 @@ int main(int argc, char **argv) {
     if (!is_code) {
       for (const auto &r : checks) std::printf("null %s %d %s\n", r.name.c_str(), r.ok, r.detail.c_str());
     }
+    // Reattachment validates the saved engine table while lean tracking remains published.
+    ShadowVtable shadow;
+    check(shadow.build(object, concrete.size(), {}, &error), "build owned reattach tables");
+    check(shadow.publish(ShadowVtable::Table::Lean), "publish lean for reattach validation");
+    void *lean = vptr;
+    facts = {}; checks.clear();
+    check(!check_slot_mask(c, fp, &facts, &checks), "shadow without ownership refuses");
+    facts = {}; checks.clear();
+    check(check_slot_mask(c, fp, &facts, &checks, &shadow), "owned lean accepts original slot mask");
+    check(vptr == lean && facts.expected_vptr == reinterpret_cast<uint64_t>(concrete.data()),
+          "reattach validation keeps lean published and probes original");
+    Calibration wrong_original = c;
+    wrong_original.concrete_vtable_vaddr += sizeof(void *);
+    facts = {}; checks.clear();
+    check(!check_slot_mask(wrong_original, fp, &facts, &checks, &shadow) &&
+          !find(checks, "concrete_vptr").ok, "owned lean with mismatched original refuses");
+    void *other_object = lean;
+    object = &other_object;
+    facts = {}; checks.clear();
+    check(!check_slot_mask(c, fp, &facts, &checks, &shadow), "owned lean on another singleton refuses");
+    object = &vptr;
+    vptr = reinterpret_cast<void *>(1);
+    facts = {}; checks.clear();
+    check(!check_slot_mask(c, fp, &facts, &checks, &shadow), "foreign vptr refuses before dereference");
+    vptr = lean;
+    bool was_shadow = false, restored = false;
+    check(shadow.disarm(&was_shadow, &restored) && restored, "restore fixture after reattach checks");
     Calibration shifted = c;
     for (auto &a : shifted.anchors) ++a.second;
     for (auto &s : shifted.slots) ++s.second;

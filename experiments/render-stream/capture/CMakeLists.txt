@@ -175,7 +175,7 @@ target_include_directories(calib_live_pe_test PRIVATE src vendor)
 target_link_libraries(calib_live_pe_test PRIVATE grc_warnings grc_platform)
 grc_add_test(NAME calib_live_pe COMMAND calib_live_pe_test)
 
-add_executable(calib_slot_mask_test test/calib_slot_mask_test.cpp src/calib.cpp
+add_executable(calib_slot_mask_test test/calib_slot_mask_test.cpp src/calib.cpp src/vtable.cpp
   ${GRC_FINGERPRINT_SOURCES} src/iface.cpp src/rs_sha256.cpp src/calib_live.cpp src/calib_derive.cpp src/macho_image.cpp
   $<$<NOT:$<BOOL:${GRC_WINDOWS}>>:src/pe_image.cpp>)
 target_include_directories(calib_slot_mask_test PRIVATE src vendor)
@@ -929,6 +929,18 @@ add_executable(rs_registry_test test/rs_registry_test.cpp src/rs_registry.cpp sr
 target_include_directories(rs_registry_test PRIVATE src)
 target_link_libraries(rs_registry_test PRIVATE grc_warnings Threads::Threads)
 grc_add_test(NAME rs_registry COMMAND rs_registry_test)
+
+# Exercise real lean proxy thunks and registry retention without exporting capture internals.
+if(NOT GRC_WINDOWS)
+add_executable(rs_lean_proxy_test test/rs_lean_proxy_test.cpp ${GRC_CAPTURE_SOURCES})
+target_include_directories(rs_lean_proxy_test PRIVATE src vendor ${GRC_INJECT_GEN})
+add_dependencies(rs_lean_proxy_test grc_inject_script)
+target_link_libraries(rs_lean_proxy_test PRIVATE grc_warnings grc_codecs grc_basisu grc_platform
+  Threads::Threads ${CMAKE_DL_LIBS})
+grc_add_test(NAME rs_lean_proxy COMMAND rs_lean_proxy_test)
+else()
+  grc_linux_only("rs_lean_proxy_test" "In-process capture hooks and registry test.")
+endif()
 
 # Engine-free texture reload rules, GRT1 framing and reload/restore evidence.
 add_executable(rs_reload_test test/rs_reload_test.cpp src/rs_reload.cpp

@@ -27,12 +27,15 @@ std::vector<std::string> make_names() {
       "texture_2d_update",
       "texture_replace",
       "canvas_texture_set_channel",
+      "canvas_texture_set_shading_parameters",
       "canvas_texture_set_texture_filter",
       "canvas_texture_set_texture_repeat",
       // Shaders and materials (LAR3, LS0).
       "shader_set_code",
       "shader_set_default_texture_parameter",
       "material_set_shader",
+      "material_set_next_pass",
+      "material_set_render_priority",
       "material_set_param",
       // Multimeshes (LAR2).
       "multimesh_allocate_data",

@@ -71,13 +71,21 @@ bool ShadowVtable::build(void *object, size_t slot_count,
     return false;
   }
 
+  void **lean = copy_table(live, words, error);
+  if (lean == nullptr) {
+    std::free(armed);
+    std::free(standby);
+    return false;
+  }
+  void **lean_point = lean + 2;
   void **armed_point = armed + 2;
   void **standby_point = standby + 2;
   size_t standby_slots = 0;
   for (const SlotReplacement &replacement : replacements) {
-    // Both tables were copied from the same live table, so the original is the same in each.
+    // All tables were copied from the same live table, so the original is the same in each.
     *replacement.original_out = live[replacement.index];
     armed_point[replacement.index] = replacement.hook;
+    if (replacement.lean_hook != nullptr) lean_point[replacement.index] = replacement.lean_hook;
     if (replacement.standby) {
       standby_point[replacement.index] = replacement.hook;
       ++standby_slots;
@@ -85,6 +93,7 @@ bool ShadowVtable::build(void *object, size_t slot_count,
   }
 
   object_ = object;
+  lean_point_ = lean_point;
   armed_point_ = armed_point;
   standby_point_ = standby_point;
   original_point_ = live;
@@ -100,10 +109,11 @@ bool ShadowVtable::publish(Table table) {
     return false;
   }
   void **live = read_vptr(object_);
-  if (live != original_point_ && live != standby_point_ && live != armed_point_) {
+  if (live != original_point_ && live != standby_point_ && live != armed_point_ && live != lean_point_) {
     return false;
   }
-  void **point = table == Table::Armed     ? armed_point_
+  void **point = table == Table::Lean ? lean_point_
+                 : table == Table::Armed     ? armed_point_
                  : table == Table::Standby ? standby_point_
                                            : original_point_;
   publish_vptr(object_, point);
@@ -134,14 +144,13 @@ bool ShadowVtable::disarm(bool *was_shadow, bool *restored) {
     return false;
   }
   void **live = read_vptr(object_);
-  *was_shadow = (live == armed_point_ || live == standby_point_);
+  *was_shadow = (live == armed_point_ || live == standby_point_ || live == lean_point_);
   if (*was_shadow) {
     publish_vptr(object_, original_point_);
     *restored = (read_vptr(object_) == original_point_);
   }
   published_ = Table::Engine;
-  // Neither table is ever freed: another thread can be mid-dispatch through one at this instant,
-  // and a two-table leak (about 4 KB each) for the remaining process lifetime is the safe trade.
+  // Tables remain allocated: another thread can be mid-dispatch through one at this instant.
   return *restored;
 }
 

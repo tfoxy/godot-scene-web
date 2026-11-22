@@ -54,7 +54,8 @@ var _freeze: bool = false
 var _d_nudge_frames: Array[int] = []
 ## LATE-CMBT: RS_FIXTURE_LATE_SHADER=1 adds a post-arm cell whose process
 ## material reuses a pre-arm shader (the orphan below): its material_set_shader names a pre-arm
-## shader RID, so the material is unknown-shader until the capture keys it through the builtin.
+## shader RID. Rendered readback recovers its real code before builtin resolution; the synthetic
+## fallback is unnecessary. The emitter keeps its authored seed and emitting state.
 ## Under RS_FIXTURE_ARM=deferred (LAR4) the orphan's shader is created under the hooks, so it is
 ## registered: J_LATE_SHADER's material_set_shader names a registered shader, adopted from the
 ## registry with its real code (no re-key).
@@ -179,7 +180,7 @@ func _ready() -> void:
 
 	# LATE-CMBT: a pre-arm process material on no tree node (deferred arm: registered, LAR4). Setting it on a temporary emitter forces
 	# get_rid() (its shader is created and stays in the engine's shader_map while _orphan_pm is
-	# alive); the temporary is never added to the tree, so the late arm never adopts the shader.
+	# alive); the temporary is never added to the tree. The post-arm binding must recover its shader.
 	if _late_shader:
 		_orphan_pm = _process_material()
 		_orphan_pm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_SPHERE_SURFACE
@@ -208,7 +209,7 @@ func _process(_delta: float) -> void:
 		return
 	_frame += 1
 	# LATE-CMBT: the post-arm cell (frame 15, after the arm at 12): a fresh process material with the
-	# orphan's key, so its material_set_shader names the pre-arm shader RID (unknown-shader).
+	# orphan's key, so its material_set_shader names the pre-arm shader RID (read back on demand).
 	if _late_shader and _frame == 15:
 		var j_pm := _process_material()
 		j_pm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_SPHERE_SURFACE

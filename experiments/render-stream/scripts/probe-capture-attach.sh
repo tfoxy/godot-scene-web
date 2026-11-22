@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Rendered late-load evidence, standby counters, and resident detach/attach browser proof.
 # Uses runner-owned projects; never changes the source fixtures or capture implementation.
-# Usage: probe-capture-attach.sh --out DIR [--gsw-bundle DIR] [--cycle [--sabotage-detach]]
+# Usage: probe-capture-attach.sh --out DIR [--gsw-bundle DIR] [--cycle [--sabotage-detach]] [--resources] [--extension FILE]
 # Prerequisites: build-capture.sh. Default replay also needs receiver --import + build-rs-core-ext.sh.
 # --cycle requires --gsw-bundle (build-rs-core.sh + gate7-tool.ts gsw-bundle) and Python Pillow.
 # This is correctness evidence, not a timing A/B.
@@ -13,20 +13,30 @@ OUT=""
 BUNDLE=""
 CYCLE=0
 SABOTAGE_DETACH=0
+RESOURCES=0
+PROBE_CALIBRATION=""
+PROBE_EXTENSION=""
 while [ "$#" -gt 0 ]; do
 	case "$1" in
 	--out) OUT="$2"; shift 2 ;;
 	--gsw-bundle) BUNDLE="$(realpath "$2")"; shift 2 ;;
+	--calibration) PROBE_CALIBRATION="$(realpath "$2")"; shift 2 ;;
+	--extension) PROBE_EXTENSION="$(realpath "$2")"; shift 2 ;;
 	--cycle) CYCLE=1; shift ;;
+	--resources) RESOURCES=1; CYCLE=1; shift ;;
 	--sabotage-detach) SABOTAGE_DETACH=1; shift ;;
 	--help|-h) sed -n '2,6p' "$0"; exit 0 ;;
 	*) echo "unknown argument: $1" >&2; exit 2 ;;
 	esac
 done
 [ -n "$OUT" ] || { echo '--out is required' >&2; exit 2; }
-[ -f "$EXPERIMENT_DIR/capture/build/librender_stream_capture.so" ] || {
+if [ -n "$PROBE_EXTENSION" ]; then
+	[ -f "$PROBE_EXTENSION" ] || { echo "missing extension: $PROBE_EXTENSION" >&2; exit 2; }
+else
+	[ -f "$EXPERIMENT_DIR/capture/build/librender_stream_capture.so" ] || {
 	echo 'run build-capture.sh first' >&2; exit 2;
-}
+	}
+fi
 if [ "$CYCLE" != 1 ] && [ ! -f "$EXPERIMENT_DIR/receiver/ext/build/librs_core_ext.so" ]; then
 	echo 'run the receiver import and build-rs-core-ext.sh first' >&2; exit 2
 fi
@@ -43,8 +53,8 @@ OUT="$(realpath -m "$OUT")"
 [ ! -e "$OUT" ] || { echo "output already exists: $OUT" >&2; exit 2; }
 mkdir -p "$OUT"
 BINARY="$HOME/.cache/godot-render-stream/templates/4.5.1-stable/linux_release.x86_64"
-EXTENSION="$EXPERIMENT_DIR/capture/build/render_stream_capture.gdextension"
-CALIBRATION="$EXPERIMENT_DIR/calibration/godot-4.5.1-stable-linux-release.json"
+EXTENSION="${PROBE_EXTENSION:-$EXPERIMENT_DIR/capture/build/render_stream_capture.gdextension}"
+CALIBRATION="${PROBE_CALIBRATION:-$EXPERIMENT_DIR/calibration/godot-4.5.1-stable-linux-release.json}"
 RECEIVER_DIR="$EXPERIMENT_DIR/receiver"
 FIXTURE_DIR=""
 HEADLESS_TIMEOUT_S=120
@@ -80,12 +90,18 @@ if [ "$CYCLE" = 1 ]; then
 	mkdir -p "$fixture" "$OUT/resident/evidence"
 	cp "$EXPERIMENT_DIR/fixtures/live-swap/loader.gd" "$fixture/"
 	cp "$SCRIPT_DIR/lib/resident-attach-probe.gd" "$fixture/resident_probe.gd"
+	if [ "$RESOURCES" = 1 ]; then
+		cp "$SCRIPT_DIR/lib/late-attach-resources.gd" "$fixture/late_resources.gd"
+	fi
 	python3 - "$EXPERIMENT_DIR/fixtures/live-swap/project.godot" "$fixture" <<'PYPROJECT'
 from pathlib import Path
 import sys
 source, dest = Path(sys.argv[1]), Path(sys.argv[2])
 project = source.read_text().replace('res://live_swap.tscn', 'res://main.tscn')
+project = project.replace('GrcLoader="*res://loader.gd"', '')
 project = project.replace('SwapDriver="*res://swap_driver.gd"', 'ResidentProbe="*res://resident_probe.gd"')
+if (dest / 'late_resources.gd').exists():
+    project = project.replace('res://resident_probe.gd', 'res://late_resources.gd')
 (dest / 'project.godot').write_text(project)
 (dest / 'main.tscn').write_text('[gd_scene format=3]\n\n[node name="Main" type="Node2D"]\n')
 PYPROJECT
@@ -96,9 +112,11 @@ PYPROJECT
 		echo "resident probe: fixture import failed; see import/stdout.log" >&2; exit 1
 	fi
 	gs_start 640 360 "$OUT/gamescope-resident"
-	LEG_ENV=(GRC_EXTENSION="$EXTENSION" GRC_CALIBRATION="$CALIBRATION" GRC_MODE=standby
-		GRC_ADOPT=arm GRC_UNKNOWN_ITEM=skip GRC_STREAM_VERSION=12 GRC_VALIDATION_LOG=off
-		GRC_TEXTURE_WORKERS=2 GRC_TEXTURE_WORKER_MIN_BYTES=0
+	RESIDENT_PROTOCOL=12
+	if [ "$RESOURCES" = 1 ]; then RESIDENT_PROTOCOL=16; fi
+	LEG_ENV=(GRC_EXTENSION="$EXTENSION" GRC_CALIBRATION="$CALIBRATION" GRC_MODE=detached
+		GRC_ADOPT=arm GRC_UNKNOWN_ITEM=skip GRC_STREAM_VERSION="$RESIDENT_PROTOCOL" GRC_VALIDATION_LOG=off
+		GRC_PARTICLES=on GRC_TEXTURE_WORKERS=2 GRC_TEXTURE_WORKER_MIN_BYTES=0
 		GRC_EVIDENCE_DIR="$OUT/resident/evidence" GRC_LIVE_LISTEN="127.0.0.1:0"
 		GRC_LIVE_ALLOWED_ORIGINS="http://127.0.0.1:$GATE7_HARNESS_PORT"
 		RS_RESIDENT_OUT="$OUT/resident" RS_RESIDENT_SKIP_DETACH="$SABOTAGE_DETACH" XDG_DATA_HOME="$OUT/resident/xdg-data")
@@ -132,7 +150,7 @@ info = json.loads(Path(sys.argv[1]).read_text())['info']
 Path(sys.argv[2], 'token').write_text(info['token'])
 Path(sys.argv[2], 'url').write_text(info['listen'])
 PYTOKEN
-		LEG_ENV=(RS_RECEIVER_MODE=live RS_RECEIVER_PROTOCOL=12
+		LEG_ENV=(RS_RECEIVER_MODE=live RS_RECEIVER_PROTOCOL="$RESIDENT_PROTOCOL"
 			RS_RECEIVER_URL="ws://$(cat "$dir/url")/render-stream"
 			RS_RECEIVER_TOKEN_FILE="$dir/token" RS_RECEIVER_OUT="$dir/applied.json"
 			RS_RECEIVER_LIVE_STOP_S=1 RS_RECEIVER_SHOT_FINAL=1)
@@ -150,6 +168,9 @@ PYTOKEN
 	RESIDENT_RUNNER_PID=""
 	[ "$(cat "$OUT/resident/host/exit-code.txt")" = 0 ]
 	legs_run_checker python3 "$SCRIPT_DIR/lib/check-attach-resident.py" "$OUT/resident"
+	if [ "$RESOURCES" = 1 ]; then
+		legs_run_checker python3 "$SCRIPT_DIR/lib/check-late-attach-resources.py" "$OUT/resident"
+	fi
 	echo "probe-capture-attach: resident evidence $OUT"
 	exit 0
 fi
