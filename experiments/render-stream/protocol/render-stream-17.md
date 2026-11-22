@@ -111,6 +111,9 @@ name an older start; the client does not restart them at receipt.
 | -------------------------------------------------------------------------- | --------------- | ----------------------------------- | ------ | ------- |
 | `position`                                                                 | Vector2         | `position.x`, `position.y`          | yes    | yes     |
 | `position:x`, `position:y`                                                 | number          | named component                     | yes    | yes     |
+| `global_position`                                                        | Vector2         | `position.x`, `position.y`          | yes    | restricted |
+| `global_position:x`, `global_position:y`                                | number          | named position component            | restricted | restricted |
+| `rotation_degrees`                                                        | number, degrees | `rotation`                          | yes    | yes     |
 | `rotation`                                                                 | number, radians | `rotation`                          | yes    | yes     |
 | `scale`                                                                    | Vector2         | `scale.x`, `scale.y`                | yes    | yes     |
 | `scale:x`, `scale:y`                                                       | number          | named component                     | yes    | yes     |
@@ -121,7 +124,7 @@ name an older start; the client does not restart them at receipt.
 | `self_modulate:r`, `self_modulate:g`, `self_modulate:b`, `self_modulate:a` | number          | named color component               | yes    | yes     |
 
 Only the exact indexed property spellings above are accepted. `rotation:x`,
-`position:a`, `global_position`, `rotation_degrees`, `pivot_offset`, arbitrary
+`position:a`, `pivot_offset`, arbitrary
 properties and deeper paths are unsupported. A Control's `pivot_offset` is a
 **host baseline component**, needed for transform reconstruction, not tweenable
 in v1. Values must be finite and match the property's type and arity. No automatic
@@ -130,6 +133,35 @@ intermediate easing overshoot occurs. Relative tweens must be announced with
 absolute endpoints; loops, pause, speed changes and callbacks are not inferred.
 The producer cancels/re-announces when its finite schedule no longer describes
 what the game is doing.
+
+#### As built (aliases)
+
+These are host-API aliases only. Capture rewrites `rotation_degrees` to
+`rotation`, multiplying `to` and an explicit `from` by π/180 in double precision
+before the existing finite f32 check. This linear map preserves easing.
+
+Capture rewrites `global_position` to `position`, mapping `to` and an explicit
+`from` through the inverse of the parent's global transform read at announcement.
+The parent transform is identity for a top-level node (`is_set_as_top_level`) or
+a parent that is not a CanvasItem. A singular parent basis is unsupported.
+An omitted `from` stays omitted: the client captures the displayed local value
+at the step's start. On Control, global-position aliases require the Control's
+own rotation to be exactly 0 and scale exactly (1,1) at announcement; otherwise
+its pivot-adjusted global origin can differ from `position`.
+
+`global_position:x` and `global_position:y` become `position:x` and `position:y`
+only when both off-diagonal terms of the parent's basis are exactly 0. Each
+endpoint component maps through that axis's scale and origin. A rotated or
+otherwise non-axis-aligned parent would mix local components and is unsupported.
+All these restrictions drop the step as `unsupported-property` with unchanged
+counters. Converted steps count as accepted steps.
+
+The affine conversion preserves interpolation while the parent remains fixed.
+An ancestor that moves during the tween is not followed; playback remains
+approximate, like the rest of /17. Claims, coalescing and playback see only
+canonical properties. Wire keys, property spellings and encoded bytes are
+identical to announcing the canonical property with pre-converted endpoints,
+so no protocol version bump or golden update is needed.
 
 `start_ms` already flattens chain, parallel, interval and delay into an offset
 from `begin_us`. Convert milliseconds to integer microseconds by rounding to the
@@ -185,11 +217,14 @@ A begin and cancel have these ordered key sets:
 ```
 {"op":"begin","tween_id":<decimal string>,"item":<stream item id>,
  "order":<int>=1>,"begin_us":<int>=0>,"end_us":<int>=0>,
- "steps":[{"property":<supported spelling>,"start_us":<int>=0>,
+ "steps":[{"property":<canonical supported spelling>,"start_us":<int>=0>,
            "duration_us":<int>=0>,"trans":<int 0..11>,"ease":<int 0..3>,
            "from":null|<float offset>,"to":<float offset>}...]}
 {"op":"cancel","tween_id":<decimal string>}
 ```
+
+Host-API alias spellings are invalid on the wire; only their canonical properties
+are supported here.
 
 `end_us` is `begin_us + max(start_us + duration_us)` over the accepted steps.
 `steps` is non-empty and preserves API array order after filtering. All timing
@@ -238,6 +273,13 @@ It also makes unowned components and partial handovers exact to the host snapsho
 No poses are read or emitted for a connection's unknown late-join tweens.
 
 ### Association, coalescing and lifetime
+
+As built, a live CanvasItem known to the mirror but not yet published can be announced in its
+creation frame. The host validates the API call immediately, retains its original `begin_us` and
+`order`, and resolves publication once at the next main-thread snapshot. Its pose baseline comes
+from that snapshot. A freed target drops as `target-gone`; a still unpublished target drops as
+`unpublished-item`. Cancellation before resolution removes the begin without a wire event.
+Viewer eligibility remains that of the API call. Wire bytes are unchanged.
 
 - Omit the record when both `events` and `poses` are empty. Empty `events` with
   poses is legal. A cancel-only record has `poses:[]` and `blocks:[]` if its item
@@ -502,7 +544,9 @@ var native_tween: Tween = motion.play()
 ```
 
 `property(path, to, duration, trans, ease, delay, from)` uses seconds for duration
-and delay, radians for rotation, and native Godot values for vectors and colors.
+and delay, radians for `rotation`, degrees for `rotation_degrees`, and native
+Godot values for vectors and colors. Global-position aliases take global coordinates;
+capture converts them under the restrictions above.
 It serializes offsets/durations in milliseconds. `from` defaults to absent, so
 Godot and the client sample the property's value at that step's start. Transitions
 and easing use Godot enums; the defaults are Linear and InOut. Endpoints are

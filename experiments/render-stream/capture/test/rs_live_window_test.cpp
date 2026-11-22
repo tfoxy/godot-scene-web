@@ -1041,10 +1041,10 @@ struct WideRig {
   explicit WideRig(int window, LiveConfig config = LiveConfig(), int version = 18,
                    const char *stage = "submitted")
       : hub(&transport, std::move(config),
-            make_template(version == 18 ? ProtocolVersion::V18
+            make_template(version == 19 ? ProtocolVersion::V19 : version == 18 ? ProtocolVersion::V18
                           : version == 17 ? ProtocolVersion::V17 : ProtocolVersion::V16,
                           Delivery::OutOfBand)) {
-    hub.on_event(opened(1, version == 18 ? kSubprotocolV18 : version == 17 ? kSubprotocolV17 : kSubprotocolV16, 0), 0);
+    hub.on_event(opened(1, version == 19 ? "render-stream.19" : version == 18 ? kSubprotocolV18 : version == 17 ? kSubprotocolV17 : kSubprotocolV16, 0), 0);
     hub.on_event(text(1, hello(version, stage, window), 0), 0);
     sid = hub.summaries().at(0).stream_id;
   }
@@ -1060,14 +1060,17 @@ struct WideRig {
   ConnectionSummary summary() const { return hub.summaries().at(0); }
 };
 
-void test_v18_availability() {
+void test_v18_availability(int host_version = 18) {
   grc::rs::Gate8Policy policy;
   std::string error;
-  check(grc::rs::parse_gate8_policy("18", nullptr, nullptr, nullptr, &policy, &error),
-        "availability: /18 host policy parses");
+  check(grc::rs::parse_gate8_policy(host_version == 19 ? "19" : "18", nullptr, nullptr, nullptr, &policy, &error),
+        "availability: selected host policy parses");
   const auto protocols = grc::rs::gate8_live_subprotocols(policy);
-  check(protocols == std::vector<std::string>{kSubprotocolV18, kSubprotocolV17, kSubprotocolV16},
-        "availability: /18 host prefers .18 and keeps .17 and .16");
+  const auto expected = host_version == 19
+      ? std::vector<std::string>{"render-stream.19", kSubprotocolV18, kSubprotocolV17, kSubprotocolV16}
+      : std::vector<std::string>{kSubprotocolV18, kSubprotocolV17, kSubprotocolV16};
+  check(protocols == expected,
+        "availability: selected host offers exact descending version range");
   FakeTransport transport;
   LiveConfig config;
   config.credit_window_max = 8;
@@ -1128,9 +1131,9 @@ void test_v18_availability() {
         "availability: older connections retain their telemetry shape");
 }
 
-void test_wide_window_adapts_and_sustains() {
+void test_wide_window_adapts_and_sustains(int version = 18) {
   for (int grant : {4, 8}) {
-    WideRig rig(grant);
+    WideRig rig(grant, LiveConfig(), version);
     rig.step();
     rig.step();
     rig.step();
@@ -1280,8 +1283,8 @@ void draw_pending(WideRig &rig, std::uint64_t &acked, const char *stage = "submi
   }
 }
 
-void test_draw_pacing_settles_and_recovers() {
-  WideRig rig(8);
+void test_draw_pacing_settles_and_recovers(int version = 18) {
+  WideRig rig(8, LiveConfig(), version);
   std::uint64_t acked = 0;
   for (int n = 0; n < 120; ++n) {
     rig.step();
@@ -1331,11 +1334,11 @@ void test_draw_pacing_settles_and_recovers() {
   check(rig.summary().sent - recovered == 60, "pace: recovered host sends every frame");
   check(has(rig.hub.summary_json(), "\"pace_period_us\": 0") &&
             has(rig.hub.summary_json(), "\"coalesced_share\": 0"),
-        "pace: /18 summary exposes pacing metrics");
+        "pace: wide-window version exposes pacing metrics");
 }
 
-void test_draw_pacing_is_per_connection() {
-  WideRig rig(8);
+void test_draw_pacing_is_per_connection(int version = 18) {
+  WideRig rig(8, LiveConfig(), version);
   rig.hub.on_event(opened(2, kSubprotocolV18, 0), 0);
   rig.hub.on_event(text(2, hello(18, "submitted", 8), 0), 0);
   const auto sid2 = rig.hub.summaries().at(1).stream_id;
@@ -1462,6 +1465,7 @@ void test_backlog_sent_frames() {
 int main(int argc, char **argv) {
   if (argc == 2 && std::string(argv[1]) == "--availability-only") {
     test_v18_availability();
+    test_v18_availability(19);
     std::printf("rs18_availability: %d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
   }
@@ -1475,9 +1479,12 @@ int main(int argc, char **argv) {
   grc::make_directories(std::string(GRC_TEST_TMP_DIR) + "/window");
   grc::make_directories(std::string(GRC_TEST_TMP_DIR) + "/w2");
   test_draw_pacing_settles_and_recovers();
+  test_draw_pacing_settles_and_recovers(19);
   test_draw_pacing_floor_and_ack_rules();
   test_draw_pacing_is_per_connection();
+  test_draw_pacing_is_per_connection(19);
   test_wide_window_adapts_and_sustains();
+  test_wide_window_adapts_and_sustains(19);
   test_wide_window_measures_callback_period();
   test_wide_stale_coalesce_repeats();
   test_wide_window_caps_and_shrinks();

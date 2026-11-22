@@ -1,6 +1,7 @@
 #include "rs_tweens.h"
 #include "rs2_codec.h"
 #include <cstdio>
+#include <cmath>
 #include <fstream>
 #include <limits>
 #include <iterator>
@@ -31,10 +32,75 @@ std::uint64_t drop(const Host &h, const char *reason) {
   auto it = h.stats().drops_by_reason.find(reason);
   return it == h.stats().drops_by_reason.end() ? 0 : it->second;
 }
+void alias_tests() {
+  Pose pose; pose.item=7;
+  Resolve resolve=[&](std::uint64_t,Pose *out) { *out=pose; return std::string(); };
+  const auto record=[&](Value::Array steps) {
+    Host h; h.grant(1); h.begin(begin(1,steps),1000,resolve);
+    return h.take(1,h.snapshot(1000,resolve));
+  };
+  const auto equivalent=[&](const char *alias,Value to,Value from,
+      const char *canonical,Value local_to,Value local_from,bool explicit_from) {
+    auto a=step(alias,to), b=step(canonical,local_to);
+    if(explicit_from) { a["from"]=from; b["from"]=local_from; }
+    auto actual=record({a}), expected=record({b});
+    check(actual.events.size()==1,"alias accepted on each node kind");
+    check(encode(actual,1,1,1000)==encode(expected,1,1,1000),
+      "alias record byte-identical to pre-converted canonical announcement");
+    if(!actual.events.empty()) {
+      check(actual.events[0].steps[0].from.has_value()==explicit_from,
+        "alias preserves explicit versus omitted from");
+      check(actual.events[0].steps[0].property==canonical,"canonical spelling before delivery");
+    }
+  };
+  for(auto kind : {Kind::Node2D,Kind::Control}) {
+    pose.kind=kind;
+    for(bool from : {false,true}) {
+      equivalent("rotation_degrees",180.0,-90.0,"rotation",std::acos(-1.0),-std::acos(-1.0)/2,from);
+      // Translation, nonuniform scale and a quarter-turn rotation.
+      pose.parent_global={0,2,-4,0,10,20};
+      equivalent("global_position",Vector2{-6,26},Vector2{18,18},
+        "position",Vector2{3,4},Vector2{-1,-2},from);
+      pose.parent_global={-2,0,0,4,10,20};
+      equivalent("global_position:x",4.0,12.0,"position:x",3.0,-1.0,from);
+      equivalent("global_position:y",36.0,12.0,"position:y",4.0,-2.0,from);
+    }
+    pose.parent_global={0,2,-4,0,10,20};
+    for(const char *name : {"global_position:x","global_position:y"})
+      check(record({step(name,3.0)}).empty(),"rotated parent refuses component alias");
+    pose.parent_global={0,0,0,2,0,0};
+    check(record({step("global_position",Vector2{3,4})}).empty(),"singular parent refuses vector alias");
+    check(record({step("global_position:y",3.0)}).empty(),"singular parent refuses component alias");
+    // Identity context also covers top-level and non-CanvasItem parents (resolver tests below).
+    pose.parent_global={1,0,0,1,0,0};
+    equivalent("global_position",Vector2{3,4},Vector2{1,2},"position",Vector2{3,4},Vector2{1,2},true);
+  }
+  pose.global_position_supported=false;
+  for(const char *name : {"global_position","global_position:x","global_position:y"}) {
+    Host h; h.grant(1); h.begin(begin(1,{step(name,name==std::string("global_position") ?
+      Value(Vector2{3,4}) : Value(3.0))}),1000,resolve);
+    check(drop(h,"unsupported-property")==1 && h.stats().steps_accepted==0,
+      "nonidentity Control basis refuses every global alias with unchanged reason");
+  }
+  check(!record({step("rotation_degrees",180.0)}).empty(),"Control basis restriction applies only to global position");
+  pose.global_position_supported=true;
+  Host h; h.grant(1);
+  h.begin(begin(1,{step("global_position:x",3.0)}),1000,resolve);
+  h.begin(begin(2,{step("position:x",4.0)}),1000,resolve);
+  check(h.stats().steps_accepted==2 && h.stats().claims_replaced==1,
+    "aliases count accepted steps and collide with canonical claims");
+  check(record({step("rotation_degrees",std::numeric_limits<double>::infinity())}).empty(),
+    "nonfinite degree endpoint refused");
+  check(record({step("rotation_degrees",std::numeric_limits<double>::max())}).empty(),
+    "converted degrees still require f32 range");
+  // Validate after conversion: the degree value itself need not fit f32.
+  check(!record({step("rotation_degrees",1e39)}).empty(),"degree conversion occurs in double before f32 check");
+}
 void run() {
   using namespace grc::rs2;
   const auto magic17 = magic(static_cast<ProtocolVersion>(15));
   check(magic17[3] == 'H',"/17 has GRSH magic");
+  check(magic(ProtocolVersion::V19)[3] == 'J', "/19 has GRSJ magic");
   Pose pose; pose.item = 7;
   int lookups = 0;
   std::string resolution;
@@ -130,7 +196,7 @@ void run() {
   for(int i=0;i<5;++i) {
     auto s=step();
     if(i==0)s["extra"]=1;
-    if(i==1)s["property"]="rotation_degrees";
+    if(i==1)s["property"]="rotation:x";
     if(i==2)s["to"]=Value::Array{1,2};
     if(i==3)s["duration_ms"]=-1;
     if(i==4)s["ease"]="unknown";
@@ -278,4 +344,5 @@ void run() {
 }
 }
 int tween_host_tests();
-int main() { failures += tween_host_tests(); run(); std::printf("rs_tweens: %d checks, %d failures\n",checks,failures); return failures?1:0; }
+int material_tween_tests();
+int main() { failures += tween_host_tests(); failures += material_tween_tests(); run(); alias_tests(); std::printf("rs_tweens: %d checks, %d failures\n",checks,failures); return failures?1:0; }

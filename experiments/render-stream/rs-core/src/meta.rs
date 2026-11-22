@@ -4904,7 +4904,8 @@ pub fn decode_record_with(
         if version < 17 {
             return Err(Error::new("meta-schema", "tween below /17"));
         }
-        return crate::tweens::decode(record, offset, bufs).map(|r| Decoded::Tween(Box::new(r)));
+        return crate::tweens::decode_version(record, offset, version, bufs)
+            .map(|r| Decoded::Tween(Box::new(r)));
     }
     if fast_path
         && frame.meta.starts_with(b"{\"type\":\"transaction\",")

@@ -20,7 +20,7 @@ const tests = require(path);
 const names = Object.keys(tests).filter((name) =>
   name.startsWith("regression_"),
 );
-assert.equal(names.length, 5);
+assert.equal(names.length, 7);
 let passed = 0;
 let failed = 0;
 for (const name of names) {

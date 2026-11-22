@@ -113,6 +113,12 @@ tweens::Value tween_value(GDExtensionConstVariantPtr v, int depth = 0) {
   if (type == GDEXTENSION_VARIANT_TYPE_VECTOR2) {
     grc::Vector2 n{}; f.to[type](&n,const_cast<void *>(v)); return tweens::Vector2{n.x,n.y};
   }
+  if (type == GDEXTENSION_VARIANT_TYPE_VECTOR3) {
+    grc::Vector3 n{}; f.to[type](&n,const_cast<void *>(v)); return tweens::Vector3{n.x,n.y,n.z};
+  }
+  if (type == GDEXTENSION_VARIANT_TYPE_VECTOR4) {
+    grc::Vector4 n{}; f.to[type](&n,const_cast<void *>(v)); return tweens::Vector4{n.x,n.y,n.z,n.w};
+  }
   if (type == GDEXTENSION_VARIANT_TYPE_COLOR) {
     grc::Color n{}; f.to[type](&n,const_cast<void *>(v)); return tweens::Color{n.r,n.g,n.b,n.a};
   }
@@ -240,6 +246,7 @@ bool gd_capture_register(Invoke invoke, bool singleton, std::string *why,
   if (!missing.empty()) { *why = "capture-class-unavailable: " + missing; return false; }
   for (auto t : {kInt, kBool, kFloat, kString, kDictionary, GDEXTENSION_VARIANT_TYPE_OBJECT,
                  GDEXTENSION_VARIANT_TYPE_STRING_NAME, GDEXTENSION_VARIANT_TYPE_VECTOR2,
+                 GDEXTENSION_VARIANT_TYPE_VECTOR3, GDEXTENSION_VARIANT_TYPE_VECTOR4,
                  GDEXTENSION_VARIANT_TYPE_COLOR}) {
     f.from[t] = g_iface.get_variant_from_type_constructor(t);
     f.to[t] = g_iface.get_variant_to_type_constructor(t);

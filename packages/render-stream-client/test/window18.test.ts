@@ -73,6 +73,29 @@ describe("render-stream/18 credit range", () => {
       clientHello({ ...facts, protocol: 16, creditWindow: 3 }),
     ).toThrow(/creditWindow/);
   });
+  it("requires an explicit /19 endpoint for material playback", () => {
+    expect(validateEndpoint({ ...ENDPOINT, protocol: 19 }).protocol).toBe(19);
+    for (const protocol of [17, 18, 19] as const) {
+      for (const enabled of [false, true]) {
+        expect(clientProtocol(protocol, undefined, true, enabled)).toBe(
+          protocol,
+        );
+        const hello = clientHello({
+          protocol,
+          clientTweens: enabled,
+          creditWindow: 2,
+          token: null,
+          backing: [640, 360],
+          css: [640, 360],
+          dprMilli: 1000,
+          gpuFormats: "none",
+        });
+        expect(hello.protocol).toBe(`render-stream/${protocol}`);
+        expect(hello.client_tweens).toBe(enabled ? true : undefined);
+        if (enabled) expect(Object.keys(hello).at(-1)).toBe("client_tweens");
+      }
+    }
+  });
   it("carries the last tween hello key on /18 and forbids tween downgrades", () => {
     expect(clientProtocol(18, undefined, false, true)).toBe(18);
     expect(clientProtocol(17, undefined, false, true)).toBe(17);
@@ -101,7 +124,7 @@ describe("render-stream/18 credit range", () => {
     ).toThrow(/clientTweens/);
   });
   it.each([
-    17, 18,
+    17, 18, 19,
   ] as const)("sends the default window with tweens on /%i", (protocol) => {
     let transport: FakeTransport | undefined;
     const loop = new StreamLoop({
@@ -123,7 +146,7 @@ describe("render-stream/18 credit range", () => {
     transport!.on.open();
     expect(transport!.sent[0]).toMatchObject({
       protocol: `render-stream/${protocol}`,
-      credit_window: protocol === 18 ? 8 : 2,
+      credit_window: protocol >= 18 ? 8 : 2,
       client_tweens: true,
     });
     loop.dispose();

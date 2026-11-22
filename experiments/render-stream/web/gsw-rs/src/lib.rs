@@ -403,7 +403,9 @@ fn parse_options(json: &str) -> Result<Opts, String> {
     }
     o.summary_log = json.contains("\"log\":\"summary\"");
     o.client_tweens = json.contains("\"client_tweens\":true");
-    o.live_protocol = if json.contains("\"live_protocol\":18") {
+    o.live_protocol = if json.contains("\"live_protocol\":19") {
+        19
+    } else if json.contains("\"live_protocol\":18") {
         18
     } else if json.contains("\"live_protocol\":17") {
         17
@@ -3287,7 +3289,12 @@ impl GswRs {
         };
         let d = &a.tweens.diagnostics;
         let (live, held) = a.tweens.counts();
-        format!("{{\"begins\":{},\"cancels\":{},\"claims_replaced\":{},\"completed\":{},\"retired_unowned\":{},\"unknown_cancels\":{},\"backward_anchor_holds\":{},\"tween_redraws\":{},\"live_tweens\":{},\"held_components\":{}}}",d.begins,d.cancels,d.claims_replaced,d.completed,d.retired_unowned,d.unknown_cancels,d.backward_anchor_holds,d.tween_redraws,live,held)
+        let mut json = format!("{{\"begins\":{},\"cancels\":{},\"claims_replaced\":{},\"completed\":{},\"retired_unowned\":{},\"unknown_cancels\":{},\"backward_anchor_holds\":{},\"tween_redraws\":{},\"live_tweens\":{},\"held_components\":{}}}",d.begins,d.cancels,d.claims_replaced,d.completed,d.retired_unowned,d.unknown_cancels,d.backward_anchor_holds,d.tween_redraws,live,held);
+        if self.opts.live_protocol >= 19 {
+            json.pop();
+            json.push_str(&format!(",\"material_begins\":{},\"material_retired\":{},\"live_material_tweens\":{},\"held_material_components\":{}}}", d.material_begins, d.material_retired, a.tweens.materials.live_len(), a.tweens.materials.held_count()));
+        }
+        json
     }
     /// TAG2 (§3.2): the client's override table, whole (packed: an id each, 16 floats each:
     /// 6 affine, 4 modulate, 1 visible, 1 frozen, 4 clip outsets).

@@ -2,7 +2,7 @@
 //!
 //!   rs-core-check goldens [--dir experiments/render-stream/protocol] [--only 6]
 //!                         [--sabotage skip-payload-hash|early-prune|no-predict-reset]
-//!   rs-core-check transcode --to 12|13|14|16 [--stale] [--zr-sabotage overrun|short-run] <in> <out>
+//!   rs-core-check transcode --to 12|13|14|16|18 [--stale] [--zr-sabotage overrun|short-run] <in> <out>
 //!   rs-core-check transcode --roundtrip <recording.rs12>...
 //!   rs-core-check diff --inputs <inputs.json> [--out <dir>] [--dump <input>:<seq>]
 //!   rs-core-check bench (<recording> | --inputs <inputs.json>) [--repeats N] [--digest inline|deferred|none]
@@ -23,7 +23,7 @@
 //!                      [--damage <summary.json>] [--damage-every N] [--pin-time] [--damage-compare-naive] [--draws <dir>] [--cover off] [--noop off] [--tiles off]
 //!   rs-core-check motion <recording> [--store <dir>] [--why]
 //!
-//! `goldens` runs golden-2 ... golden-16 (exits non-zero on any failing check). `transcode` (W13a,
+//! `goldens` runs golden-2 ... golden-19 (exits non-zero on any failing check). `transcode` (W13a,
 //! render-stream-13.md "Forms and transcode") converts a /12 recording to /13 or back, refusing an
 //! invalid input with the decoder's error code. ID3 (render-stream-14.md "Tools"): `--to 13` of a
 //! /14 recording drops its item_meta v2 columns and grant names (and the records and re-stamped
@@ -98,8 +98,8 @@ static GLOBAL: Counting = Counting;
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage:\n  rs-core-check goldens [--dir <protocol dir>] [--only <2..17>] [--sabotage skip-payload-hash|early-prune|no-predict-reset]\n  \
-         rs-core-check transcode --to 12|13|14|16 [--stale] [--zr-sabotage overrun|short-run] <in> <out>\n  \
+        "usage:\n  rs-core-check goldens [--dir <protocol dir>] [--only <2..19>] [--sabotage skip-payload-hash|early-prune|no-predict-reset]\n  \
+         rs-core-check transcode --to 12|13|14|16|18 [--stale] [--zr-sabotage overrun|short-run] <in> <out>\n  \
          rs-core-check transcode --roundtrip <recording.rs12>...\n  \
          rs-core-check diff --inputs <inputs.json> [--out <dir>] [--dump <input>:<seq>]\n  \
          rs-core-check bench (<recording> | --inputs <inputs.json>) [--repeats N] [--digest inline|deferred|none]\n  \
@@ -645,6 +645,7 @@ fn cmd_transcode(args: &Args) -> ExitCode {
         Some("13") => 13u8,
         Some("14") => 14u8,
         Some("16") => 16u8,
+        Some("18") => 18u8,
         _ => return usage(),
     };
     let [input, output] = args.positional.as_slice() else {
@@ -675,7 +676,21 @@ fn cmd_transcode(args: &Args) -> ExitCode {
     // size_override keys dropped), then on as a /14 input.
     let from15 = wire::version_of_magic(&data) == Some(15);
     let from14 = wire::version_of_magic(&data) == Some(14);
-    let got = if to == 16 && wire::version_of_magic(&data) == Some(17) {
+    let got = if wire::version_of_magic(&data) == Some(19) {
+        if to == 18 {
+            render_stream_core::tweens::to18_from19(&data)
+        } else {
+            Err(wire::Error::new(
+                "bad-magic",
+                "the /19 transcode target is /18",
+            ))
+        }
+    } else if to == 18 {
+        Err(wire::Error::new(
+            "bad-magic",
+            "the /18 transcode source is /19",
+        ))
+    } else if to == 16 && wire::version_of_magic(&data) == Some(17) {
         render_stream_core::tweens::to16(&data)
     } else if to == 16 || wire::version_of_magic(&data) == Some(17) {
         Err(wire::Error::new("bad-magic", "the /17 transcode target is /16"))

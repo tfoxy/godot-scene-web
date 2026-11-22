@@ -16,10 +16,16 @@ class TweenCore extends FakeCore {
     return this.active;
   }
   tweenDiagnostics() {
-    return { live_tweens: Number(this.active) };
+    return {
+      live_tweens: Number(this.active),
+      material_begins: 2,
+      material_retired: 1,
+      live_material_tweens: Number(this.active),
+      held_material_components: this.active ? 3 : 0,
+    };
   }
 }
-function streaming() {
+function streaming(protocol: 17 | 19 = 17) {
   const core = new TweenCore();
   const h = harness(
     2,
@@ -30,7 +36,7 @@ function streaming() {
       resourceHoldMs: Infinity,
     },
     core,
-    { ...ENDPOINT, protocol: 17 },
+    { ...ENDPOINT, protocol },
   );
   h.loop.connect();
   h.last().on.open();
@@ -42,6 +48,22 @@ function streaming() {
 }
 
 describe("client tweens", () => {
+  it("surfaces material diagnostics and drives the same ACK-free loop at /19", () => {
+    const h = streaming(19);
+    const acks = h.last().acks().slice();
+    h.clock.frame();
+    expect(h.loop.stats().clientTweens).toMatchObject({
+      material_begins: 2,
+      material_retired: 1,
+      live_material_tweens: 1,
+      held_material_components: 3,
+    });
+    expect(h.last().acks()).toEqual(acks);
+    h.core.active = false;
+    const ticks = h.core.ticks.length;
+    h.clock.frame();
+    expect(h.core.ticks).toHaveLength(ticks);
+  });
   it("keeps the Rust parity reference in sync with every Godot easing pair", () => {
     const rows = JSON.parse(
       readFileSync(

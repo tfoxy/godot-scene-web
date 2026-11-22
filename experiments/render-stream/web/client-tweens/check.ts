@@ -75,33 +75,48 @@ try {
   assert(provenance.ok, JSON.stringify(provenance));
   await page.evaluate(() => Reflect.get(window, "tweenCheck").start());
   writeFileSync(join(out, "start"), "start\n");
-  await page.waitForFunction(
-    () => {
-      const traces = Reflect.get(window, "tweenCheck").traces;
-      return (
-        traces.enabled.transactions.length > 28 &&
-        traces.disabled.transactions.length > 28
+  await page
+    .waitForFunction(
+      () => {
+        const traces = Reflect.get(window, "tweenCheck").traces;
+        return (
+          traces.enabled.transactions.length > 28 &&
+          traces.disabled.transactions.length > 28
+        );
+      },
+      null,
+      { timeout: 15000 },
+    )
+    .catch(async (error: unknown) => {
+      writeFileSync(
+        join(out, "timeout-traces.json"),
+        JSON.stringify(
+          await page.evaluate(() => {
+            const probe = Reflect.get(window, "tweenCheck");
+            return { traces: probe.traces, stats: probe.stats() };
+          }),
+        ),
       );
-    },
-    null,
-    { timeout: 15000 },
-  );
+      throw error;
+    });
   const result = (await page.evaluate(() => {
     const probe = Reflect.get(window, "tweenCheck");
     return {
       traces: probe.traces,
       stats: probe.stats(),
       recordings: probe.recordings(),
+      evidence: probe.evidence(),
     };
   })) as {
     traces: { enabled: Trace; disabled: Trace };
     stats: unknown[];
     recordings: number[][];
+    evidence: unknown;
   };
   // Recordings preserve host t_us and tween records byte-for-byte, without the wire coding envelope.
   for (const [i, label] of ["enabled", "disabled"].entries()) {
     writeFileSync(
-      join(out, `${label}.rs17`),
+      join(out, `${label}.rs19`),
       Buffer.from(result.recordings[i]),
     );
     const trace = result.traces[label as "enabled" | "disabled"];
@@ -119,28 +134,32 @@ try {
     JSON.stringify({ traces: result.traces, stats: result.stats }),
   );
   const { enabled, disabled } = result.traces;
-  const findRow = (trace: Trace, y: number) => {
-    const row = trace.draws[0].rows.findIndex(
-      (r) => r && Math.abs(r[4] - 70) < 0.01 && Math.abs(r[5] - y) < 0.01,
-    );
-    assert(row >= 0, `missing uploaded item at 70,${y}`);
+  const findRow = (trace: Trace, id: number | null) => {
+    assert(id !== null, "missing fixture item ID");
+    const row = trace.itemIds.indexOf(id);
+    assert(row >= 0 && trace.draws[0].rows[row], `missing uploaded item ${id}`);
     return row;
   };
-  const node = findRow(enabled, 90);
-  const control = findRow(enabled, 240);
-  const offNode = findRow(disabled, 90);
+  const node = findRow(enabled, enabled.motionId);
+  const control = findRow(enabled, enabled.controlId);
+  const offNode = findRow(disabled, disabled.motionId);
   const value = (d: Draw, row: number) => d.rows[row];
   const diff = (a: number[], b: number[]) =>
     Math.max(...a.map((v, i) => Math.abs(v - b[i])));
   const angle = (r: number[]) => Math.atan2(r[1], r[0]);
   const scale = (r: number[]) => Math.hypot(r[0], r[1]);
   const last = enabled.draws.at(-1)!;
-  check("two begins, cancel and completion from real capture", () => {
-    assert.equal(last.diag.begins, 2);
-    assert.equal(last.diag.cancels, 1);
-    assert.equal(last.diag.completed, 1);
-    assert(last.diag.tween_redraws > 0);
-  });
+  check(
+    "node and material begins, cancels and completions from real capture",
+    () => {
+      assert.equal(last.diag.begins, 8);
+      assert.equal(last.diag.cancels, 2);
+      assert.equal(last.diag.completed, 6);
+      assert.equal(last.diag.material_begins, 5);
+      assert.equal(last.diag.material_retired, 5);
+      assert(last.diag.tween_redraws > 0);
+    },
+  );
   const [hold] = enabled.holds;
   const held = enabled.draws.filter(
     (d) => d.at > hold.start + 50 && d.at < hold.end - 50,
@@ -168,8 +187,8 @@ try {
       );
       assert(
         diff(
-          first.host.find((it) => it.xform[5] < 150 && it.xform[4] > 50)!.xform,
-          end.host.find((it) => it.xform[5] < 150 && it.xform[4] > 50)!.xform,
+          first.host.find((it) => it.id === enabled.motionId)!.xform,
+          end.host.find((it) => it.id === enabled.motionId)!.xform,
         ) === 0,
       );
       for (const row of [node, control]) {
@@ -192,46 +211,195 @@ try {
       );
     },
   );
+  check("creation-frame node advances between transactions", () => {
+    const first = held[0],
+      end = held.at(-1)!;
+    assert(
+      first?.creationNode && end?.creationNode,
+      "missing creation-frame node",
+    );
+    assert(first.creationNode[4] > 25 && end.creationNode[4] < 480);
+    assert(
+      end.creationNode[4] - first.creationNode[4] > 1,
+      "creation-frame node did not advance",
+    );
+    assert.deepEqual(first.host, end.host);
+  });
+  check("creation-frame material advances between transactions", () => {
+    const first = held[0],
+      end = held.at(-1)!;
+    assert(first && end);
+    assert.deepEqual(first.materials, end.materials);
+    assert(
+      diff(first.tiles[6], end.tiles[6]) > 1,
+      "creation-frame material pixels unchanged",
+    );
+  });
+  check(
+    "global_position advances in global space under a translated scaled parent",
+    () => {
+      assert(held.length >= 3);
+      for (const d of held) {
+        const r = value(d, node);
+        assert(r[4] > 70 && r[4] < 500, `intermediate global x ${r[4]}`);
+        assert(
+          Math.abs(r[5] - (90 + ((r[4] - 70) * 10) / 430)) < 0.001,
+          `global trajectory ${r[4]},${r[5]}`,
+        );
+      }
+      const r = value(last, node);
+      assert(Math.abs(r[4] - 500) < 0.001 && Math.abs(r[5] - 100) < 0.001);
+    },
+  );
+  check("rotation_degrees advances as radians in the client", () => {
+    assert(held.length >= 3);
+    for (const d of held) {
+      const r = value(d, control);
+      const progress = (scale(r) - 1) / 0.4;
+      assert(progress > 0 && progress < 1);
+      assert(
+        Math.abs(angle(r) - -0.7 * progress) < 0.001,
+        `degree alias angle ${angle(r)} at progress ${progress}`,
+      );
+    }
+  });
   check(
     "disabled client keeps host poses and does not redraw during withheld interval",
     () => {
       assert.equal(offHeld.length, 0);
       assert(
         !disabled.draws.some(
-          (d, i) => i > 0 && d.seq === disabled.draws[i - 1].seq,
+          (d, i) =>
+            i > 0 &&
+            d.at >= disabled.startedAt &&
+            d.seq === disabled.draws[i - 1].seq,
         ),
       );
       for (const d of disabled.draws) {
         const row = value(d, offNode);
-        const host = d.host.find(
-          (it) =>
-            Math.abs(it.xform[5] - row[5]) < 0.01 &&
-            Math.abs(it.xform[4] - row[4]) < 0.01,
-        );
+        const host = d.host.find((it) => it.id === disabled.motionId);
         assert(host, `no host pose for disabled draw ${d.seq}`);
         assert(diff(row.slice(0, 6), host.xform) < 0.0001);
       }
     },
   );
+  check("tween-only redraws send no acknowledgments", () => {
+    assert(enabled.acks.length > 0);
+    assert.equal(
+      enabled.acks.filter(
+        (ack) => ack.at > hold.start + 50 && ack.at < hold.end - 50,
+      ).length,
+      0,
+    );
+  });
   check("no tween redraw after all tweens have retired", () => {
-    const completed = enabled.draws.findIndex((d) => d.diag.completed > 0);
+    const completed = enabled.draws.findIndex(
+      (d) => d.diag.completed > 0 && !d.active,
+    );
     assert(completed >= 0);
     const tail = enabled.draws.slice(completed);
     assert(tail.length > 3);
     assert.equal(new Set(tail.map((d) => d.seq)).size, tail.length);
   });
+  check(
+    "material uniforms advance at a fixed host baseline between transactions",
+    () => {
+      assert(held.length >= 3);
+      const first = held[0],
+        end = held.at(-1)!;
+      assert.equal(new Set(held.map((d) => d.seq)).size, 1);
+      assert.deepEqual(first.materials, end.materials);
+      const threshold = (d: Draw) =>
+        d.uniforms.find((u) => u.threshold > 0 && u.threshold < 0.99)
+          ?.threshold;
+      const a = threshold(first),
+        b = threshold(end);
+      assert(
+        a !== undefined && b !== undefined && a - b > 0.05,
+        `threshold ${a} -> ${b}`,
+      );
+      const shift = (d: Draw) => d.uniforms.find((u) => u.shift[0] > 0)?.shift;
+      const av = shift(first),
+        bv = shift(end);
+      assert(av && bv && bv[0] - av[0] > 0.02 && bv[1] - av[1] > 0.02);
+    },
+  );
+  check(
+    "dissolve pixels change for both shared users and only the tweened local instance",
+    () => {
+      const first = held[0],
+        end = held.at(-1)!;
+      assert(first && end);
+      const playback = enabled.draws.filter((d) => d.at >= enabled.startedAt);
+      assert(playback.length > 0);
+      for (const d of playback) {
+        assert(diff(d.tiles[0], d.tiles[1]) < 0.01, "shared users diverged");
+        assert(
+          diff(d.tiles[4], playback[0].tiles[4]) < 0.01,
+          "untweened twin changed",
+        );
+      }
+      for (const tile of [0, 1, 2, 3])
+        assert(
+          diff(first.tiles[tile], end.tiles[tile]) > 1,
+          `tile ${tile} pixels unchanged`,
+        );
+    },
+  );
+  check(
+    "extension translation coexists with material and node playback",
+    () => {
+      assert(
+        enabled.draws.some((d) =>
+          d.rows.some(
+            (r) =>
+              r && Math.abs(r[4] - 533) < 0.01 && Math.abs(r[5] - 10) < 0.01,
+          ),
+        ),
+      );
+      assert(
+        enabled.draws.every((d) =>
+          d.host.some(
+            (it) =>
+              Math.abs(it.xform[4] - 525) < 0.01 &&
+              Math.abs(it.xform[5] - 10) < 0.01,
+          ),
+        ),
+      );
+    },
+  );
+  check("disabled material playback uses only host pictures", () => {
+    assert.equal(offHeld.length, 0);
+    assert(!disabled.draws.some((d) => d.diag.material_begins > 0));
+    assert(
+      disabled.draws.some((d) => d.uniforms.some((u) => u.threshold < 0.99)),
+    );
+    assert(disabled.draws.some((d) => d.uniforms.some((u) => u.shift[0] > 0)));
+  });
+  check(
+    "refused shader keeps its fallback and reason while its tween retires",
+    () => {
+      assert(JSON.stringify(result.evidence).includes("gsw-shader-transpile"));
+      const playback = enabled.draws.filter((d) => d.at >= enabled.startedAt);
+      assert(playback.length > 0);
+      const first = playback[0];
+      for (const d of playback) assert(diff(d.tiles[5], first.tiles[5]) < 0.01);
+      assert.equal(last.diag.live_material_tweens, 0);
+    },
+  );
   const residuals: Record<string, unknown> = {};
-  for (const [name, key, rowIndex] of [
-    ["cancel", "cancels", control],
-    ["completion", "completed", node],
+  for (const [name, key, rowIndex, id] of [
+    ["cancel", "cancels", control, enabled.controlId],
+    ["completion", "completed", node, enabled.motionId],
   ] as const) {
     const index = enabled.draws.findIndex((d) => d.diag[key] > 0);
     check(`${name} hands over to the latest host baseline`, () => {
       assert(index > 0, `missing ${name}`);
       const d = enabled.draws[index];
       const r = value(d, rowIndex);
-      const host = d.host.find((it) => diff(it.xform, r.slice(0, 6)) < 0.0001);
+      const host = d.host.find((it) => it.id === id);
       assert(host, `handover xform differs from host for ${name}`);
+      assert(diff(host.xform, r.slice(0, 6)) < 0.0001);
       assert(diff(host.modulate, r.slice(6, 10)) < 0.0001);
     });
     if (index > 0) {
@@ -277,6 +445,69 @@ try {
     for (const phase of ["intermediate", "cancel", "completion"])
       assert(enabled.shots[phase]);
   });
+  for (const phase of ["cancel", "completion"] as const) {
+    check(`material ${phase} hands over to the drawn host parameters`, () => {
+      const d = enabled.draws.find((d) =>
+        phase === "cancel" ? d.diag.cancels > 0 : d.diag.material_retired >= 5,
+      );
+      assert(d);
+      for (const uniform of d.uniforms.filter(
+        (u) => phase === "completion" || u.shift[0] > 0,
+      )) {
+        assert(
+          d.materials.some((material) => {
+            const threshold = material.params.find(
+              (p) => p.name === "threshold",
+            )?.value;
+            const shift = material.params.find(
+              (p) => p.name === "shift",
+            )?.value;
+            return (
+              typeof threshold === "number" &&
+              Array.isArray(shift) &&
+              (phase === "cancel" ||
+                Math.abs(uniform.threshold - threshold) < 0.000001) &&
+              diff(uniform.shift, shift) < 0.000001
+            );
+          }),
+          `no host material baseline for ${JSON.stringify(uniform)}`,
+        );
+      }
+      assert(d.uniforms.length >= 3);
+    });
+  }
+  const materialResiduals = ["cancel", "completion"].map((phase) => {
+    const index = enabled.draws.findIndex((d) =>
+      phase === "cancel" ? d.diag.cancels > 0 : d.diag.material_retired >= 5,
+    );
+    const current = enabled.draws[index],
+      prior = enabled.draws[index - 1];
+    return {
+      phase,
+      at_ms: current?.at,
+      units: { threshold: "unitless", shift: "UV" },
+      max_threshold_delta_unitless:
+        current && prior
+          ? Math.max(
+              ...current.uniforms.map((u, i) =>
+                Math.abs(
+                  u.threshold - (prior.uniforms[i]?.threshold ?? u.threshold),
+                ),
+              ),
+            )
+          : null,
+      max_shift_delta_uv:
+        current && prior
+          ? Math.max(
+              ...current.uniforms.map((u, i) =>
+                diff(u.shift, prior.uniforms[i]?.shift ?? u.shift),
+              ),
+            )
+          : null,
+      before: prior?.uniforms,
+      after: current?.uniforms,
+    };
+  });
   const intervals = enabled.transactions
     .slice(1)
     .map((t, i) => (t.t_us - enabled.transactions[i].t_us) / 1000)
@@ -299,6 +530,8 @@ try {
     disabled_withheld_draws: offHeld.length,
     transaction_interval_median_ms: median,
     residuals,
+    material_residuals: materialResiduals,
+    shader_evidence: result.evidence,
     core: JSON.parse(readFileSync(join(out, "core/build.json"), "utf8")),
   };
   writeFileSync(join(out, "result.json"), JSON.stringify(summary, null, 2));

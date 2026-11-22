@@ -373,6 +373,23 @@ impl Applier {
             }
         }
         self.tweens.display.clone_from(&root.tweens.display);
+        self.tween_material_dirty.extend(
+            self.tweens
+                .materials
+                .display
+                .keys()
+                .chain(root.tweens.materials.display.keys())
+                .filter(|id| {
+                    self.tweens.materials.display.get(id) != root.tweens.materials.display.get(id)
+                })
+                .copied(),
+        );
+        self.tween_material_dirty.sort_unstable();
+        self.tween_material_dirty.dedup();
+        self.tweens
+            .materials
+            .display
+            .clone_from(&root.tweens.materials.display);
         self.sabotage = root.sabotage;
         self.pinned_shader_time = root.pinned_shader_time;
         self.delivery = root.delivery.clone();
@@ -692,6 +709,11 @@ impl SurfaceSet {
             pass.applier.inherit_options(root);
             pass.applier.configure_surface(e, root.viewport.clear);
             if tween_tick {
+                if !pass.applier.tween_material_dirty.is_empty() {
+                    pass.applier
+                        .refresh_bindings(state, &TxDelta::default(), &[], payloads);
+                    pass.applier.request_cover(false);
+                }
                 pass.applier.refresh_overrides(state, payloads);
             } else {
                 let d = pass.pending.take().unwrap_or_else(|| delta.clone());

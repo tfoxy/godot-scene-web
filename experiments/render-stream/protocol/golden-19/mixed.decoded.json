@@ -1,0 +1,86 @@
+{
+  "meta": {
+    "type": "tween",
+    "seq": 1,
+    "frame": 1,
+    "t_us": 0,
+    "events": [
+      {
+        "op": "begin",
+        "tween_id": "7001",
+        "material": 1,
+        "order": 1,
+        "begin_us": 0,
+        "end_us": 1000000,
+        "steps": [
+          {
+            "param": "threshold",
+            "type": "float",
+            "component": null,
+            "start_us": 0,
+            "duration_us": 1000000,
+            "trans": 0,
+            "ease": 2,
+            "from": 18,
+            "to": 19
+          }
+        ]
+      },
+      {
+        "op": "begin",
+        "tween_id": "8001",
+        "item": 1,
+        "order": 2,
+        "begin_us": 0,
+        "end_us": 1000000,
+        "steps": [
+          {
+            "property": "position",
+            "start_us": 0,
+            "duration_us": 1000000,
+            "trans": 0,
+            "ease": 2,
+            "from": null,
+            "to": 0
+          }
+        ]
+      }
+    ],
+    "poses": [
+      {
+        "item": 1,
+        "kind": "node2d",
+        "f": 2
+      }
+    ],
+    "blocks": [
+      {
+        "name": "tween_f32",
+        "type": "f32",
+        "count": 20
+      }
+    ]
+  },
+  "tween_f32": [
+    100,
+    200,
+    0,
+    0,
+    0,
+    1,
+    1,
+    0,
+    0,
+    0,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    0
+  ]
+}

@@ -917,6 +917,10 @@ class Mirror {
     return item && item->published ? item->state.id : 0;
   }
 
+  // Read hook values without marking resource tables dirty. Opt in to unpublished entries
+  // only for API validation; Material::published still gates snapshot association.
+  std::optional<tweens::Material> tween_material(std::uint64_t rid, bool unpublished = false) const;
+
   // --- pre-arm shaders and materials, adopted with origin
   // `adopted` through the same tables. Identity bookkeeping: no omit-op name, never dropped.
   // shader_adopt: exactly shader_create_from_code (the code the capture recovered: a temporary

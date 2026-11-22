@@ -666,6 +666,21 @@ has_group() {
 	esac
 }
 
+# Share live-run selection with --plan-only, before any builds or hosts launch.
+plan_live_runs() {
+	local pair group rest
+	LIVE_RUNS=()
+	for pair in g7-1:1:g1a,g1c,g1d g7-2:2:g2a,g2c,g2e g7-5:5:g5c,g5f g7-55:55:g55f,g55s,g55v,g55t g7-6:6:g6l g7-8:8:g8l,g8w11c g7-vp:8:g8vl; do
+		group="${pair%%:*}"
+		rest="${pair#*:}"
+		has_group "$group" || continue
+		# Both judges read gate8/live-$kind/legs.json. Build that directory once.
+		if [ "$group" = g7-vp ] && has_group g7-8; then continue; fi
+		if [ "$group" = g7-8 ] && has_group g7-vp; then rest="8:g8l,g8w11c,g8vl"; fi
+		LIVE_RUNS+=("$group:$rest")
+	done
+}
+
 # --- Plans (always, cheap). -----------------------------------------------------------------
 for group in g7-dev g7-bench; do
 	has_group "$group" || continue
@@ -675,6 +690,17 @@ for group in g7-dev g7-bench; do
 	tool "${plan_args[@]}"
 done
 if [ "$PLAN_ONLY" = "1" ]; then
+	if [ "$LIVE" = 1 ]; then
+		plan_live_runs
+		for run in "${LIVE_RUNS[@]}"; do
+			rest="${run#*:}"
+			gate="${rest%%:*}"
+			for kind in web gsw; do
+				[ -z "$RECEIVER" ] || [ "$RECEIVER" = "$kind" ] || continue
+				echo "run-gate7: plan @$kind: run-gate$gate.sh --legs ${rest#*:} --out $OUT/gate$gate/live-$kind"
+			done
+		done
+	fi
 	echo "run-gate7: --plan-only: plans written, nothing launched"
 	exit 0
 fi
@@ -794,13 +820,7 @@ if [ "$LIVE" = "1" ]; then
 			exit 1
 		fi
 	fi
-	LIVE_RUNS=()
-	for pair in g7-1:1:g1a,g1c,g1d g7-2:2:g2a,g2c,g2e g7-5:5:g5c,g5f g7-55:55:g55f,g55s,g55v,g55t g7-6:6:g6l g7-8:8:g8l,g8w11c g7-vp:8:g8vl; do
-		group="${pair%%:*}"
-		rest="${pair#*:}"
-		has_group "$group" || continue
-		LIVE_RUNS+=("$group:$rest")
-	done
+	plan_live_runs
 	if [ "${#LIVE_RUNS[@]}" -eq 0 ] && ! has_group g7-r && ! has_group g7-lc && ! has_group g7-k && ! has_group g7-dev && ! has_group g7-p; then
 		echo "run-gate7: --live needs one of g7-1, g7-2, g7-5, g7-55, g7-6, g7-8, g7-vp, g7-lc, g7-r, g7-k, g7-dev, g7-p in --legs" >&2
 		exit 2

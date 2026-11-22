@@ -843,6 +843,7 @@ pub struct Applier {
     stale_params: HashMap<Id, Vec<Param>>,
     /// Binding slots whose values changed in this transaction (`shader-param-parity` evidence).
     pub bindings_changed: Vec<u32>,
+    tween_material_dirty: Vec<Id>,
     /// The native receiver's shader/material residency, for applied.json's /5 counters.
     material_residency: material_residency::MaterialResidency,
     pub material_counts: material_residency::MaterialCounts,
@@ -1397,6 +1398,7 @@ impl Applier {
             refusals_reported: HashSet::new(),
             stale_params: HashMap::new(),
             bindings_changed: Vec::new(),
+            tween_material_dirty: Vec::new(),
             material_residency: Default::default(),
             material_counts: Default::default(),
             meshes: meshes::MeshResidency::default(),
@@ -3471,6 +3473,10 @@ impl Applier {
             };
             live += 1;
             let stale = all
+                || self
+                    .tween_material_dirty
+                    .binary_search(&key.material)
+                    .is_ok()
                 || match &self.binding_inputs[slot as usize] {
                     None => true,
                     Some((k, texs)) => {
@@ -3522,6 +3528,7 @@ impl Applier {
                 self.bindings_changed.push(slot);
             }
         }
+        self.tween_material_dirty.clear();
         self.stats.bindings = live;
         self.stats.bindings_changed = self.bindings_changed.len() as u32;
     }
@@ -3552,16 +3559,21 @@ impl Applier {
         let uniforms = info
             .uniforms
             .iter()
-            .map(|d| Uniform {
-                name: d.name.clone(),
-                value: programs::uniform_value(
-                    d,
-                    if d.instance {
-                        programs::param(instance, &d.name)
-                    } else {
-                        by_name.get(&d.name)
-                    },
-                ),
+            .map(|d| {
+                let host = if d.instance {
+                    programs::param(instance, &d.name)
+                } else {
+                    by_name.get(&d.name)
+                };
+                let effective = if d.instance {
+                    None
+                } else {
+                    host.and_then(|p| self.tweens.materials.effective(key.material, p))
+                };
+                Uniform {
+                    name: d.name.clone(),
+                    value: programs::uniform_value(d, effective.as_ref().or(host)),
+                }
             })
             .collect();
         let mut texs: Vec<Id> = Vec::new();
@@ -5061,3 +5073,6 @@ mod static_shader_tests {
 
 #[cfg(test)]
 mod accept_names_tests;
+
+#[cfg(test)]
+mod material_tween_tests;

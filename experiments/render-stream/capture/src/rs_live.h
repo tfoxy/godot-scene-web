@@ -337,6 +337,7 @@ inline constexpr const char *kSubprotocolV15 = "render-stream.15";
 inline constexpr const char *kSubprotocolV16 = "render-stream.16";
 inline constexpr const char *kSubprotocolV17 = "render-stream.17";
 // /18 retains /16 grammar and widens only the credit-window range.
+inline constexpr const char *kSubprotocolV19 = "render-stream.19";
 inline constexpr const char *kSubprotocolV18 = "render-stream.18";
 
 // HC5: where a frame callback's formation jobs run (rs_live.h header, "Formation").

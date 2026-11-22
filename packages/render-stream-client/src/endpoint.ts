@@ -2,10 +2,10 @@
 // listener and its resource GETs are, the token, and the wire version the host streams. A product
 // receives it from its own control channel; the client validates it before it connects.
 
-/** The live protocol versions this client speaks (render-stream/11 through /18, including
- * /13 prediction, /14 item_meta v2, /15 resource hints, /16 viewport surfaces, /17 tweens and /18 credit windows; W11t live
+/** The live protocol versions this client speaks (render-stream/11 through /19, including
+ * /13 prediction, /14 item_meta v2, /15 resource hints, /16 viewport surfaces, /17 tweens and /18 credit windows and /19 material tweens; W11t live
  * coding on each). */
-export type RenderStreamProtocol = 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18;
+export type RenderStreamProtocol = 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19;
 
 export interface RenderStreamEndpoint {
   /** ws(s) URL of the host's `/render-stream`, absolute or page-relative (an http(s) page URL's
@@ -17,10 +17,9 @@ export interface RenderStreamEndpoint {
   /** 64 lowercase hex, or null for a host with `GRC_LIVE_AUTH=none`. Sent in the hello and as
    * `Authorization: Bearer` on every GET; never logged. */
   token: string | null;
-  /** The host's `GRC_STREAM_VERSION`. At 16 or 18 the client offers exactly that version: a /16 or /18
-   * host lists nothing else, so there is no fallback and no upgrade rule. Below 16, v2 identity
-   * wants upgrade /13 to /14, and `resourceHints` offers /15; a /15 host also lists /14 and /13,
-   * so without `resourceHints` the client speaks /13 (or /14) to it. */
+  /** The host's wire version. At /16 and later the client offers exactly this version,
+   * with no upgrade or downgrade. Select /19 explicitly for material tween playback.
+   * Below /16, v2 identity wants offer /14 and resourceHints offers /15. */
   protocol: RenderStreamProtocol;
   /** The expected presentation size (the session confirms it). When set, the canvas's backing
    * store starts at this size before the hello. */
@@ -82,10 +81,11 @@ export function validateEndpoint(value: unknown): RenderStreamEndpoint {
     e.protocol !== 15 &&
     e.protocol !== 16 &&
     e.protocol !== 17 &&
-    e.protocol !== 18
+    e.protocol !== 18 &&
+    e.protocol !== 19
   )
     fail(
-      `protocol must be 11, 12, 13, 14, 15, 16, 17 or 18 (got ${JSON.stringify(e.protocol)})`,
+      `protocol must be 11, 12, 13, 14, 15, 16, 17, 18 or 19 (got ${JSON.stringify(e.protocol)})`,
     );
   let presentation: [number, number] | undefined;
   if (e.presentation !== undefined) {

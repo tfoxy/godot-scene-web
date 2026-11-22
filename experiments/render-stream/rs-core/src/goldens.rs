@@ -1355,6 +1355,132 @@ pub fn run_golden(version: u8, read: ReadFn, opts: GoldenOptions) -> Vec<Check> 
         checks: Vec::new(),
     };
     match suite.json("index.json") {
+        Some(index) if version == 19 => {
+            for entry in index["valid"].as_array().into_iter().flatten() {
+                let file = entry["file"].as_str().unwrap();
+                let Some(data) = suite.bytes(file) else {
+                    suite.ok(false, file, "missing");
+                    continue;
+                };
+                suite.ok(
+                    wire::sha256(&data).to_hex() == entry["sha256"].as_str().unwrap(),
+                    format!("{file} sha256"),
+                    "digest",
+                );
+                if entry["record_only"] == true {
+                    let result = canon::decoded_record(&data, 0, 19);
+                    suite.ok(
+                        result.is_ok(),
+                        file,
+                        result
+                            .as_ref()
+                            .err()
+                            .map(ToString::to_string)
+                            .unwrap_or_default(),
+                    );
+                    if let Some(want) = entry["decoded"].as_str().and_then(|name| suite.json(name))
+                    {
+                        if let Ok(got) = result {
+                            suite.ok(
+                                got["meta"] == want["meta"]
+                                    && got["blocks"][0].as_array().map_or(
+                                        want["tween_f32"] == json!([]),
+                                        |v| {
+                                            want["tween_f32"].as_array().is_some_and(|w| {
+                                                v.len() == w.len()
+                                                    && v.iter()
+                                                        .zip(w)
+                                                        .all(|(a, b)| a.as_f64() == b.as_f64())
+                                            })
+                                        },
+                                    ),
+                                format!("{file} decoded"),
+                                "decoded companion",
+                            );
+                        }
+                    }
+                } else {
+                    let result = validate_recording(&data, suite.opts());
+                    suite.ok(
+                        result.is_ok(),
+                        file,
+                        result.err().map(|e| e.to_string()).unwrap_or_default(),
+                    );
+                    let decoded = canon::decoded_recording(&data, 19);
+                    suite.ok(
+                        decoded
+                            .as_ref()
+                            .is_ok_and(|j| j["schema"] == "render-stream-19-decoded/1"),
+                        format!("{file} decoded form"),
+                        "schema and reconstructed blocks",
+                    );
+                    let resolved = resolve_recording(&data, 19, suite.opts);
+                    suite.ok(
+                        resolved
+                            .as_ref()
+                            .is_ok_and(|(j, _)| j["schema"] == "render-stream-19-resolved/1"),
+                        format!("{file} resolved form"),
+                        "host state only",
+                    );
+                    if let Some(name) = entry["to18"].as_str() {
+                        let expected = suite.bytes(name).unwrap();
+                        let down = crate::tweens::to18_from19(&data);
+                        suite.ok(
+                            down.as_ref().is_ok_and(|d| *d == expected),
+                            format!("{file} to18 bytes"),
+                            down.as_ref()
+                                .err()
+                                .map(ToString::to_string)
+                                .unwrap_or_default(),
+                        );
+                        suite.ok(
+                            down.as_ref()
+                                .is_ok_and(|d| validate_recording(d, Options::new(18)).is_ok()),
+                            format!("{file} to18 validation"),
+                            "/18 validation",
+                        );
+                    }
+                }
+            }
+            for entry in index["invalid"].as_array().into_iter().flatten() {
+                let file = entry["file"].as_str().unwrap();
+                let Some(data) = suite.bytes(file) else {
+                    suite.ok(false, file, "missing");
+                    continue;
+                };
+                let version = entry["version"].as_u64().unwrap_or(19) as u8;
+                let result = if entry["record_only"] == true {
+                    crate::tweens::decode_version(&data, 0, version, &mut Default::default())
+                        .and_then(|r| {
+                            let a = &entry["association"];
+                            if a.is_object()
+                                && (a["seq"] != r.seq
+                                    || a["frame"] != r.frame
+                                    || a["t_us"] != r.time)
+                            {
+                                Err(Error::new(
+                                    "tween-association",
+                                    "golden associated picture mismatch",
+                                ))
+                            } else {
+                                Ok(())
+                            }
+                        })
+                } else {
+                    validate_recording(&data, Options::new(version))
+                };
+                suite.ok(
+                    result
+                        .as_ref()
+                        .is_err_and(|e| e.code == entry["error"].as_str().unwrap()),
+                    file,
+                    result
+                        .err()
+                        .map(|e| e.to_string())
+                        .unwrap_or_else(|| "accepted invalid vector".into()),
+                );
+            }
+        }
         Some(index) if version == 17 => {
             for entry in index["valid"].as_array().into_iter().flatten() {
                 let file = entry["file"].as_str().unwrap_or_default().to_string();

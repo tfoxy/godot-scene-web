@@ -40,7 +40,7 @@ namespace grc {
 namespace rs {
 
 struct Gate8Policy {
-  // GRC_STREAM_VERSION: the wire version of file sinks. V6 (the default), V8 to V18.
+  // GRC_STREAM_VERSION: the wire version of file sinks. V6 (the default), V8 to V19.
   rs2::ProtocolVersion file_version = rs2::ProtocolVersion::V6;
   bool stream_version_set = false;  // GRC_STREAM_VERSION was present and non-empty
   bool adopt = false;               // GRC_ADOPT=arm
@@ -92,6 +92,7 @@ struct Gate8Policy {
   // file sinks write /16 and the live listener lists only render-stream.16.
   bool speaks_v16() const { return rs2::is_v16(file_version); }
   // /18 selects only render-stream.18 and widens the live credit-window range.
+  bool speaks_v19() const { return file_version == rs2::ProtocolVersion::V19; }
   bool speaks_v18() const { return file_version == rs2::ProtocolVersion::V18; }
 };
 

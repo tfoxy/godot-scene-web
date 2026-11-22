@@ -1153,10 +1153,15 @@ target_compile_definitions(rs_tweens_test PRIVATE
   GRC_GOLDEN17_DIR="${GRC_DATA_PREFIX}protocol/golden-17")
 grc_add_test(NAME rs_tweens COMMAND rs_tweens_test)
 
-target_sources(rs_tweens_test PRIVATE test/rs_tweens_host_test.cpp src/rs_tweens_host.cpp
+target_sources(rs_tweens_test PRIVATE test/rs_material_tweens_test.cpp test/rs_tweens_host_test.cpp src/rs_tweens_host.cpp
   src/rs_mirror.cpp src/rs_texture_delivery.cpp src/rs_shader_payload.cpp
   src/rs_texture_payload.cpp src/rs_mesh_payload.cpp src/rs_sha256.cpp src/rs2_diff.cpp)
 target_link_libraries(rs_tweens_test PRIVATE Threads::Threads)
+
+add_executable(rs_tweens_gd_test test/rs_tweens_gd_test.cpp src/rs_capture_gd.cpp)
+target_include_directories(rs_tweens_gd_test PRIVATE src vendor)
+target_link_libraries(rs_tweens_gd_test PRIVATE grc_warnings)
+grc_add_test(NAME rs_tweens_gd COMMAND rs_tweens_gd_test)
 
 # Collect the Windows manifest after every test target and golden definition exists.
 if(GRC_WINDOWS)

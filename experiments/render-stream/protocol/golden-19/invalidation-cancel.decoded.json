@@ -1,0 +1,17 @@
+{
+  "meta": {
+    "type": "tween",
+    "seq": 2,
+    "frame": 2,
+    "t_us": 0,
+    "events": [
+      {
+        "op": "cancel",
+        "tween_id": "7001"
+      }
+    ],
+    "poses": [],
+    "blocks": []
+  },
+  "tween_f32": []
+}

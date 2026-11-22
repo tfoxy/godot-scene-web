@@ -111,7 +111,15 @@ export type RenderStreamStatus =
 
 export interface RenderStreamStats {
   /** Opt-in tween diagnostics; pauses count payload waits, not frame callbacks. */
-  clientTweens?: { payload_wait_pauses: number; [key: string]: number };
+  clientTweens?: {
+    payload_wait_pauses: number;
+    /** /19 material diagnostics from rs-core, absent with older core builds. */
+    material_begins?: number;
+    material_retired?: number;
+    live_material_tweens?: number;
+    held_material_components?: number;
+    [key: string]: number | undefined;
+  };
 
   /** Draws in the last second (up to 256), by damage mode: off, full, partial, skip. */
   damageModeCounts?: readonly [number, number, number, number];

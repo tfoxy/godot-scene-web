@@ -170,11 +170,13 @@ bool parse_gate8_policy(const char *stream_version, const char *adopt, const cha
       parsed.file_version = rs2::ProtocolVersion::V17;
     } else if (text == "16") {
       parsed.file_version = rs2::ProtocolVersion::V16;  // render-stream-16.md
+    } else if (text == "19") {
+      parsed.file_version = rs2::ProtocolVersion::V19;
     } else if (text == "18") {
       parsed.file_version = rs2::ProtocolVersion::V18;
     } else {
       *error = "invalid GRC_STREAM_VERSION=" + text +
-               " (expected 6, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17 or 18)";
+               " (expected 6, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18 or 19)";
       return false;
     }
     parsed.stream_version_set = true;
@@ -293,6 +295,9 @@ std::vector<std::string> gate8_live_subprotocols(const Gate8Policy &policy) {
   // `source_format` below /8 and R8/RG8 are legal payload formats at /6, so an older client reads a
   // default-decoded texture as a plain one.
   const bool narrow = policy.any();
+  if (policy.file_version == rs2::ProtocolVersion::V19) {
+    return {rs2::kSubprotocolV19, rs2::kSubprotocolV18, rs2::kSubprotocolV17, rs2::kSubprotocolV16};
+  }
   if (policy.file_version == rs2::ProtocolVersion::V18) {
     return {rs2::kSubprotocolV18, rs2::kSubprotocolV17, rs2::kSubprotocolV16};
   }

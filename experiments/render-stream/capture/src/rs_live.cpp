@@ -448,7 +448,8 @@ std::size_t stage_index(AckStage stage) { return static_cast<std::size_t>(stage)
 
 // The hello `protocol` string of a version (render-stream-N.md "Live transport").
 const char *protocol_string(ProtocolVersion version) {
-  return version == ProtocolVersion::V18   ? kProtocolV18
+  return version == ProtocolVersion::V19 ? kProtocolV19
+         : version == ProtocolVersion::V18   ? kProtocolV18
          : is_v17_or_later(version) ? kProtocolV17
          : version == ProtocolVersion::V16 ? kProtocolV16
          : version == ProtocolVersion::V15 ? kProtocolV15
@@ -640,10 +641,10 @@ bool parse_control(const std::string &text, ControlMessage *out, std::string *er
         if (!num("credit_window", &message.credit_window)) {
           return false;
         }
-        const std::uint64_t max_window = version == ProtocolVersion::V18 ? 8 : 2;
+        const std::uint64_t max_window = is_v18_or_later(version) ? 8 : 2;
         if (message.credit_window < 1 || message.credit_window > max_window) {
           return fail("credit_window " + std::to_string(message.credit_window) +
-                       (version == ProtocolVersion::V18 ? " is not in 1..8" : " is not 1 or 2"));
+                       (is_v18_or_later(version) ? " is not in 1..8" : " is not 1 or 2"));
         }
         const Value *token_value = find("token");
         if (token_value->is_null) {
@@ -1730,7 +1731,8 @@ void Hub::on_event(const LiveEvent &event, std::uint64_t frame) {
       // ID3: render-stream.14 -> /14 (render-stream-14.md), listed only under a v2 grant.
       // render-stream.15 -> /15 (render-stream-15.md), listed only under GRC_STREAM_VERSION=15.
       // VS2: render-stream.16 -> /16 (render-stream-16.md), listed only under GRC_STREAM_VERSION=16.
-      c.version = event.subprotocol == kSubprotocolV18   ? ProtocolVersion::V18
+      c.version = event.subprotocol == kSubprotocolV19 ? ProtocolVersion::V19
+                  : event.subprotocol == kSubprotocolV18   ? ProtocolVersion::V18
                   : event.subprotocol == kSubprotocolV17 ? ProtocolVersion::V17
                   : event.subprotocol == kSubprotocolV16 ? ProtocolVersion::V16
                   : event.subprotocol == kSubprotocolV15 ? ProtocolVersion::V15
@@ -1754,7 +1756,7 @@ void Hub::on_event(const LiveEvent &event, std::uint64_t frame) {
       }
       if (!config_.tap_dir.empty() && make_directories(config_.tap_dir)) {
         const std::string n = std::to_string(c.s.connection);
-        c.tap = grc::rs::open_file(path_join(config_.tap_dir, "stream-" + n + ".rs2"), "wb");
+        c.tap = grc::rs::open_file(path_join(config_.tap_dir, "stream-" + n + (c.version == ProtocolVersion::V19 ? ".rs19" : ".rs2")), "wb");
         c.log = grc::rs::open_file(path_join(config_.tap_dir, "live-" + n + ".jsonl"), "wb");
         // P3-SP: the stream copy is one frame's messages per flush (flush_taps), so a buffer
         // that holds them keeps it to about one write per frame.
@@ -1944,7 +1946,7 @@ void Hub::handle_text(Conn &c, const LiveEvent &event, std::uint64_t frame) {
         return;
       }
       c.client_tweens = message.client_tweens;
-      if (c.client_tweens) tweens_.grant(c.s.connection);
+      if (c.client_tweens) tweens_.grant(c.s.connection, c.version);
       c.hello_received = true;
       c.credit = true;  // the hello is the credit for the session and seq 1
       return;
@@ -1984,7 +1986,7 @@ void Hub::handle_text(Conn &c, const LiveEvent &event, std::uint64_t frame) {
             const unsigned bit = 1u << stage_index(message.stage);
             if ((sent->second.acked & bit) == 0) {
               sent->second.acked |= bit;
-              if (c.version == ProtocolVersion::V18 && message.stage == AckStage::Submitted) {
+              if (is_v18_or_later(c.version) && message.stage == AckStage::Submitted) {
                 c.observe_draw(message.t_us, event.t_ns);
               }
               c.latency[stage_index(message.stage)].push_back(
@@ -2208,7 +2210,7 @@ bool Hub::deliver(Conn &c, const std::vector<std::uint8_t> &message, bool send,
 bool Hub::tick_due(const Conn &c, std::uint64_t now_ns) const {
   // wants_snapshot runs before the callback updates pacing. Preview that same decision so a
   // recovery tick requests a snapshot, and a newly paced tick does no needless formation.
-  if (c.version == ProtocolVersion::V18) {
+  if (is_v18_or_later(c.version)) {
     const auto pace = c.pace_at(now_ns, c.next_period(now_ns), config_.publish_period_ns);
     if (pace.period != c.publish_period_ns) {
       return pace.period == 0 || c.s.sent == 0 ||
@@ -3119,7 +3121,7 @@ void Hub::on_frame_shared(std::uint64_t frame, std::uint64_t now_ns,
     c.period_ns = c.next_period(now_ns);
     c.callback_seen = true;
     c.callback_ns = now_ns;
-    if (c.version == ProtocolVersion::V18) c.update_pacing(now_ns, config_.publish_period_ns);
+    if (is_v18_or_later(c.version)) c.update_pacing(now_ns, config_.publish_period_ns);
     if (c.state == State::Streaming && c.window_slots > 2) {
       c.credit = c.window.size() < c.effective_window();
     }
@@ -3588,7 +3590,7 @@ std::string Hub::summary_json(const ServingSummary *resources) const {
   json.field("schema", std::string("render-stream-live-summary/1"));
   if (is_v17_or_later(template_.version)) {
     json.key("client_tweens").object_begin();
-    for (const auto &field : tweens_.state()) {
+    for (const auto &field : tweens_.state(template_.version == ProtocolVersion::V19)) {
       if (const auto *n = std::get_if<std::int64_t>(&field.second.data)) {
         json.field(field.first, *n);
       } else if (const auto *drops = std::get_if<rs::capture::Value::Object>(&field.second.data)) {

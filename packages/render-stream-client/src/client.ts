@@ -102,8 +102,8 @@ export interface RenderStreamClientOptions {
    * `[]`: the pure client (no `item_meta` hello key, nothing loaded, one branch per frame). An
    * extension that `wants` identities needs protocol 13 or 14; v2 wants upgrade /13 to /14. */
   extensions?: readonly RenderStreamExtension[];
-  /** The credit window asked in the hello (the session grants it): 1..8 at /18, else 1..2.
-   * Default 8 at /18, else 2. */
+  /** The credit window asked in the hello (the session grants it): 1..8 at /18 and later, else 1..2.
+   * Default 8 at /18 and later, else 2. */
   creditWindow?: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
   /** The hello's credit stage, the ack the host's credit waits on; default `applied`. */
   creditStage?: CreditStage;
@@ -137,7 +137,7 @@ export interface RenderStreamClientOptions {
    * Default false: no /15 offer, no table, and the offer, the hello and the core's calls are the
    * client's without the option. Older cores without hint selection keep only the table. */
   resourceHints?: boolean;
-  /** Play announced Godot tweens locally. Opt-in, approximate parity; requires /17 or later. Default false. */
+  /** Play announced Godot tweens locally. Opt-in, approximate parity; requires /17 or later. /19 also grants material parameters; select a /19 endpoint explicitly. Default false. */
   clientTweens?: boolean;
   /** Hint GETs at once (default 2). At most 3, reserving a slot for demand; 0 disables prefetch. */
   prefetchMaxInFlight?: number;

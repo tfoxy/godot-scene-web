@@ -7,6 +7,8 @@ use crate::{
 use serde_json::Value as J;
 use std::collections::BTreeMap;
 
+pub mod material;
+
 pub const MAX_INT: i64 = (1i64 << 53) - 1;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
@@ -41,6 +43,7 @@ pub struct Begin {
 #[derive(Clone, Debug)]
 pub enum Event {
     Begin(Begin),
+    MaterialBegin(material::Begin),
     Cancel(i64),
 }
 #[derive(Clone, Debug)]
@@ -117,12 +120,115 @@ pub fn components(s: &str) -> Option<Vec<usize>> {
         }
     }
 }
+/// Validate all /19 scalar schema before looking at endpoint bytes. The validator also uses
+/// the header to associate a record whose float/timing error must wait for its transaction.
+pub(crate) fn schema19(bytes: &[u8], offset: usize) -> Result<Record, Error> {
+    let f = wire::frame(bytes, offset)?;
+    let j: J = serde_json::from_slice(f.meta).map_err(|_| err("meta-json", "tween JSON"))?;
+    keys(
+        &j,
+        &["type", "seq", "frame", "t_us", "events", "poses", "blocks"],
+    )?;
+    if j["type"] != "tween" {
+        return Err(err("meta-schema", "tween type"));
+    }
+    if serde_json::to_vec(&j).unwrap() != f.meta {
+        return Err(err("meta-noncanonical", "tween JSON"));
+    }
+    let header = Record {
+        seq: int(&j["seq"], 1)?,
+        frame: int(&j["frame"], 1)?,
+        time: int(&j["t_us"], 0)?,
+        events: vec![],
+        poses: vec![],
+    };
+    for e in array(&j["events"])? {
+        match e["op"].as_str() {
+            Some("cancel") => {
+                keys(e, &["op", "tween_id"])?;
+                tween_id(&e["tween_id"])?;
+            }
+            Some("begin") if e.get("material").is_some() => {
+                material::decode_begin(e)?;
+            }
+            Some("begin") => {
+                keys(
+                    e,
+                    &[
+                        "op", "tween_id", "item", "order", "begin_us", "end_us", "steps",
+                    ],
+                )?;
+                tween_id(&e["tween_id"])?;
+                id(&e["item"])?;
+                int(&e["order"], 1)?;
+                int(&e["begin_us"], 0)?;
+                int(&e["end_us"], 0)?;
+                for step in array(&e["steps"])? {
+                    keys(
+                        step,
+                        &[
+                            "property",
+                            "start_us",
+                            "duration_us",
+                            "trans",
+                            "ease",
+                            "from",
+                            "to",
+                        ],
+                    )?;
+                    if step["property"].as_str().and_then(components).is_none()
+                        || int(&step["trans"], 0)? > 11
+                        || int(&step["ease"], 0)? > 3
+                    {
+                        return Err(err("meta-schema", "tween property or easing"));
+                    }
+                    int(&step["start_us"], 0)?;
+                    int(&step["duration_us"], 0)?;
+                    if !step["from"].is_null() {
+                        int(&step["from"], 0)?;
+                    }
+                    int(&step["to"], 0)?;
+                }
+            }
+            _ => return Err(err("meta-schema", "tween event")),
+        }
+    }
+    for pose in array(&j["poses"])? {
+        keys(pose, &["item", "kind", "f"])?;
+        id(&pose["item"])?;
+        int(&pose["f"], 0)?;
+        if pose["kind"] != "node2d" && pose["kind"] != "control" {
+            return Err(err("meta-schema", "tween node kind"));
+        }
+    }
+    for b in array(&j["blocks"])? {
+        keys(b, &["name", "type", "count"])?;
+        if b["name"] != "tween_f32" || b["type"] != "f32" {
+            return Err(err("meta-schema", "tween block"));
+        }
+        int(&b["count"], 1)?;
+    }
+    Ok(header)
+}
+
 /// Decode all values before publishing a record. Offsets must consume one contiguous float arena.
 pub fn decode(
     bytes: &[u8],
     offset: usize,
     bufs: &mut crate::meta::DecodeBufs,
 ) -> Result<Record, Error> {
+    decode_version(bytes, offset, 17, bufs)
+}
+
+pub fn decode_version(
+    bytes: &[u8],
+    offset: usize,
+    version: u8,
+    bufs: &mut crate::meta::DecodeBufs,
+) -> Result<Record, Error> {
+    if version >= 19 {
+        schema19(bytes, offset)?;
+    }
     let f = wire::frame(bytes, offset)?;
     let j: J = serde_json::from_slice(f.meta).map_err(|_| err("meta-json", "tween JSON"))?;
     keys(
@@ -164,7 +270,7 @@ pub fn decode(
         &mut bufs.blocks,
     )
     .map_err(|e| {
-        if e.code == "block-length" || e.code == "record-length" {
+        if e.code == "block-length" || e.code == "record-length" || e.code == "truncated" {
             err("tween-offset", &e.detail)
         } else {
             e
@@ -177,7 +283,7 @@ pub fn decode(
     let fs = wire::F32s(floats);
     let mut next = 0usize;
     let mut take = |at: &J, n: usize| -> Result<Vec<f32>, Error> {
-        if int(at, 0)? as usize != next || next + n > fs.len() {
+        if int(at, 0)? as u64 != next as u64 || next + n > fs.len() {
             return Err(err("tween-offset", "noncontiguous tween floats"));
         }
         let out = (next..next + n).map(|i| fs.get(i)).collect::<Vec<_>>();
@@ -187,11 +293,21 @@ pub fn decode(
         }
         Ok(out)
     };
+    let mut material_events = Vec::new();
     for e in array(&j["events"])? {
         match e["op"].as_str() {
             Some("cancel") => {
                 keys(e, &["op", "tween_id"])?;
                 r.events.push(Event::Cancel(tween_id(&e["tween_id"])?));
+            }
+            Some("begin") if e.get("material").is_some() => {
+                if version < 19 {
+                    return Err(err("meta-schema", "material tween below /19"));
+                }
+                // Phase three consumes these endpoints after all node poses.
+                let b = material::decode_begin(e)?;
+                material_events.push((r.events.len(), e));
+                r.events.push(Event::MaterialBegin(b));
             }
             Some("begin") => {
                 keys(
@@ -255,7 +371,7 @@ pub fn decode(
     for p in array(&j["poses"])? {
         keys(p, &["item", "kind", "f"])?;
         let item = id(&p["item"])?;
-        if item <= last {
+        if version < 19 && item <= last {
             return Err(err("tween-entry", "tween poses not ascending"));
         }
         last = item;
@@ -272,10 +388,50 @@ pub fn decode(
         }
         r.poses.push(Pose { item, kind, values });
     }
+    for (index, e) in material_events {
+        let Event::MaterialBegin(b) = &mut r.events[index] else {
+            unreachable!()
+        };
+        for (s, raw) in b.steps.iter_mut().zip(array(&e["steps"])?) {
+            s.value.from = if raw["from"].is_null() {
+                None
+            } else {
+                Some(take(&raw["from"], s.value.components.len())?)
+            };
+            s.value.to = take(&raw["to"], s.value.components.len())?;
+        }
+    }
     if next != fs.len() || (r.events.is_empty() && r.poses.is_empty()) {
         return Err(err("tween-offset", "unused tween floats or empty record"));
     }
+    if version >= 19 {
+        for e in &r.events {
+            let (begin, steps): (i64, Vec<&Step>) = match e {
+                Event::Begin(b) => (b.begin, b.steps.iter().collect()),
+                Event::MaterialBegin(b) => (b.begin, b.steps.iter().map(|s| &s.value).collect()),
+                Event::Cancel(_) => continue,
+            };
+            if begin > r.time {
+                return Err(err("tween-time", "future begin"));
+            }
+            for step in steps {
+                if begin
+                    .checked_add(step.start)
+                    .and_then(|v| v.checked_add(step.duration))
+                    .is_none_or(|v| v > MAX_INT)
+                {
+                    return Err(err("tween-time", "tween timing overflow"));
+                }
+            }
+        }
+        if r.poses.windows(2).any(|p| p[0].item >= p[1].item) {
+            return Err(err("tween-entry", "tween poses not ascending"));
+        }
+    }
     for e in &r.events {
+        if let Event::MaterialBegin(b) = e {
+            material::check_time(b, r.time)?;
+        }
         if let Event::Begin(b) = e {
             if b.begin > r.time {
                 return Err(err("tween-time", "future begin"));
@@ -316,6 +472,8 @@ pub struct Diagnostics {
     pub unknown_cancels: u64,
     pub backward_anchor_holds: u64,
     pub tween_redraws: u64,
+    pub material_begins: u64,
+    pub material_retired: u64,
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Display {
@@ -374,6 +532,7 @@ impl Live {
 }
 #[derive(Default, Debug)]
 pub struct Playback {
+    pub materials: material::Playback,
     live: Vec<Live>,
     poses: BTreeMap<Id, Pose>,
     pub display: BTreeMap<Id, Display>,
@@ -382,11 +541,11 @@ pub struct Playback {
 }
 impl Playback {
     pub fn active(&self) -> bool {
-        !self.live.is_empty()
+        !self.live.is_empty() || self.materials.active()
     }
     pub fn counts(&self) -> (usize, usize) {
         (
-            self.live.len(),
+            self.live.len() + self.materials.live_len(),
             self.live
                 .iter()
                 .map(|l| {
@@ -396,7 +555,8 @@ impl Playback {
                         .filter(|(i, v)| l.owned[*i] && v.is_some())
                         .count()
                 })
-                .sum(),
+                .sum::<usize>()
+                + self.materials.held_count(),
         )
     }
     pub fn clear(&mut self) {
@@ -405,7 +565,7 @@ impl Playback {
     /// Called only for a picture which will draw. Folded records keep call order but only the
     /// newest picture sets the clock and component baseline.
     pub fn picture(&mut self, time: i64, local_us: f64, records: &[Record], state: &ResolvedState) {
-        if self.live.iter().any(|l| (time as f64) < l.now) {
+        if self.live.iter().any(|l| (time as f64) < l.now) || self.materials.ahead(time) {
             self.diagnostics.backward_anchor_holds += 1;
         }
         self.anchor = Some((time as f64, local_us));
@@ -422,11 +582,17 @@ impl Playback {
                 match e {
                     Event::Cancel(id) => {
                         self.diagnostics.cancels += 1;
+                        let material_cancelled = self.materials.cancel(*id, &mut self.diagnostics);
                         let n = self.live.len();
                         self.live.retain(|l| l.b.id != *id);
-                        if n == self.live.len() {
+                        if n == self.live.len() && !material_cancelled {
                             self.diagnostics.unknown_cancels += 1;
                         }
+                    }
+                    Event::MaterialBegin(b) => {
+                        self.diagnostics.begins += 1;
+                        self.diagnostics.material_begins += 1;
+                        self.materials.begin(b, state, &mut self.diagnostics);
                     }
                     Event::Begin(b) => {
                         self.diagnostics.begins += 1;
@@ -487,6 +653,8 @@ impl Playback {
             return;
         };
         let now = host + (local_us - local).max(0.);
+        self.materials
+            .sample(now, state, start_steps, &mut self.diagnostics);
         self.live.retain(|l| state.items.contains_key(&l.b.item));
         for l in &mut self.live {
             l.now = l.now.max(now);
@@ -721,10 +889,22 @@ pub fn ease_sample(trans: u8, ease: u8, t: f64) -> f64 {
 #[derive(Clone, Default)]
 pub struct Registry {
     live: BTreeMap<i64, (Begin, [bool; 16])>,
+    material_live: material::Registry,
     precedence: Option<(i64, i64)>,
     kinds: BTreeMap<Id, Kind>,
 }
 impl Registry {
+    fn check_begin(&self, id: i64, order: i64, begin: i64) -> Result<(), Error> {
+        if self.live.contains_key(&id)
+            || self.material_live.contains(id)
+            || self
+                .precedence
+                .is_some_and(|p| order < p.0 || (order == p.0 && begin <= p.1))
+        {
+            return Err(err("tween-entry", "duplicate live ID or begin precedence"));
+        }
+        Ok(())
+    }
     pub fn transaction(
         &self,
         time: i64,
@@ -734,6 +914,7 @@ impl Registry {
         let mut next = self.clone();
         next.live
             .retain(|_, (b, _)| b.end > time && state.items.contains_key(&b.item));
+        next.material_live.retain(time, state);
         if let Some(r) = record {
             next.kinds
                 .retain(|item, _| next.live.values().any(|(b, _)| b.item == *item));
@@ -747,12 +928,19 @@ impl Registry {
                 match e {
                     Event::Cancel(id) => {
                         next.live.remove(id);
+                        next.material_live.cancel(*id);
+                    }
+                    Event::MaterialBegin(b) => {
+                        next.check_begin(b.id, b.order, b.begin)?;
+                        next.material_live.begin(b, time, state)?;
+                        next.precedence = Some((b.order, b.begin));
                     }
                     Event::Begin(b) => {
-                        if next.live.contains_key(&b.id)
-                            || next
-                                .precedence
-                                .is_some_and(|p| b.order < p.0 || (b.order == p.0 && b.begin <= p.1))
+                        if next.material_live.contains(b.id)
+                            || next.live.contains_key(&b.id)
+                            || next.precedence.is_some_and(|p| {
+                                b.order < p.0 || (b.order == p.0 && b.begin <= p.1)
+                            })
                         {
                             return Err(err(
                                 "tween-entry",
@@ -837,5 +1025,96 @@ pub fn to16(data: &[u8]) -> Result<Vec<u8>, Error> {
         output_lens.push(out.len() - at);
     }
     v.finish()?;
+    Ok(out)
+}
+
+/// The only /19 downgrade: retain the node float prefix and ordinary host state.
+pub fn to18_from19(data: &[u8]) -> Result<Vec<u8>, Error> {
+    use crate::validate::{validate_recording, Accepted, Options};
+    // Association and scene errors take precedence over malformed endpoint data. Validate the
+    // whole input before indexing or retaining any of its float prefix.
+    validate_recording(data, Options::new(19))?;
+    let records = wire::split_records(data, 19)?;
+    let mut out = wire::magic(18).to_vec();
+    let mut material_ids = std::collections::BTreeSet::new();
+    let mut input_lens = Vec::new();
+    let mut output_lens = Vec::new();
+    for (i, span) in records.iter().enumerate() {
+        let record = span.bytes(data);
+        let at = out.len();
+        let frame = wire::frame(record, span.offset)?;
+        let kind = if i == 0 {
+            None
+        } else if frame.meta.starts_with(b"{\"type\":\"tween\"") {
+            Some(Accepted::Tween)
+        } else if frame.meta.starts_with(b"{\"type\":\"end\"") {
+            Some(Accepted::End)
+        } else {
+            Some(Accepted::Transaction)
+        };
+        match kind {
+            Some(Accepted::End) => {
+                crate::predict::fix_end(record, &output_lens, &input_lens, &mut out)
+            }
+            None | Some(Accepted::Tween) => {
+                let frame = wire::frame(record, span.offset)?;
+                let mut meta: J = serde_json::from_slice(frame.meta)
+                    .map_err(|_| err("meta-json", "transcode"))?;
+                let mut blocks = record[8 + frame.meta.len()..].to_vec();
+                let mut keep = true;
+                if i == 0 {
+                    meta["protocol"] = J::String("render-stream/18".into());
+                } else {
+                    let events = meta["events"].as_array_mut().unwrap();
+                    // Track kind per announcement, including reuse and begin/cancel in one record.
+                    events.retain(|e| {
+                        let id = tween_id(&e["tween_id"]).unwrap();
+                        if e["op"] == "begin" {
+                            if e.get("material").is_some() {
+                                material_ids.insert(id);
+                                false
+                            } else {
+                                material_ids.remove(&id);
+                                true
+                            }
+                        } else {
+                            !material_ids.remove(&id)
+                        }
+                    });
+                    let mut count = 0usize;
+                    for e in meta["events"].as_array().unwrap() {
+                        if e["op"] == "begin" {
+                            for step in e["steps"].as_array().unwrap() {
+                                count = step["to"].as_u64().unwrap() as usize
+                                    + components(step["property"].as_str().unwrap())
+                                        .unwrap()
+                                        .len();
+                            }
+                        }
+                    }
+                    for pose in meta["poses"].as_array().unwrap() {
+                        count = pose["f"].as_u64().unwrap() as usize + 16;
+                    }
+                    if count == 0 {
+                        meta["blocks"] = J::Array(vec![]);
+                        blocks = vec![0; 4];
+                    } else {
+                        meta["blocks"][0]["count"] = J::from(count);
+                        blocks.truncate(8 + count * 4);
+                        blocks[4..8].copy_from_slice(&((count * 4) as u32).to_le_bytes());
+                    }
+                    keep = !meta["events"].as_array().unwrap().is_empty()
+                        || !meta["poses"].as_array().unwrap().is_empty();
+                }
+                if keep {
+                    let json = serde_json::to_vec(&meta).unwrap();
+                    crate::predict::make_record(&mut out, &[&json], &blocks);
+                }
+            }
+            _ => out.extend_from_slice(record),
+        }
+        input_lens.push(record.len());
+        output_lens.push(out.len() - at);
+    }
     Ok(out)
 }

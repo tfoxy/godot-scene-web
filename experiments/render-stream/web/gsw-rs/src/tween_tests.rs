@@ -208,7 +208,7 @@ pub fn regression_v18_live_options_keep_tweens() {
     std::panic::set_hook(Box::new(|p| {
         web_sys::console::error_1(&p.to_string().into())
     }));
-    for version in [17, 18] {
+    for version in [17, 18, 19] {
         let options = format!("{{\"live_protocol\":{version},\"client_tweens\":true}}");
         let parsed = parse_options(&options).unwrap();
         assert_eq!(parsed.live_protocol, version);
@@ -233,4 +233,146 @@ pub fn regression_v18_live_options_keep_tweens() {
         let validator = Validator::new(&granted, span.offset, Options::new(version)).unwrap();
         assert_eq!(parsed.client_tweens, validator.session().client_tweens);
     }
+}
+
+fn material_receiver() -> GswRs {
+    std::panic::set_hook(Box::new(|p| {
+        web_sys::console::error_1(&p.to_string().into())
+    }));
+    let canvas = JsValue::NULL.unchecked_into();
+    let mut g = GswRs::new(canvas, "{\"live_protocol\":19,\"client_tweens\":true}").unwrap();
+    let data = include_bytes!("../../../protocol/golden-19/mixed.rs19");
+    let spans = wire::split_records(data, 19).unwrap();
+    let mut v = Validator::new(spans[0].bytes(data), 8, Options::new(19)).unwrap();
+    for span in &spans[1..] {
+        v.accept(span.bytes(data), span.offset).unwrap();
+    }
+    let vp = Viewport {
+        width: 640,
+        height: 360,
+        clear: [0.; 4],
+        global_xform: geom::IDENTITY,
+        cull_mask: u32::MAX,
+        format: Format::Rgba8,
+    };
+    let mut a = Applier::new(vp);
+    a.apply(v.state(), v.delta(), &g.payloads);
+    g.viewport = Some(vp);
+    g.validator = Some(v);
+    g.applier = Some(a);
+    g
+}
+#[test]
+#[wasm_bindgen]
+pub fn regression_material_decode_tick_diagnostics_and_resync() {
+    // Wire integers are safe JavaScript integers, not wrapping wasm32 indices.
+    for (record, from, to, code) in [
+        (
+            include_bytes!("../../../protocol/golden-19/material-begin.record").as_slice(),
+            "\"from\":0",
+            "\"from\":4294967296",
+            "tween-offset",
+        ),
+        (
+            include_bytes!("../../../protocol/golden-19/material-component.record").as_slice(),
+            "\"component\":1",
+            "\"component\":4294967297",
+            "meta-schema",
+        ),
+    ] {
+        let f = wire::frame(record, 0).unwrap();
+        let meta = std::str::from_utf8(f.meta).unwrap().replace(from, to);
+        let mut bytes = ((4 + meta.len() + record.len() - f.body) as u32)
+            .to_le_bytes()
+            .to_vec();
+        bytes.extend_from_slice(&(meta.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(meta.as_bytes());
+        bytes.extend_from_slice(&record[f.body..]);
+        assert_eq!(
+            render_stream_core::meta::decode_record(
+                &bytes,
+                0,
+                19,
+                &mut Default::default(),
+                &mut Default::default()
+            )
+            .unwrap_err()
+            .code,
+            code
+        );
+    }
+    let mut g = material_receiver();
+    let r = render_stream_core::tweens::decode_version(
+        include_bytes!("../../../protocol/golden-19/material-begin.record"),
+        0,
+        19,
+        &mut Default::default(),
+    )
+    .unwrap();
+    g.tween_records.push(r);
+    g.tween_picture = true;
+    assert_eq!(g.tween_tick(0., true), 1);
+    assert!(g.tweens_active());
+    assert_eq!(g.tween_tick(500_000., false), 1);
+    let a = g.applier.as_ref().unwrap();
+    assert_eq!(
+        a.tweens.materials.display[&1]["threshold"].components,
+        [Some(0.5)]
+    );
+    let d = js_sys::JSON::parse(&g.tween_diagnostics_json()).unwrap();
+    for key in [
+        "material_begins",
+        "live_material_tweens",
+        "held_material_components",
+    ] {
+        assert_eq!(
+            js_sys::Reflect::get(&d, &key.into()).unwrap().as_f64(),
+            Some(1.)
+        );
+    }
+    g.transport_skip();
+    assert!(!g.tweens_active());
+    assert!(g
+        .applier
+        .as_ref()
+        .unwrap()
+        .tweens
+        .materials
+        .display
+        .is_empty());
+}
+#[test]
+#[wasm_bindgen]
+pub fn regression_material_rebuild_completion_and_transcode() {
+    let mut g = material_receiver();
+    let r = render_stream_core::tweens::decode_version(
+        include_bytes!("../../../protocol/golden-19/material-begin.record"),
+        0,
+        19,
+        &mut Default::default(),
+    )
+    .unwrap();
+    picture(&mut g, 0, &[r]);
+    picture(&mut g, 200_000, &[]);
+    assert!(g.live_rebuild() >= 0);
+    apply(&mut g);
+    let s = g.validator.as_ref().unwrap().state();
+    g.applier
+        .as_mut()
+        .unwrap()
+        .tween_tick(s, &g.payloads, 700_000., None);
+    let held = g.applier.as_ref().unwrap().tweens.materials.display[&1]["threshold"].components[0]
+        .unwrap();
+    assert!((held - 0.3).abs() < 1e-6);
+    assert_eq!(g.tween_tick(1_000_000., false), 1);
+    assert!(!g.tweens_active());
+    assert_eq!(g.tween_tick(1_100_000., false), 0);
+    let down = render_stream_core::tweens::to18_from19(include_bytes!(
+        "../../../protocol/golden-19/mixed.rs19"
+    ))
+    .unwrap();
+    assert_eq!(
+        down,
+        include_bytes!("../../../protocol/golden-19/mixed.to18.rs18")
+    );
 }

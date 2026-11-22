@@ -143,7 +143,7 @@ const fn on(canvas: Id) -> Parent {
 
 /// Root canvas 1 draws viewport 5's texture (100) with item 10; viewport 5 (32x16, transparent,
 /// `always`) draws canvas 2, where item 20 is a rect.
-fn scene() -> ResolvedState {
+pub(super) fn scene() -> ResolvedState {
     let mut s = ResolvedState::empty(16);
     s.canvases.insert(1, canvas(1, true, vec![10]));
     s.canvases.insert(2, canvas(2, false, vec![20]));

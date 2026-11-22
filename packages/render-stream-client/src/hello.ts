@@ -59,7 +59,8 @@ export function helloV9(
     | "render-stream/15"
     | "render-stream/16"
     | "render-stream/17"
-    | "render-stream/18" = "render-stream/9",
+    | "render-stream/18"
+    | "render-stream/19" = "render-stream/9",
   liveCoding = "",
 ): Record<string, unknown> {
   return {

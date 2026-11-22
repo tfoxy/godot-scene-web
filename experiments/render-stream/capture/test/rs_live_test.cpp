@@ -4279,16 +4279,16 @@ void test_tween_lifecycle() {
   }
 }
 
-void test_tween18_lifecycle() {
+void test_tween18_lifecycle(int version = 18) {
   using namespace grc::rs::tweens;
   FakeTransport transport;
   LiveConfig config;
-  config.tap_dir = std::string(GRC_TEST_TMP_DIR) + "/tweens18";
-  auto tmpl = template_v6(); tmpl.version = ProtocolVersion::V18;
+  config.tap_dir = std::string(GRC_TEST_TMP_DIR) + "/tweens" + std::to_string(version);
+  auto tmpl = template_v6(); tmpl.version = version == 19 ? ProtocolVersion::V19 : ProtocolVersion::V18;
   Hub hub(&transport, config, tmpl);
   const auto open = [&](std::uint32_t id) {
-    hub.on_event(opened_with(id, kSubprotocolV18), 0);
-    hub.on_event(text(id, tween_hello(true, 18)), 0);
+    hub.on_event(opened_with(id, version == 19 ? kSubprotocolV19 : kSubprotocolV18), 0);
+    hub.on_event(text(id, tween_hello(true, version)), 0);
   };
   open(1);
   Pose pose; pose.item = 1;
@@ -4337,7 +4337,7 @@ void test_tween18_lifecycle() {
   check(wire.size() == 3, "late granted peer gets no unknown cancel");
   hub.finish(EndReason::Shutdown, 7, 7000000);
   // The granted tap contains the uncoded session, tween records, transactions and end together.
-  const auto tapped = read_file(config.tap_dir + "/stream-2.rs2");
+  const auto tapped = read_file(config.tap_dir + (version == 19 ? "/stream-2.rs19" : "/stream-2.rs2"));
   std::string live;
   for (const auto &m : of_conn(transport, Sent::Binary, 2))
     live.append(reinterpret_cast<const char *>(m.bytes.data()), m.bytes.size());
@@ -4440,6 +4440,157 @@ void test_tween_peer_bytes() {
     }
     check(tweens == 4, "granted peer receives begin then per-frame poses with coding");
     if (coding == Coding::ZstdBase) check(prefixed > 0, "peer byte check exercises based live coding");
+  }
+}
+
+// Mixed versions share ordinary material motion, but only /19 owns material playback.
+void test_material_tween_peers() {
+  using namespace grc::rs::tweens;
+  using grc::rs::live_coding::Coding;
+  struct Run {
+    std::map<std::uint32_t,std::vector<std::vector<std::uint8_t>>> wire, plain;
+    std::vector<ConnectionSummary> sums;
+    Stats stats;
+  };
+  for (const auto coding : {Coding::Off,Coding::Zstd,Coding::ZstdBase}) {
+    const auto run = [&](bool announce) {
+      Run out;
+      FakeTransport transport;
+      LiveConfig config; config.live_coding=coding;
+      config.tap_dir=std::string(GRC_TEST_TMP_DIR)+"/material-"+
+        grc::rs::live_coding::to_token(coding)+(announce ? "-on" : "-off");
+      auto tmpl=make_template(Delivery::Inline); tmpl.version=ProtocolVersion::V19;
+      Hub hub(&transport,config,tmpl);
+      const int versions[]={19,18,17,16,19};
+      for (std::uint32_t id=1;id<=5;++id) {
+        hub.on_event(opened_with(id,"render-stream."+std::to_string(versions[id-1])),0);
+        auto hello=tween_hello(id<=3,versions[id-1]);
+        if (coding!=Coding::Off) hello=with_live_coding(hello,"zstd-base,zstd");
+        hub.on_event(text(id,hello),0);
+      }
+      Pose pose; pose.item=1;
+      Resolve node=[&](std::uint64_t,Pose *out) { *out=pose; return std::string(); };
+      Material material; material.id=7; material.shader=3; material.shader_version=1; material.supported=true;
+      Param param; param.name="threshold"; param.type=VariantType::Float; param.floats={1};
+      material.params[param.name]=param;
+      ResolveMaterial resolve=[&](std::uint64_t object,Material *out,bool allowed) {
+        if (object!=42) return std::string("node");
+        if (!allowed) return std::string("material-version");
+        *out=material; return std::string();
+      };
+      const auto begin=[&](int id,bool mat,const char *property,double to,std::uint64_t t) {
+        hub.tweens().begin(Value::Object{{"tween_id",id},{"object_id",mat ? 42 : 7},
+          {"started_usec",static_cast<std::int64_t>(t)},{"steps",Value::Array{Value::Object{
+            {"property",property},{"to",to},{"start_ms",0},{"duration_ms",2000},{"trans",0},{"ease",0}}}}},
+          t,node,resolve);
+      };
+      begin(1,false,"rotation",2.0,1000);
+      if (announce) begin(10,true,"shader_parameter/threshold",0.0,1000);
+      begin(2,false,"position:x",25.0,1000);
+      for (int n=1;n<=5;++n) {
+        if (n==2 && announce) {
+          material.params["threshold"].type=VariantType::Int;
+          hub.tweens().observe_materials(2000,resolve);
+          material.params["threshold"].type=VariantType::Float;
+          begin(10,true,"shader_parameter/threshold",0.25,2000);
+        }
+        if (n==4) {
+          hub.tweens().cancel(1,4000); hub.tweens().cancel(2,4000);
+          if (announce) hub.tweens().cancel(10,4000);
+        }
+        if (n>1) for (const auto &cs : hub.summaries()) {
+          // /19 misses the short-lived type change while its credit is exhausted.
+          if (!(announce && cs.connection==1 && n==2))
+            hub.on_event(text(cs.connection,ack(cs.stream_id,cs.transactions,"submitted")),n);
+        }
+        material.params["threshold"].floats={1.0-static_cast<double>(n)/10};
+        auto snapshot=with_payloads(n);
+        snapshot.state.version=ProtocolVersion::V19;
+        ShaderEntry shader; shader.id=3; shader.has_mode=true;
+        shader.has_source=true; shader.source=ShaderSource::Withheld;
+        snapshot.state.shaders={shader};
+        MaterialEntry m; m.id=7; m.version=n; m.has_shader=true; m.shader=3;
+        m.params={material.params.at("threshold")}; snapshot.state.materials={m};
+        snapshot.tweens=std::make_shared<const Frame>(hub.tweens().snapshot(n*1000,node,resolve));
+        hub.on_frame(n,n*1000000ULL,&snapshot,n,1000);
+      }
+      out.sums=hub.summaries(); out.stats=hub.tweens().stats();
+      check(has(hub.summary_json(),"\"material_begins_accepted\"") &&
+        has(hub.summary_json(),"\"material_events_filtered_by_version\""),
+        "/19 host summary exposes material counters beside older viewer grants");
+      const auto through_tx=transport.sent;
+      hub.finish(EndReason::Shutdown,6,6000000);
+      for (std::uint32_t id=1;id<=5;++id) {
+        for (const auto &m : through_tx) if (m.conn==id && m.kind==Sent::Binary) out.wire[id].push_back(m.bytes);
+        std::string error; std::uint64_t prefixed=0;
+        if (coding==Coding::Off) out.plain[id]=out.wire[id];
+        else check(model_decode(out.wire[id],&out.plain[id],&error,&prefixed),"mixed material coding decodes: "+error);
+        if (coding==Coding::ZstdBase) check(prefixed>0,"mixed material transcript exercises base-prefix coding");
+        std::vector<std::vector<std::uint8_t>> all,decoded;
+        for (const auto &m : of_conn(transport,Sent::Binary,id)) all.push_back(m.bytes);
+        if (coding==Coding::Off) decoded=all;
+        else check(model_decode(all,&decoded,&error,&prefixed),"complete mixed tap stream decodes");
+        std::string live;
+        for (const auto &m : decoded) live.append(reinterpret_cast<const char *>(m.data()),m.size());
+        const auto tap=read_file(config.tap_dir+"/stream-"+std::to_string(id)+(versions[id-1]==19 ? ".rs19" : ".rs2"));
+        check(!tap.empty() && tap==live,"mixed tap equals complete uncoded live bytes for each version/grant");
+      }
+      return out;
+    };
+    const auto baseline=run(false), mixed=run(true);
+    check(mixed.stats.material_begins_accepted==2 && mixed.stats.material_steps_accepted==2 &&
+      mixed.stats.material_tweens_retired==1 && mixed.stats.cancels_dropped==0,
+      "mixed Hub accepts reused ID after host invalidation without unknown cancels");
+    check(mixed.stats.material_events_filtered_by_version.size()==2 &&
+      mixed.stats.material_events_filtered_by_version.at("render-stream/18")==4 &&
+      mixed.stats.material_events_filtered_by_version.at("render-stream/17")==4,
+      "mixed Hub counts two material begins and two cancels per old grant, never opt-outs");
+    for (std::uint32_t id=2;id<=5;++id) {
+      auto expected=baseline.wire.at(id);
+      const auto &plain=baseline.plain.at(id);
+      int tweens=0;
+      for (std::size_t i=1;i<plain.size();++i) {
+        const auto metadata=meta_at(plain[i],0);
+        if (!has(metadata,"\"type\":\"tween\"")) continue;
+        ++tweens;
+        // /17–/18 retain global order: material order 2 is deliberately absent.
+        auto bytes=plain[i];
+        const std::string order="\"order\":2";
+        const auto found=std::search(bytes.begin(),bytes.end(),order.begin(),order.end());
+        if (found!=bytes.end()) *(found+static_cast<std::ptrdiff_t>(order.size()-1))='3';
+        if (coding==Coding::Off) expected[i]=bytes;
+        else check(grc::rs::live_coding::encode_plain(bytes.data(),bytes.size(),&expected[i]),"encode node-only baseline with order gap");
+      }
+      const auto &actual=mixed.wire.at(id);
+      check(expected.size()==actual.size() && expected.size()>5 &&
+        std::equal(expected.begin()+1,expected.end(),actual.begin()+1),
+        "older/opt-out resources, material updates, node records and coding equal node-only baseline with global gap");
+      check(tweens==(id<=3 ? 4 : 0),"only /17 and /18 granted old peers receive node records");
+      for (std::size_t i=1;i<mixed.plain.at(id).size();++i) {
+        const auto metadata=meta_at(mixed.plain.at(id)[i],0);
+        if (!has(metadata,"\"type\":\"tween\"")) continue;
+        check(!has(metadata,"\"material\"") && !has(metadata,"\"param\"") &&
+          !has(metadata,"\"tween_id\":\"10\""),"old record has no material keys, begins or unknown cancels");
+        check(has(metadata,"\"count\":18") || has(metadata,"\"count\":16"),
+          "old record contains only two node endpoints plus pose, or pose alone");
+      }
+    }
+    int material_begins=0,material_cancels=0;
+    const auto &messages=mixed.plain.at(1);
+    for (std::size_t i=1;i<messages.size();++i) {
+      const auto metadata=meta_at(messages[i],0);
+      if (!has(metadata,"\"type\":\"tween\"")) continue;
+      check(i+1<messages.size() && has(meta_at(messages[i+1],0),"\"type\":\"transaction\""),
+        "mixed /19 tween stays adjacent to its picture after coding");
+      if (has(metadata,"\"material\":7")) ++material_begins;
+      if (has(metadata,"\"op\":\"cancel\",\"tween_id\":\"10\"")) ++material_cancels;
+      if (has(metadata,"\"begin_us\":2000"))
+        check(has(metadata,"\"events\":[{\"op\":\"cancel\",\"tween_id\":\"10\""),
+          "coalesced /19 receives authoritative cancel before reused material begin");
+    }
+    check(material_begins==2 && material_cancels==2,"only /19 receives both material generations and cancels");
+    for (const auto &cs : mixed.sums) check(cs.transactions==(cs.connection==1 ? 4u : 5u) && cs.error_sent.empty(),
+      "mixed material events consume no extra credits or transactions");
   }
 }
 
@@ -4574,7 +4725,7 @@ void test_client_tweens() {
 
 void test_v18_hello_range() {
   const auto source = read_file(std::string(GRC_GOLDEN12_DIR) + "/control/valid/hello-native-block.json");
-  for (int version : {16, 17, 18}) {
+  for (int version : {16, 17, 18, 19}) {
     // Reuse the required /12 hello fields, without an optional tween request.
     for (int window : {0, 1, 2, 3, 8, 9}) {
       std::string hello = source;
@@ -4585,11 +4736,11 @@ void test_v18_hello_range() {
       ControlMessage message;
       std::string error;
       const bool ok = parse_control(hello, &message, &error,
-          version == 18 ? ProtocolVersion::V18 : version == 17 ? ProtocolVersion::V17 : ProtocolVersion::V16);
-      check(ok == (window >= 1 && window <= (version == 18 ? 8 : 2)),
+          version == 19 ? ProtocolVersion::V19 : version == 18 ? ProtocolVersion::V18 : version == 17 ? ProtocolVersion::V17 : ProtocolVersion::V16);
+      check(ok == (window >= 1 && window <= (version >= 18 ? 8 : 2)),
             "version-gated hello credit range: /" + std::to_string(version) + " window " + std::to_string(window));
       Rig rig;
-      rig.hub.on_event(opened_with(1, version == 18 ? kSubprotocolV18 : version == 17 ? kSubprotocolV17 : kSubprotocolV16), 0);
+      rig.hub.on_event(opened_with(1, version == 19 ? "render-stream.19" : version == 18 ? kSubprotocolV18 : version == 17 ? kSubprotocolV17 : kSubprotocolV16), 0);
       rig.hub.on_event(text(1, hello), 0);
       const auto summary = rig.hub.summaries().at(0);
       if (ok) {
@@ -4616,7 +4767,9 @@ int main(int argc, char **argv) {
   test_client_tweens();
   test_tween_lifecycle();
   test_tween18_lifecycle();
+  test_tween18_lifecycle(19);
   test_tween_peer_bytes();
+  test_material_tween_peers();
   test_connection_observer();
   test_pm1_multimesh_buffer_f();
   test_pm5_v11_viewer_of_v12_host();

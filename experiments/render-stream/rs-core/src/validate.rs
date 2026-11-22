@@ -810,6 +810,7 @@ pub struct Validator {
     item_meta_pending: Option<Box<ItemMetaRecord>>,
     tween_pending: Option<Box<crate::tweens::Record>>,
     tween_ready: Option<Box<crate::tweens::Record>>,
+    tween_error: Option<Error>,
     tween_registry: crate::tweens::Registry,
     tween_time: Option<i64>,
     // ---- /15 (render-stream-15.md "Resource hints"); empty below /15.
@@ -2003,6 +2004,7 @@ impl Validator {
             item_meta_pending: None,
             tween_pending: None,
             tween_ready: None,
+            tween_error: None,
             tween_registry: Default::default(),
             tween_time: None,
             hints: HashMap::new(),
@@ -2044,6 +2046,7 @@ impl Validator {
     pub fn discard_item_meta_pending(&mut self) {
         self.item_meta_pending = None;
         self.tween_pending = None;
+        self.tween_error = None;
         self.tween_ready = None;
         self.tween_registry = Default::default();
     }
@@ -2277,6 +2280,7 @@ impl Validator {
         // TAG1: a pending item_meta record described a transaction the transport skipped.
         self.item_meta_pending = None;
         self.tween_pending = None;
+        self.tween_error = None;
         self.tween_ready = None;
         self.tween_registry = Default::default();
     }
@@ -2330,7 +2334,21 @@ impl Validator {
             &mut self.tx,
         );
         prof::add(prof::META, t);
-        let decoded = decoded?;
+        let mut tween_error = None;
+        let decoded = match decoded {
+            Err(e)
+                if self.opts.version >= 19
+                    && record
+                        .get(8..)
+                        .is_some_and(|m| m.starts_with(b"{\"type\":\"tween\""))
+                    && matches!(e.code, "tween-offset" | "tween-time" | "tween-entry") =>
+            {
+                let header = crate::tweens::schema19(record, offset)?;
+                tween_error = Some(e);
+                Decoded::Tween(Box::new(header))
+            }
+            other => other?,
+        };
         if self.tween_pending.is_some()
             && !matches!(decoded, Decoded::Transaction | Decoded::ItemMeta(_))
         {
@@ -2356,6 +2374,7 @@ impl Validator {
                 self.bytes_total += record.len() as u64;
                 self.max_record_bytes = self.max_record_bytes.max(record.len() as u64);
                 self.tween_pending = Some(r);
+                self.tween_error = tween_error;
                 Accepted::Tween
             }
             Decoded::Session(_) => {
@@ -2719,7 +2738,7 @@ impl Validator {
             return Err(Error::new("meta-schema", "t_us requires a tween grant"));
         }
         if let Some(time) = self.tx.t_us {
-            if self.tween_time.is_some_and(|old| time < old) {
+            if self.opts.version < 19 && self.tween_time.is_some_and(|old| time < old) {
                 return Err(Error::new("tween-time", "decreasing t_us"));
             }
             if self
@@ -2781,6 +2800,19 @@ impl Validator {
         if result.is_ok() && !self.hints.is_empty() {
             result = self.check_hint_meta(offset);
         }
+        // /19 checks the ordinary scene first, then the associated tween's floats, timing
+        // and entry references. A malformed record never reaches playback or commits scene state.
+        if result.is_ok() && self.opts.version >= 19 {
+            if let Some(e) = &self.tween_error {
+                result = Err(e.clone());
+            } else if self
+                .tx
+                .t_us
+                .is_some_and(|time| self.tween_time.is_some_and(|old| time < old))
+            {
+                result = Err(Error::new("tween-time", "decreasing t_us"));
+            }
+        }
         let registry = if result.is_ok() {
             if let Some(time) = self.tx.t_us {
                 match self.tween_registry.transaction(
@@ -2810,6 +2842,7 @@ impl Validator {
         }
         self.tween_time = self.tx.t_us;
         self.tween_ready = self.tween_pending.take();
+        self.tween_error = None;
         self.hints_fresh.clear();
         if self.item_meta_pending.is_some() || !self.item_meta.rows.is_empty() {
             self.item_meta_commit();

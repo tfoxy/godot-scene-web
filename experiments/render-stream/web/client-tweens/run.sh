@@ -57,23 +57,38 @@ run_headless "$OUT/import" none -- mise exec -- godot --headless --editor --path
 [ "$(cat "$OUT/import/exit-code.txt")" = 0 ]
 run_headless "$OUT/helper" none -- mise exec -- godot --headless --max-fps 60 --path "$OUT/project" -- --self-test
 [ "$(cat "$OUT/helper/exit-code.txt")" = 0 ]
-grep -q 'helper: 9 assertions passed' "$OUT/helper/stdout.log"
+grep -q 'helper: 20 assertions passed' "$OUT/helper/stdout.log"
+# Release templates remove assert expressions, so also exercise their native playback path.
+run_headless "$OUT/helper-release" none -- "$BINARY" --headless --max-fps 60 --path "$OUT/project" -- --self-test
+[ "$(cat "$OUT/helper-release/exit-code.txt")" = 0 ]
+grep -q 'helper: 20 assertions passed' "$OUT/helper-release/stdout.log"
 if [ "${2:-}" = --self-test-only ]; then exit 0; fi
 # Build the final core revision, including the client's factory glue and build.json.
 mise exec -- "$REPO_ROOT/packages/render-stream-client/scripts/build-web.sh" "$OUT/core" > "$OUT/core-build.log" 2>&1
 uptime > "$OUT/uptime.txt"
 bash "$SCRIPT_DIR/lib/quiet.sh" status > "$OUT/quiet-before.txt"
-python3 - <<'PY'
-import os
-load = os.getloadavg()[0]
-if load > 4:
-    raise SystemExit(f"client-tweens: real-time leg deferred: load {load:.2f} > 4")
+python3 - "$OUT/load-wait.json" <<'PY'
+import json, os, sys, time
+started = time.monotonic()
+samples = []
+while True:
+    load = os.getloadavg()[0]
+    elapsed = time.monotonic() - started
+    samples.append({"elapsed_s": elapsed, "load_1m": load})
+    with open(sys.argv[1], "w") as log:
+        json.dump({"wait_s": elapsed, "samples": samples}, log, indent=2)
+    if load <= 4:
+        break
+    if elapsed >= 600:
+        raise SystemExit(f"client-tweens: real-time leg deferred: load {load:.2f} > 4 after {elapsed:.1f} s")
+    print(f"client-tweens: waiting for load gate: {load:.2f} > 4 ({elapsed:.1f} s)", flush=True)
+    time.sleep(min(5, 600 - elapsed))
 PY
 PAGE_PORT="$(legs_free_port)"
 LEGS_TIMING_GROUP=client-tweens
 LEG_ENV=(GRC_EXTENSION="$EXTENSION" GRC_CALIBRATION="$CALIBRATION" GRC_MODE=arm
   GRC_EVIDENCE_DIR="$OUT/host/evidence" GRC_LIVE_LISTEN=127.0.0.1:0
-  GRC_STREAM_VERSION=17 GRC_PUBLISH_FPS=10 GRC_LIVE_AUTH=none GRC_LIVE_MAX_CONNECTIONS=2
+  GRC_STREAM_VERSION=19 GRC_PUBLISH_FPS=10 GRC_LIVE_AUTH=none GRC_LIVE_MAX_CONNECTIONS=2
   GRC_LIVE_ALLOWED_ORIGINS="http://127.0.0.1:$PAGE_PORT"
   GRC_ROOT_SIZE=presentation:640x360 GRC_ADOPT=arm GRC_UNKNOWN_ITEM=skip
   GRC_VALIDATION_LOG=on TWEEN_CHECK_OUT="$OUT")

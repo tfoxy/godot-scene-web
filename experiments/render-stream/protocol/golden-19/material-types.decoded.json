@@ -1,0 +1,85 @@
+{
+  "meta": {
+    "type": "tween",
+    "seq": 1,
+    "frame": 1,
+    "t_us": 0,
+    "events": [
+      {
+        "op": "begin",
+        "tween_id": "7001",
+        "material": 1,
+        "order": 1,
+        "begin_us": 0,
+        "end_us": 1000000,
+        "steps": [
+          {
+            "param": "v3",
+            "type": "vector3",
+            "component": null,
+            "start_us": 0,
+            "duration_us": 1000000,
+            "trans": 0,
+            "ease": 2,
+            "from": 0,
+            "to": 3
+          },
+          {
+            "param": "v4",
+            "type": "vector4",
+            "component": null,
+            "start_us": 0,
+            "duration_us": 1000000,
+            "trans": 0,
+            "ease": 2,
+            "from": 6,
+            "to": 10
+          },
+          {
+            "param": "tint",
+            "type": "color",
+            "component": null,
+            "start_us": 0,
+            "duration_us": 1000000,
+            "trans": 0,
+            "ease": 2,
+            "from": 14,
+            "to": 18
+          }
+        ]
+      }
+    ],
+    "poses": [],
+    "blocks": [
+      {
+        "name": "tween_f32",
+        "type": "f32",
+        "count": 22
+      }
+    ]
+  },
+  "tween_f32": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    1,
+    1,
+    1,
+    1,
+    0,
+    0,
+    0,
+    0
+  ]
+}

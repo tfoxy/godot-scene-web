@@ -247,6 +247,7 @@ impl Applier {
             return Refresh::Deferred;
         }
         let old = self.tweens.display.clone();
+        let old_materials = self.tweens.materials.display.clone();
         if let Some((time, records)) = picture {
             self.tweens.picture(time, local_us, records, state);
         } else {
@@ -258,11 +259,44 @@ impl Applier {
                 self.ov_changed.push(*id);
             }
         }
+        let materials: Vec<_> = old_materials
+            .keys()
+            .chain(self.tweens.materials.display.keys())
+            .filter(|id| old_materials.get(id) != self.tweens.materials.display.get(id))
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        self.refresh_tween_materials(state, payloads, &materials);
         let refresh = self.refresh_overrides(state, payloads);
         if refresh != Refresh::Deferred && !self.first {
             self.tick_surfaces(state, payloads);
         }
         refresh
+    }
+
+    pub(super) fn refresh_tween_materials(
+        &mut self,
+        state: &ResolvedState,
+        payloads: &PayloadStore,
+        materials: &[Id],
+    ) {
+        if materials.is_empty() {
+            return;
+        }
+        self.refresh_bindings(
+            state,
+            &TxDelta {
+                materials_upserted: materials.to_vec(),
+                ..TxDelta::default()
+            },
+            &[],
+            payloads,
+        );
+        if self.request_cover(false) {
+            self.expected_calls = Some(self.list.merged_draw_count() as u32);
+        }
+        self.coalesce_dirty();
     }
 
     /// Replace the override table with `ids` and their [`OVERRIDE_FLOATS`] values each. Ids not

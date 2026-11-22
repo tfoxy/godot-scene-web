@@ -5208,6 +5208,31 @@ Mirror::Shader *Mirror::find_shader(std::uint64_t rid) {
   return it == shader_by_rid_.end() ? nullptr : shaders_.mut(it->second);  // HC4b: marks
 }
 
+std::optional<tweens::Material> Mirror::tween_material(std::uint64_t rid, bool unpublished) const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  const auto found = material_by_rid_.find(rid);
+  if (found == material_by_rid_.end() || (!unpublished && !pub_materials_.find(found->second))) return std::nullopt;
+  const auto *material = materials_.find(found->second);
+  if (!material || !material->rid) return std::nullopt;
+  tweens::Material out;
+  out.published = pub_materials_.find(found->second) != nullptr;
+  out.id = material->id;
+  out.shader = material->shader;
+  out.supported = material->has_shader && !material->shader_unknown;
+  for (const auto &entry : material->params) {
+    out.params.emplace(entry.first, entry.second.v12_ok ? entry.second.v12_param : entry.second.param);
+    if (!entry.second.ok && !entry.second.v12_ok) out.supported = false;
+  }
+  const auto *shader = shaders_.find(material->shader);
+  if (shader) {
+    out.shader_version = shader->version;
+    const auto wire = wire_shader(*shader);
+    out.supported = out.supported && wire.status == rs2::ShaderStatus::Ok &&
+        wire.has_mode && wire.mode == rs2::ShaderMode::CanvasItem && !shader->copy.builtin;
+  } else out.supported = false;
+  return out;
+}
+
 Mirror::Material *Mirror::find_material(std::uint64_t rid) {
   const auto it = material_by_rid_.find(rid);
   return it == material_by_rid_.end() ? nullptr : materials_.mut(it->second);  // HC4b: marks
