@@ -7,7 +7,7 @@
   "packageManager": "pnpm@10.26.0",
   "scripts": {
     "build": "pnpm -r --filter './packages/**' --filter './apps/**' run build",
-    "check": "pnpm check-public-tree && pnpm format:check && pnpm typecheck && pnpm test",
+    "check": "pnpm check-public-tree && pnpm format:check && pnpm typecheck && pnpm typecheck:experiments && pnpm test",
     "check-public-tree": "python3 scripts/check-public-tree.py",
     "dev": "pnpm --filter @godot-scene-web/playground dev",
     "format": "biome check --write . && prettier --write \"**/*.{md,yml,yaml}\"",
