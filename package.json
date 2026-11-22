@@ -48,6 +48,7 @@
     "render-stream:report2": "tsx --conditions=development experiments/render-stream/scripts/report-gate7.ts",
     "render-stream:features": "tsx --conditions=development experiments/render-stream/scripts/make-features.ts",
     "typecheck": "pnpm -r --filter './packages/**' --filter './apps/**' run typecheck",
+    "typecheck:experiments": "tsc -p experiments/render-stream/tsconfig.json --noEmit",
     "typecheck:ts6": "pnpm -r --filter './packages/**' --filter './apps/**' exec tsc6 -p tsconfig.json --noEmit"
   },
   "devDependencies": {
