@@ -1,9 +1,8 @@
 # render-stream/18 wire format
 
-Status: **built (wire, adaptive host window and draw pacing)**. /18 is render-stream/17
-([render-stream-17.md](render-stream-17.md)) plus a credit window in **1..8**, the adaptive
-host window and /18-only draw pacing. Everything this text
-does not list is /17's, byte for byte. /17 and earlier are unchanged.
+Status: **built (wire and adaptive host window)**. /18 is render-stream/17
+([render-stream-17.md](render-stream-17.md)) plus a credit window in **1..8** and the adaptive
+host window. Everything this text does not list is /17's, byte for byte. /17 and earlier are unchanged.
 
 ## What differs from /17
 
@@ -24,7 +23,7 @@ does not list is /17's, byte for byte. /17 and earlier are unchanged.
 - **The host** offers /18 under `GRC_STREAM_VERSION=18`. It lists `render-stream.18` first,
   followed by `render-stream.17` and `render-stream.16`, and file sinks write /18.
   Each connection uses its selected subprotocol's version: /17 and /16 keep windows in 1..2,
-  their existing grammar and bytes, and no adaptive draw pacing. Without this setting every
+  their existing grammar and bytes. Without this setting every
   /2 through /17 connection keeps its existing grammar and bytes.
 - **The render-stream client package** offers exactly `render-stream.18` for an endpoint whose
   protocol is 18. It requests window 8 by default; below /18 it requests 2. An explicit window
@@ -34,8 +33,8 @@ does not list is /17's, byte for byte. /17 and earlier are unchanged.
 - **The native GDScript receiver** does not offer /18.
 
 The declared session window is the grant. A host may send fewer transactions than that grant
-allows without changing the session or acknowledgement grammar. Host adaptation and pacing
-are implementation behaviour, outside this range widening.
+allows without changing the session or acknowledgement grammar. Host window adaptation
+is implementation behaviour, outside this range widening.
 
 The host caps the grant at `GRC_LIVE_CREDIT_WINDOW_MAX` (1..8, default 8). Its effective sending
 window starts at `min(2, grant)`. After a credit RTT sample it uses
@@ -45,20 +44,15 @@ new sends until enough credits return. Grants of 1 or 2 retain their previous be
 The `/18` live summary and per-second connection timeline report `w_eff`, `srtt_us` and the
 existing `max_in_flight`. Older summary shapes stay unchanged.
 
-Only `/18` connections pace publication to the client's draws. Over a sliding host-clock
-second, the host counts distinct `submitted` acknowledgement `t_us` values as draws; a timestamp
-shared by at least two distinct sequences is one coalesced draw. Duplicate acknowledgements do
-not count twice. After a full second of observations, a coalesced share above 20% sets the
-connection period to `1e9 / draws_per_second` ns, bounded below by the measured host callback
-period and any explicit `GRC_PUBLISH_FPS` period. Each two seconds without coalescing shortens
-the adaptive period by 10%; reaching the host period removes the adaptive cap. A connection
-without submitted acknowledgements is never paced.
-
-The session's declared `publication` remains unchanged. The `/18` connection summary and
-per-second timeline additionally report `pace_period_us` (the actual connection period,
-including the explicit rate floor; zero when uncapped), `draws_per_s` and `coalesced_share`.
-`/17` and earlier retain the global publish period, their prior telemetry shape and their
-existing transcripts.
+**Back-pressure:** /18 does not pace publication to the viewer's draw rate. The effective
+window `w_eff` bounds transactions in flight at the negotiated credit stage; credit at
+`applied` bounds only transactions not yet applied. A viewer that draws more slowly than the
+host publishes folds the surplus, as /16 already does at short RTT. The client's two-undrawn
+gate can defer application, but a draw can release several transactions together, so credits
+can outrun draws. Pacing to viewer-reported draw capacity is future work, outside /18.
+An explicit `GRC_PUBLISH_FPS` continues to
+limit publication through the global host period, with a separate schedule per connection
+and no catch-up bursts. The session's declared `publication` remains unchanged.
 
 ## Validators and golden vectors
 

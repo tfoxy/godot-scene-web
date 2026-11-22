@@ -10,8 +10,10 @@
 #     [--rx-cmd CMD] [-- NAME=value ...]
 #
 # Engine-free: put --engine-free /abs/path/capture/build/rs_live_host FIRST, then
-# --receiver host-only --protocol 16|18 --window 1..8 --out DIR --rx-cmd CMD.
+# --receiver host-only|null --protocol 16|18 --window 1..8 --out DIR [--rx-cmd CMD].
 # Additional options: --items 1024 --frames 3600 --delay-ms 24 --page-port 13832.
+# --receiver null uses arrival acks, no core. --token-auth enables hello tokens.
+# --direct --delay-ms 0 bypasses the proxy.
 # CMD uses client-live-check.ts --measure-s N --core PREBUILT_DIR (no build in the leg).
 # This path uses the production hub with an animated rectangle scene at 60 Hz; no Godot.
 #

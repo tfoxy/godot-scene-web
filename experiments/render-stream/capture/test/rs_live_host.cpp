@@ -760,6 +760,8 @@ int main(int argc, char **argv) {
     tmpl.version = benchmark == 18 ? ProtocolVersion::V18 : ProtocolVersion::V16;
     tmpl.viewport.logical_size = {1920, 1080};
     tmpl.viewport.presentation_size = {1920, 1080};
+    tmpl.viewport.host_window_size = {1920, 1080};
+    tmpl.host_visible_rect = {0.0f, 0.0f, 1920.0f, 1080.0f};
   }
   tmpl.stream = StreamInfo();
   ResourcePolicy policy;
@@ -827,6 +829,7 @@ int main(int argc, char **argv) {
     for (std::uint32_t id = 1; id <= item_count; ++id) {
       ItemState item = prototype;
       item.id = id;
+      item.draw_index = static_cast<std::int32_t>(id - 1);
       item.xform[4] = static_cast<float>(((id - 1) % 64) * 28);
       item.xform[5] = static_cast<float>(((id - 1) / 64) * 28);
       snapshot.state.items.set(std::move(item));

@@ -10,12 +10,11 @@ of reduced capture, bandwidth or latency and contains no product-specific API.
 
 **Base assumptions.** /18 means /17 plus the hello and
 `publication.credit_window` range 1..8, with magic `GRSI`
-(`47 52 53 49 0D 0A 1A 0A`). Its current text also describes adaptive pacing and
-an /18-only host without downgrade. This specification assumes the stated
-/17-plus-window base, retains /18's adaptive window, draw pacing and telemetry
-for /19 and /18 connections under a /19 host, and explicitly requires the
-version availability below. /17 and /16 keep the global period. There is no
-/19-specific pacing change; this does not edit /18's text or code. Everything
+(`47 52 53 49 0D 0A 1A 0A`), and /18's adaptive effective window (no viewer pacing;
+see render-stream-18.md, the **Back-pressure** paragraph). This specification retains /18's adaptive
+window and its window telemetry for /19 and /18 connections under a /19 host, and
+explicitly requires the version availability below. All versions keep the global
+publish period. There is no /19-specific window or rate change. Everything
 not changed here is /18's, including /17's node tween grammar and behavior
 ([render-stream-17.md](render-stream-17.md)).
 
@@ -28,8 +27,8 @@ not changed here is /18's, including /17's node tween grammar and behavior
   `{render-stream.19, render-stream.18, render-stream.17, render-stream.16}`
   in that preference order. Window 1..8 applies on /19 and /18; /17 and /16
   retain 1..2. File streams still declare window 1. /19 and /18 connections
-  use /18's adaptive window, draw pacing and telemetry; /17 and /16 use the
-  global period. No older connection acquires /19 grammar.
+  use /18's adaptive window and its telemetry; every version uses the global
+  publish period. No older connection acquires /19 grammar.
 - The existing optional last hello key `"client_tweens":true` grants both
   node and material tweens on /19. The session echoes it immediately before
   `blocks`, as in /17. There is no second capability key. Absence disables both;
@@ -456,9 +455,9 @@ such /19 conversion support.
 5. **Filtering: recommend version-aware queues before encoding.** /17 and /18
    keep node playback and host params, with counted material filters; /16 keeps
    host frames. A /19 host offers exactly {.19, .18, .17, .16}. /19 and /18
-   connections get /18's adaptive window, draw pacing and telemetry; /17 and
-   /16 keep the global period. This preserves negotiated behavior without a
-   /19-specific pacing change.
+   connections get /18's adaptive window and its telemetry; every version keeps
+   the global publish period. This preserves negotiated behavior without a
+   /19-specific window or rate change.
 6. **Application and retirement: recommend a core param display layer and
    host-authoritative target retirement.** Binding refresh substitutes owned
    components below extensions and dirties only changed material users. On
@@ -566,8 +565,8 @@ Vector3/Vector4 variants, and record each viewer's negotiated version in
   old grants, no grants, disconnect/late join/resync and taps.
 - /19 hello/session windows 1 and 8; reject 0/9, retain 1..2 limits on /17–/16.
   Confirm existing node begin keys and ordering are unchanged. Assert the exact
-  four-version offer, /18 adaptive window/draw pacing/telemetry for /19 and /18
-  connections, and the global period for /17 and /16.
+  four-version offer, the /18 adaptive window and its telemetry for /19 and /18
+  connections, and the global publish period for every version.
 
 ### M2: rs-core, wasm and golden-19
 

@@ -1661,10 +1661,7 @@ void perf_timeline_tick(uint64_t now_ns) {
               ",\"acks\":[" + std::to_string(s.acks[0]) + "," + std::to_string(s.acks[1]) + "," +
               std::to_string(s.acks[2]) + "]" +
               (s.version >= 18 ? ",\"w_eff\":" + std::to_string(s.w_eff) +
-                                     ",\"srtt_us\":" + std::to_string(s.srtt_us) +
-                                     ",\"pace_period_us\":" + std::to_string(s.pace_period_us) +
-                                     ",\"draws_per_s\":" + std::to_string(s.draws_per_s) +
-                                     ",\"coalesced_share\":" + std::to_string(s.coalesced_share)
+                                     ",\"srtt_us\":" + std::to_string(s.srtt_us)
                                : std::string()) +
               ",\"max_in_flight\":" + std::to_string(s.max_in_flight) +
               ",\"max_queued_bytes\":" + std::to_string(s.max_queued_bytes) +

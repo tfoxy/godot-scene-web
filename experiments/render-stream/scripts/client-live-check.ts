@@ -28,6 +28,7 @@
 // --core: build-web.sh's output; built into <dir>/core when absent.
 // --measure-s N: one uninterrupted throughput mount (no context loss or memory probes).
 // Requires a prebuilt --core; --cpu-throttle N uses CDP Emulation.setCPUThrottlingRate.
+// --calibrate-raf-s N: opt-in idle rAF sample before mounting, and rAF while streaming.
 // Records per-second client stats and a screenshot presence check in client-check.json.
 
 import { execFileSync } from "node:child_process";
@@ -137,9 +138,13 @@ async function main(): Promise<number> {
     throw new Error("client-live-check: --protocol must be 11..18");
   const measureS = Number(a["measure-s"] ?? 0);
   const cpuThrottle = Number(a["cpu-throttle"] ?? 1);
+  const calibrateRafS = Number(a["calibrate-raf-s"] ?? 0);
   if (
     !Number.isFinite(measureS) ||
     measureS < 0 ||
+    !Number.isFinite(calibrateRafS) ||
+    calibrateRafS < 0 ||
+    (calibrateRafS > 0 && measureS === 0) ||
     !Number.isFinite(cpuThrottle) ||
     cpuThrottle < 1
   )
@@ -278,6 +283,73 @@ async function main(): Promise<number> {
     const cdp = await page.context().newCDPSession(page);
     if (measureS > 0) {
       await cdp.send("Emulation.setCPUThrottlingRate", { rate: cpuThrottle });
+      const browserCdp = await launched.browser.newBrowserCDPSession();
+      // Browser.getBrowserCommandLine requires --enable-automation; observing flags must not
+      // change the launch. On Linux, read the browser PID supplied by browser-scoped CDP.
+      const browserProcess = (
+        await collectChromiumProcesses(launched.browser)
+      ).find((p) => p.type.toLowerCase() === "browser");
+      const commandLine =
+        process.platform === "linux" && browserProcess
+          ? readFileSync(`/proc/${browserProcess.pid}/cmdline`, "utf8")
+              .split("\0")
+              .filter(Boolean)
+          : null;
+      report.chromium = {
+        executable: launched.executablePath,
+        version: await browserCdp.send("Browser.getVersion"),
+        command_line: {
+          arguments: commandLine,
+          source: commandLine ? "proc" : "unavailable",
+        },
+        configured_args: launchArgs,
+      };
+      await browserCdp.detach();
+      const startRaf = () =>
+        // Keep nested callbacks as browser JavaScript: tsx's function-name helper lives in Node.
+        page.evaluate(`(() => {
+          const sample = {
+            times_ms: [],
+            visibility: document.visibilityState,
+            stopped: false,
+          };
+          window.__rafSample = sample;
+          const tick = (t) => {
+            if (sample.stopped) return;
+            sample.times_ms.push(t);
+            requestAnimationFrame(tick);
+          };
+          requestAnimationFrame(tick);
+        })()`);
+      const stopRaf = () =>
+        page.evaluate(() => {
+          const sample = (
+            window as unknown as {
+              __rafSample: {
+                times_ms: number[];
+                visibility: string;
+                stopped: boolean;
+              };
+            }
+          ).__rafSample;
+          sample.stopped = true;
+          const times = sample.times_ms;
+          return {
+            visibility: sample.visibility,
+            callbacks: times.length,
+            hz:
+              times.length > 1
+                ? ((times.length - 1) * 1000) /
+                  (times[times.length - 1] - times[0])
+                : null,
+            times_ms: times,
+          };
+        });
+      if (calibrateRafS > 0) {
+        await startRaf();
+        await sleep(calibrateRafS * 1000);
+        report.idle_raf = await stopRaf();
+      }
       const token = a["token-file"]
         ? readFileSync(a["token-file"], "utf8").trim()
         : null;
@@ -315,6 +387,7 @@ async function main(): Promise<number> {
         undefined,
         { timeout: 30_000 },
       );
+      if (calibrateRafS > 0) await startRaf();
       const timeline: { t_ms: number; stats: Stats | null }[] = [];
       const start = Date.now();
       while (Date.now() - start < measureS * 1000) {
@@ -326,6 +399,7 @@ async function main(): Promise<number> {
         timeline.push({ t_ms: Date.now() - start, stats });
         await sleep(1000);
       }
+      if (calibrateRafS > 0) report.streaming_raf = await stopRaf();
       const shot = await page.screenshot({ path: join(dir, "presence.png") });
       const { data, info } = await sharp(shot)
         .removeAlpha()

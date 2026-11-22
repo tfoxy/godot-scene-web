@@ -200,7 +200,7 @@ keys the hooks compute (`GRC_TEXTURE_ENCODE_DRAIN=1` is set by the script so the
 | `GRC_LIVE_MAX_CONNECTIONS`, `GRC_LIVE_MAX_MESSAGE_BYTES` | Admitted viewers (1..4, default 1; viewers share each published snapshot) and the message ceiling. |
 | `GRC_LIVE_CREDIT_WINDOW_MAX` | The largest credit window granted to a receiver: 1..8, default 8. Below `/18`, hellos remain limited to 1..2. |
 | `GRC_LIVE_CODING` | Live message coding offered from `/11` on: `zstd-base` (default), `zstd` or `off`. |
-| `GRC_PUBLISH_FPS` | `uncapped` or a target rate 1..240 for publication. On `/18`, this remains a rate ceiling while per-connection draw pacing may publish more slowly. Older versions use this global period unchanged. |
+| `GRC_PUBLISH_FPS` | `uncapped` or a target rate 1..240 for publication. Every version uses this global period with a separate schedule per connection; credit back-pressure may publish more slowly. |
 | `GRC_LIVE_TLS_CERT`, `GRC_LIVE_TLS_KEY` | The product's certificate pair: the WebSocket listener also serves `wss`. Needs the net module (`scripts/build-rs-net.sh`). |
 | `GRC_LIVE_LAN_PLAINTEXT` | Whether the WebSocket listener also serves plaintext to LAN peers beside `wss`. |
 | `GRC_LIVE_CARRIERS` | Which carriers start: `ws`, `wt` (WebTransport, in the net module), and consumer carriers registered through `grc_carrier_register` (`capture/src/grc_carrier.h`) or the `RenderStreamCarrier` engine class. |
@@ -210,6 +210,14 @@ keys the hooks compute (`GRC_TEXTURE_ENCODE_DRAIN=1` is set by the script so the
 | `GRC_LIVE_TAP_DIR` | Keep a copy of the uncoded live messages here, as a valid recording. |
 
 ## Receivers
+
+`/18` does not pace publication to the viewer's draw rate. Its adaptive effective window
+`w_eff` bounds transactions in flight at the negotiated credit stage; credit at `applied`
+bounds only transactions not yet applied. A viewer that draws more slowly than the host
+publishes folds the surplus, as `/16` already does at short RTT. The client's two-undrawn
+gate can defer application, but a draw can release several transactions together, so credits
+can outrun draws. Pacing to viewer-reported draw capacity is future work, outside `/18`.
+`GRC_PUBLISH_FPS` remains an explicit host publication limit.
 
 A receiver states the version it speaks in its hello; it must speak one the host offers.
 

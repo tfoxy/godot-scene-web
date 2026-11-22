@@ -928,6 +928,8 @@
         "experiments/render-stream/scripts/bench-live-scale.sh",
         "experiments/render-stream/scripts/lib/bench-live-scale.py",
         "experiments/render-stream/scripts/lib/bench-live-window.py",
+        "experiments/render-stream/scripts/lib/null-window-receiver.mjs",
+        "experiments/render-stream/scripts/test/null-window-receiver.test.mjs",
         "experiments/render-stream/scripts/test/self-test-bench-live-scale.sh"
       ],
       "reach": ["pure"]

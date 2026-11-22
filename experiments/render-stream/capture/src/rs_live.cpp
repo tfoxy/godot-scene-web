@@ -950,89 +950,6 @@ struct Hub::Conn {
   std::uint64_t stale_held_seq = 0;
   std::uint64_t stale_held_frame = 0;
   std::uint64_t stale_held_ns = 0;
-  // /18 draw pacing uses host-clock arrival times to age distinct receiver draw timestamps.
-  // A duplicate submitted ack never reaches observe_draw. Several seqs with one timestamp count
-  // as one coalesced draw, regardless of how many transactions that draw folded.
-  struct Draw {
-    std::uint64_t t_us = 0;
-    std::uint64_t arrival_ns = 0;
-    std::uint64_t seqs = 1;
-  };
-  std::deque<Draw> draws;
-  bool draw_seen = false;
-  std::uint64_t first_draw_ns = 0;
-  std::uint64_t recovery_due_ns = 0;
-  std::uint64_t pace_period_ns = 0;  // adaptive cap; 0 = none
-  std::uint64_t publish_period_ns = 0;  // max(explicit floor, adaptive cap)
-  std::uint64_t last_publish_ns = 0;
-  void expire_draws(std::uint64_t now_ns) {
-    while (!draws.empty() && now_ns >= draws.front().arrival_ns &&
-           now_ns - draws.front().arrival_ns >= 1000000000ULL) draws.pop_front();
-  }
-  void observe_draw(std::uint64_t t_us, std::uint64_t now_ns) {
-    expire_draws(now_ns);
-    if (!draw_seen) {
-      draw_seen = true;
-      first_draw_ns = now_ns;
-    }
-    for (auto it = draws.rbegin(); it != draws.rend(); ++it) {
-      if (it->t_us == t_us) {
-        ++it->seqs;
-        recovery_due_ns = now_ns + 2000000000ULL;
-        return;
-      }
-    }
-    draws.push_back(Draw{t_us, now_ns, 1});
-  }
-  struct Pace {
-    std::uint64_t cap = 0;
-    std::uint64_t period = 0;
-    std::uint64_t recovery_due = 0;
-    std::uint64_t draws_per_s = 0;
-    double coalesced_share = 0;
-  };
-  Pace pace_at(std::uint64_t now_ns, double host_period, std::uint64_t floor) const {
-    Pace out;
-    out.cap = pace_period_ns;
-    out.recovery_due = recovery_due_ns;
-    std::uint64_t coalesced = 0;
-    for (const auto &draw : draws) {
-      if (now_ns >= draw.arrival_ns && now_ns - draw.arrival_ns < 1000000000ULL) {
-        ++out.draws_per_s;
-        coalesced += draw.seqs >= 2;
-      }
-    }
-    if (out.draws_per_s != 0) {
-      out.coalesced_share = static_cast<double>(coalesced) / out.draws_per_s;
-    }
-    const auto host_ns = static_cast<std::uint64_t>(std::ceil(host_period));
-    if (draw_seen && now_ns >= first_draw_ns && now_ns - first_draw_ns >= 1000000000ULL) {
-      if (out.coalesced_share > 0.2) {
-        out.cap = std::max<std::uint64_t>({host_ns, floor,
-                           (1000000000ULL + out.draws_per_s - 1) / out.draws_per_s});
-      } else if (out.cap != 0 && out.recovery_due != 0 && now_ns >= out.recovery_due) {
-        const auto steps = (now_ns - out.recovery_due) / 2000000000ULL + 1;
-        out.cap = static_cast<std::uint64_t>(out.cap * std::pow(0.9, steps));
-        out.recovery_due += steps * 2000000000ULL;
-      }
-      if (out.cap <= host_ns) out.cap = 0;
-    }
-    out.period = std::max(floor, out.cap);
-    return out;
-  }
-  void update_pacing(std::uint64_t now_ns, std::uint64_t floor) {
-    expire_draws(now_ns);
-    const auto pace = pace_at(now_ns, period_ns, floor);
-    pace_period_ns = pace.cap;
-    recovery_due_ns = pace.recovery_due;
-    s.draws_per_s = pace.draws_per_s;
-    s.coalesced_share = pace.coalesced_share;
-    if (publish_period_ns != pace.period) {
-      publish_period_ns = pace.period;
-      schedule_started = publish_period_ns != 0 && s.sent != 0;
-      next_due_ns = last_publish_ns + publish_period_ns;
-    }
-  }
   // Rate control (G6r): the schedule starts at this connection's first send; `started` is false
   // until then, so that very first send (right after the hello) is never rate-gated.
   bool schedule_started = false;
@@ -1720,7 +1637,6 @@ void Hub::on_event(const LiveEvent &event, std::uint64_t frame) {
       c.s.connection = next_connection_++;
       c.s.stream_id = generate_id();
       c.opened_ns = event.t_ns;
-      c.publish_period_ns = config_.publish_period_ns;
       // G7n: the subprotocol decides the connection's version (render-stream.7 -> /7).
       // G8w: render-stream.8 -> /8 (render-stream-8.md "Live transport").
       // G8k9: render-stream.9 -> /9 (render-stream-9.md "Live transport").
@@ -1986,9 +1902,6 @@ void Hub::handle_text(Conn &c, const LiveEvent &event, std::uint64_t frame) {
             const unsigned bit = 1u << stage_index(message.stage);
             if ((sent->second.acked & bit) == 0) {
               sent->second.acked |= bit;
-              if (is_v18_or_later(c.version) && message.stage == AckStage::Submitted) {
-                c.observe_draw(message.t_us, event.t_ns);
-              }
               c.latency[stage_index(message.stage)].push_back(
                   (event.t_ns - std::min(event.t_ns, sent->second.ns)) / 1000);
               // Q3d staleness_us[applied|submitted] (G6r): the host-clock age of what the
@@ -2208,30 +2121,20 @@ bool Hub::deliver(Conn &c, const std::vector<std::uint8_t> &message, bool send,
 }
 
 bool Hub::tick_due(const Conn &c, std::uint64_t now_ns) const {
-  // wants_snapshot runs before the callback updates pacing. Preview that same decision so a
-  // recovery tick requests a snapshot, and a newly paced tick does no needless formation.
-  if (is_v18_or_later(c.version)) {
-    const auto pace = c.pace_at(now_ns, c.next_period(now_ns), config_.publish_period_ns);
-    if (pace.period != c.publish_period_ns) {
-      return pace.period == 0 || c.s.sent == 0 ||
-             now_ns + pace.period / 4 >= c.last_publish_ns + pace.period;
-    }
-  }
-  if (c.publish_period_ns == 0 || !c.schedule_started) {
+  if (config_.publish_period_ns == 0 || !c.schedule_started) {
     return true;
   }
-  return now_ns + c.publish_period_ns / 4 >= c.next_due_ns;
+  return now_ns + config_.publish_period_ns / 4 >= c.next_due_ns;
 }
 
 void Hub::advance_schedule(Conn &c, std::uint64_t now_ns) {
-  c.last_publish_ns = now_ns;
-  if (c.publish_period_ns == 0) {
+  if (config_.publish_period_ns == 0) {
     return;
   }
   if (!c.schedule_started) {
     c.schedule_started = true;
     c.t0_ns = now_ns;
-    c.next_due_ns = now_ns + c.publish_period_ns;
+    c.next_due_ns = now_ns + config_.publish_period_ns;
     return;
   }
   // The next due tick is the first multiple-of-P step strictly after `now`, anchored at the old
@@ -2246,9 +2149,9 @@ void Hub::advance_schedule(Conn &c, std::uint64_t now_ns) {
   // between -- "never burst" (Q3c).
   std::uint64_t steps = 1;
   if (now_ns >= c.next_due_ns) {
-    steps = (now_ns - c.next_due_ns) / c.publish_period_ns + 1;
+    steps = (now_ns - c.next_due_ns) / config_.publish_period_ns + 1;
   }
-  c.next_due_ns += steps * c.publish_period_ns;
+  c.next_due_ns += steps * config_.publish_period_ns;
 }
 
 Hub::Job &Hub::batch_job(Conn &c) {
@@ -3121,7 +3024,6 @@ void Hub::on_frame_shared(std::uint64_t frame, std::uint64_t now_ns,
     c.period_ns = c.next_period(now_ns);
     c.callback_seen = true;
     c.callback_ns = now_ns;
-    if (is_v18_or_later(c.version)) c.update_pacing(now_ns, config_.publish_period_ns);
     if (c.state == State::Streaming && c.window_slots > 2) {
       c.credit = c.window.size() < c.effective_window();
     }
@@ -3230,12 +3132,12 @@ void Hub::on_frame_shared(std::uint64_t frame, std::uint64_t now_ns,
       ++c.s.frames_offered;
       const bool ignore_credit =
           config_.ignore_credit_frame != 0 && frame >= config_.ignore_credit_frame;
-      const bool rate_limited = c.publish_period_ns != 0;
+      const bool rate_limited = config_.publish_period_ns != 0;
       // window-overrun: past w_eff, still rate-limited (unlike ignore-credit).
       const bool overrun =
           config_.window_overrun_frame != 0 && frame >= config_.window_overrun_frame;
       // G6r Q3c: ignore-credit's whole point is a send at every callback, credit or not, so it
-      // bypasses pacing too, not only credit. With no explicit period or /18 draw cap,
+      // bypasses pacing too, not only credit. With no explicit period,
       // tick_due() is always true and the rate counters below stay 0.
       const bool due = ignore_credit || tick_due(c, now_ns);
       if (c.credit && c.stale != nullptr) {
@@ -3466,7 +3368,6 @@ std::vector<ConnectionSummary> Hub::summaries() const {
     const Conn &c = *entry.second;
     ConnectionSummary s = c.s;
     s.carried_size = c.carried_count;
-    s.pace_period_us = c.publish_period_ns / 1000;
     s.w_eff = c.effective_window();
     s.srtt_us = static_cast<std::uint64_t>(c.srtt_ns / 1000);
     for (std::size_t i = 0; i < 3; ++i) {
@@ -3721,9 +3622,6 @@ std::string Hub::summary_json(const ServingSummary *resources) const {
     if (s.version >= 18) {
       json.field("w_eff", static_cast<int64_t>(s.w_eff));
       json.field("srtt_us", static_cast<int64_t>(s.srtt_us));
-      json.field("pace_period_us", static_cast<int64_t>(s.pace_period_us));
-      json.field("draws_per_s", static_cast<int64_t>(s.draws_per_s));
-      json.key("coalesced_share").float32(static_cast<float>(s.coalesced_share));
     }
     json.field("max_in_flight", static_cast<int64_t>(s.max_in_flight));
     json.field("ticks_due", static_cast<int64_t>(s.ticks_due));

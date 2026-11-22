@@ -387,6 +387,8 @@ void run_scenario(const Scenario &sc, Outcome *out) {
       }
       if (frame == m.spec.open_frame) {
         const char *subprotocol = m.spec.version == 18 ? kSubprotocolV18
+                                  : m.spec.version == 17 ? kSubprotocolV17
+                                  : m.spec.version == 16 ? kSubprotocolV16
                                   : m.spec.version == 7 ? kSubprotocolV7 : "";
         hub.on_event(opened(m.id, subprotocol, now - 1000), frame);
         for (const ConnectionSummary &s : hub.summaries()) {
@@ -973,9 +975,12 @@ void test_window2_stale_coalesce_held() {
 void test_window_model(int version, int window) {
   for (std::uint64_t seed = 31; seed < 37; ++seed) {
     Scenario s;
-    s.name = "w" + std::to_string(window) + "-model-" + std::to_string(seed);
+    s.name = (version == 16 || version == 17 ? "v" + std::to_string(version) + "-" : "") +
+             "w" + std::to_string(window) + "-model-" + std::to_string(seed);
     s.seed = seed;
-    s.template_version = version == 18 ? ProtocolVersion::V18 : ProtocolVersion::V6;
+    s.template_version = version == 18 ? ProtocolVersion::V18
+                         : version == 17 ? ProtocolVersion::V17
+                         : version == 16 ? ProtocolVersion::V16 : ProtocolVersion::V6;
     s.config.credit_window_max = window;
     if (seed % 2 == 0) {
       s.config.publish_period_ns = 1000000000ULL / 60;
@@ -1112,7 +1117,7 @@ void test_v18_availability(int host_version = 18) {
     }
     check(s.error_sent.empty() && s.credit_window == 2 && s.max_in_flight == 2,
           "availability: older hello is accepted with at most two in flight");
-    check(s.sent == 180 && s.pace_period_us == 0 && s.draws_per_s == 0,
+    check(s.sent == 180,
           "availability: older client draws never pace the /18-enabled host");
     const auto first = std::find_if(transport.sent.begin(), transport.sent.end(), [&](const Sent &sent) {
       return sent.kind == Sent::Binary && sent.conn == static_cast<std::uint32_t>(s.version);
@@ -1271,143 +1276,59 @@ void test_wide_window_hold_and_sabotages() {
         "wide overrun: sabotage sends past effective window 2, before granted window 8 fills");
 }
 
-// A draw acknowledges all transactions since the preceding draw with one receiver timestamp.
-void draw_pending(WideRig &rig, std::uint64_t &acked, const char *stage = "submitted",
-                  bool duplicate = false) {
-  const auto last = rig.summary().sent;
-  for (; acked < last;) {
-    ++acked;
-    const auto event = text(1, ack(rig.sid, acked, stage, 1000000 + rig.now / 1000), rig.now + 1);
-    rig.hub.on_event(event, rig.frame);
-    if (duplicate) rig.hub.on_event(event, rig.frame);
-  }
-}
-
-void test_draw_pacing_settles_and_recovers(int version = 18) {
-  WideRig rig(8, LiveConfig(), version);
-  std::uint64_t acked = 0;
-  for (int n = 0; n < 120; ++n) {
-    rig.step();
-    if (n % 2 == 1) draw_pending(rig, acked);
-  }
-  auto summary = rig.summary();
-  check(summary.pace_period_us >= 30000 && summary.pace_period_us <= 37000,
-        "pace: every-second-frame draws settle to about two host periods within two seconds");
-  const auto before = summary.sent;
-  for (int n = 0; n < 60; ++n) {
-    rig.step();
-    if (n % 2 == 1) draw_pending(rig, acked);
-  }
-  check(rig.summary().sent - before >= 28 && rig.summary().sent - before <= 32,
-        "pace: settled publication follows about thirty draws per second");
-  check(rig.summary().coalesced_share < 0.1,
-        "pace: settled coalesced share is below ten percent");
-  // The client now draws every host frame. Reductions happen only after two clean seconds.
-  // Make the recovery origin explicit, independent of the preceding settling phase.
-  for (int n = 0; n < 4; ++n) rig.step();
-  draw_pending(rig, acked);
-  const auto cap = rig.summary().pace_period_us;
-  for (int n = 0; n < 60; ++n) {
-    rig.step();
-    draw_pending(rig, acked);
-  }
-  check(rig.summary().pace_period_us == cap,
-        "pace: one clean second cannot shorten the cap");
-  for (int n = 0; n < 120; ++n) {
-    rig.step();
-    draw_pending(rig, acked);
-  }
-  const auto shortened = rig.summary().pace_period_us;
-  check(shortened >= cap * 9 / 10 - 1 && shortened <= cap * 9 / 10 + 1,
-        "pace: two clean seconds shorten the cap by exactly ten percent");
-  for (int n = 0; n < 960; ++n) {
-    rig.step();
-    draw_pending(rig, acked);
-  }
-  check(rig.summary().pace_period_us == 0,
-        "pace: clean draws eventually restore uncapped publication");
-  const auto recovered = rig.summary().sent;
-  for (int n = 0; n < 60; ++n) {
-    rig.step();
-    draw_pending(rig, acked);
-  }
-  check(rig.summary().sent - recovered == 60, "pace: recovered host sends every frame");
-  check(has(rig.hub.summary_json(), "\"pace_period_us\": 0") &&
-            has(rig.hub.summary_json(), "\"coalesced_share\": 0"),
-        "pace: wide-window version exposes pacing metrics");
-}
-
-void test_draw_pacing_is_per_connection(int version = 18) {
-  WideRig rig(8, LiveConfig(), version);
-  rig.hub.on_event(opened(2, kSubprotocolV18, 0), 0);
-  rig.hub.on_event(text(2, hello(18, "submitted", 8), 0), 0);
-  const auto sid2 = rig.hub.summaries().at(1).stream_id;
-  std::uint64_t slow_ack = 0;
-  std::uint64_t fast_ack = 0;
-  for (int n = 0; n < 120; ++n) {
-    rig.step();
-    if (n % 2 == 1) draw_pending(rig, slow_ack);
-    const auto fast_sent = rig.hub.summaries().at(1).sent;
-    while (fast_ack < fast_sent) {
-      rig.hub.on_event(text(2, ack(sid2, ++fast_ack, "submitted", rig.now / 1000), rig.now + 1),
-                       rig.frame);
+// A free main thread applies up to two undrawn transactions between slow draws. Each draw
+// submits the whole applied queue with one timestamp, then deferred applies can return credits.
+// Applied credits bound unapplied transactions, not the viewer's draw rate.
+void test_slow_draws_bound_in_flight_and_host_sends() {
+  for (const unsigned hz : {20, 30}) {
+    for (const std::uint64_t phase : {1ULL, 8188028ULL, 16000000ULL}) {
+      WideRig rig(8, LiveConfig(), 18, "applied");
+      std::uint64_t applied = 0, submitted = 0, received = 0;
+      std::uint64_t coalesced_draws = 0;
+      std::uint64_t next_draw = phase;
+      bool no_burst = true, within_window = true;
+      auto apply_pending = [&](std::uint64_t at) {
+        while (applied < received && applied - submitted < 2) {
+          rig.hub.on_event(text(1, ack(rig.sid, ++applied, "applied", at / 1000), at),
+                           rig.frame);
+        }
+        const auto sum = rig.summary();
+        within_window = within_window && sum.sent - applied <= sum.w_eff;
+      };
+      for (int n = 0; n < 1200; ++n) {
+        const auto next_host = rig.now + kHostPeriodNs;
+        while (next_draw < next_host) {
+          if (applied - submitted >= 2) ++coalesced_draws;
+          while (submitted < applied) {
+            rig.hub.on_event(text(1, ack(rig.sid, ++submitted, "submitted", next_draw / 1000),
+                                   next_draw), rig.frame);
+          }
+          apply_pending(next_draw);
+          next_draw += 1000000000ULL / hz;
+        }
+        const auto before = rig.summary().sent;
+        rig.step();
+        no_burst = no_burst && rig.summary().sent - before <= 1;
+        within_window = within_window && rig.summary().sent - applied <= rig.summary().w_eff;
+        while (received < rig.summary().sent) {
+          rig.hub.on_event(text(1, ack(rig.sid, ++received, "received", rig.now / 1000),
+                                 rig.now), rig.frame);
+        }
+        apply_pending(rig.now);
+      }
+      const auto sum = rig.summary();
+      check(within_window && sum.sent_without_credit == 0,
+            "slow draws: unapplied in-flight count never exceeds w_eff");
+      check(no_burst && sum.sent <= rig.frame,
+            "slow draws: sends never exceed one per host callback");
+      check(coalesced_draws > 0 && sum.w_eff >= 2 && sum.max_in_flight <= 8 &&
+                sum.sent - applied <= sum.max_in_flight,
+            "slow draws: received acks do not release outstanding applied credits");
+      const auto json = rig.hub.summary_json();
+      check(!has(json, "\"pace_period_us\"") && !has(json, "\"draws_per_s\"") &&
+                !has(json, "\"coalesced_share\""),
+            "slow draws: /18 has no separate viewer pacing telemetry");
     }
-    if (n == 59) check(rig.summary().pace_period_us == 0,
-                       "pace: a partial observation second cannot activate pacing");
-  }
-  const auto summaries = rig.hub.summaries();
-  check(summaries.at(0).pace_period_us >= 30000 &&
-            summaries.at(1).pace_period_us == 0 && summaries.at(1).sent == 120,
-        "pace: a slow viewer does not pace a fast connection on the same hub");
-}
-
-void test_draw_pacing_floor_and_ack_rules() {
-  LiveConfig config;
-  config.publish_period_ns = 25000000;
-  config.publish_target_fps = 40;
-  WideRig floor(8, config);
-  std::uint64_t acked = 0;
-  bool respected = true;
-  for (int n = 0; n < 1200; ++n) {
-    floor.step();
-    if (n < 120 ? n % 2 == 1 : true) draw_pending(floor, acked);
-    respected = respected && floor.summary().pace_period_us >= 25000;
-  }
-  check(respected && floor.summary().pace_period_us == 25000,
-        "pace: recovery never exceeds the explicit GRC_PUBLISH_FPS rate");
-  check(has(floor.hub.summary_json(), "\"target_fps\": 40"),
-        "pace: session publication and host declaration retain the explicit target");
-
-  WideRig applied(8, LiveConfig(), 18, "applied");
-  acked = 0;
-  for (int n = 0; n < 180; ++n) {
-    applied.step();
-    if (n % 2 == 1) draw_pending(applied, acked, "applied");
-  }
-  check(applied.summary().pace_period_us == 0 && applied.summary().draws_per_s == 0,
-        "pace: no submitted acks means no draw pacing");
-
-  WideRig duplicate(8);
-  acked = 0;
-  for (int n = 0; n < 180; ++n) {
-    duplicate.step();
-    draw_pending(duplicate, acked, "submitted", true);
-  }
-  check(duplicate.summary().pace_period_us == 0 && duplicate.summary().coalesced_share == 0,
-        "pace: duplicate submitted acks cannot create coalesced draws");
-
-  for (int version : {16, 17}) {
-  WideRig older(2, LiveConfig(), version);
-  acked = 0;
-  for (int n = 0; n < 180; ++n) {
-    older.step();
-    if (n % 2 == 1) draw_pending(older, acked);
-  }
-  check(older.summary().pace_period_us == 0 && older.summary().sent == 180 &&
-            !has(older.hub.summary_json(), "\"pace_period_us\"") &&
-            !has(older.hub.summary_json(), "\"draws_per_s\"") &&
-            !has(older.hub.summary_json(), "\"coalesced_share\""),
-        "pace: /16 and /17 remain unpaced with no new telemetry");
   }
 }
 
@@ -1478,11 +1399,7 @@ int main(int argc, char **argv) {
   }
   grc::make_directories(std::string(GRC_TEST_TMP_DIR) + "/window");
   grc::make_directories(std::string(GRC_TEST_TMP_DIR) + "/w2");
-  test_draw_pacing_settles_and_recovers();
-  test_draw_pacing_settles_and_recovers(19);
-  test_draw_pacing_floor_and_ack_rules();
-  test_draw_pacing_is_per_connection();
-  test_draw_pacing_is_per_connection(19);
+  test_slow_draws_bound_in_flight_and_host_sends();
   test_wide_window_adapts_and_sustains();
   test_wide_window_adapts_and_sustains(19);
   test_wide_window_measures_callback_period();
@@ -1495,6 +1412,8 @@ int main(int argc, char **argv) {
   test_window2_pins_every_in_flight();
   test_window_overrun_sabotage();
   test_window_model(7, 2);
+  test_window_model(16, 2);
+  test_window_model(17, 2);
   test_window_model(18, 4);
   test_window_model(18, 8);
   test_window2_stale_coalesce_held();

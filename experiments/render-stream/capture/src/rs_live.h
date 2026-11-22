@@ -491,12 +491,9 @@ struct ConnectionSummary {
   std::uint64_t stale_sent = 0;
   std::uint64_t w_eff = 1;  // current effective credit window
   std::uint64_t srtt_us = 0;  // EWMA of host-clock credit RTT, 0 before the first sample
-  std::uint64_t pace_period_us = 0;  // /18 connection period including the explicit rate floor
-  std::uint64_t draws_per_s = 0;  // distinct submitted timestamps in the last host-clock second
-  double coalesced_share = 0;  // share of those draws acknowledging at least two distinct seqs
   std::uint64_t max_in_flight = 0;  // sent seqs whose credit-stage ack had not arrived
   std::uint64_t max_queued_bytes = 0;
-  // Rate-control counters; 0 when neither an explicit rate nor /18 draw pacing is active.
+  // Rate-control counters; 0 without an explicit publication rate.
   std::uint64_t ticks_due = 0;             // callbacks where the schedule had a tick due
   std::uint64_t ticks_sent = 0;             // due ticks that sent (a subset of `sent`)
   std::uint64_t ticks_credit_blocked = 0;   // due ticks with no credit

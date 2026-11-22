@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
-"""Engine-free bench-live-scale leg: production hub, TCP shaper and client-live-check page.
+"""Engine-free bench-live-scale leg: production hub, optional TCP shaper and page or arrival-ack receiver.
 
 Invoke through bench-live-scale.sh --engine-free HOST --receiver host-only --rx-cmd CMD.
-The core must be built before invoking the runner; the receiver command must pass --core.
+Page commands require a prebuilt --core. --receiver null uses no browser or core.
 """
 import argparse
 from collections import Counter
 import json
 import os
 from pathlib import Path
+import secrets
+import shlex
 import subprocess
 import sys
 import time
@@ -43,6 +45,18 @@ def metrics(lines, warmup_s=5):
             "credit_rtt_ms_p95": rtt[min(len(rtt) - 1, int(len(rtt) * .95))] if rtt else None}
 
 
+def null_receiver_argv(url, origin, out, protocol, window, token_file, timeout_s):
+    return ["exec", "mise", "exec", "--", "node",
+            str(HERE / "null-window-receiver.mjs"),
+            "--url", url, "--origin", origin, "--out", str(out),
+            "--protocol", str(protocol), "--window", str(window),
+            "--token-file", token_file, "--timeout-s", str(timeout_s)]
+
+
+def receiver_timeout_s(frames):
+    return frames / 60 + 30
+
+
 def self_test():
     lines = [{"state": "streaming", "t_us": n * 10_000, "sent": {"seq": n + 1}}
              for n in range(40)]
@@ -55,7 +69,12 @@ def self_test():
     assert m["coalesced_share"] == 1
     assert m["offered"] == 30  # last 100 ms excluded, inclusive boundary
     assert m["draws_per_s"] == 15 / .29
-    print("bench-live-window: 5 passed, 0 failed")
+    for frames, expected_s in ((60, 31), (3600, 90), (7200, 150)):
+        timeout_s = receiver_timeout_s(frames)
+        argv = null_receiver_argv("ws://127.0.0.1:1/render-stream",
+                                 "http://127.0.0.1:13832", Path("rx"), 18, 8, "", timeout_s)
+        assert float(argv[argv.index("--timeout-s") + 1]) == expected_s
+    print("bench-live-window: 8 passed, 0 failed")
 
 
 def wait_for(path, predicate, proc):
@@ -87,14 +106,16 @@ def main():
         return 0
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--engine-free", required=True, type=Path)
-    ap.add_argument("--receiver", choices=["host-only"], required=True)
-    ap.add_argument("--rx-cmd", required=True)
+    ap.add_argument("--receiver", choices=["host-only", "null"], required=True)
+    ap.add_argument("--rx-cmd")
     ap.add_argument("--out", required=True, type=Path)
     ap.add_argument("--protocol", type=int, choices=[16, 18], default=18)
     ap.add_argument("--window", type=int, choices=range(1, 9), default=8)
     ap.add_argument("--frames", type=int, default=3600)
     ap.add_argument("--items", type=int, default=1024)
     ap.add_argument("--delay-ms", type=float, default=24)
+    ap.add_argument("--direct", action="store_true", help="bypass the TCP proxy (requires --delay-ms 0)")
+    ap.add_argument("--token-auth", action="store_true", help="require a fresh per-leg hello token")
     ap.add_argument("--page-port", type=int, default=13832)
     ap.add_argument("--wait-load-s", type=float, default=0)
     ap.add_argument("--min-rate", type=float, default=15)
@@ -104,8 +125,12 @@ def main():
         ap.error("below /18 --window must be 1 or 2")
     if not a.engine_free.is_file() or not os.access(a.engine_free, os.X_OK):
         ap.error("--engine-free must name a built rs_live_host executable")
-    if "--core " not in a.rx_cmd:
+    if a.receiver == "host-only" and (not a.rx_cmd or "--core " not in a.rx_cmd):
         ap.error("--rx-cmd must use a prebuilt --core (no build during a timing leg)")
+    if a.direct and a.delay_ms != 0:
+        ap.error("--direct requires --delay-ms 0")
+    if a.receiver == "null" and a.rx_cmd:
+        ap.error("--receiver null does not accept --rx-cmd")
     if a.frames <= 0 or not 1 <= a.items <= 32768 or a.delay_ms < 0:
         ap.error("positive frames, items 1..32768 and nonnegative delay required")
     a.out = a.out.resolve()
@@ -143,7 +168,13 @@ def main():
     host_cmd = [str(a.engine_free.resolve()), f"--benchmark={a.protocol}",
                 f"--frames={a.frames}", f"--items={a.items}",
                 f"--tap-dir={host_dir / 'tap'}", f"--summary={host_dir / 'live-summary.json'}"]
-    (a.out / "command.json").write_text(json.dumps({"argv": sys.argv, "host": host_cmd, "load": load}, indent=2))
+    token_file = host_dir / "live-token"
+    if a.token_auth:
+        token = secrets.token_hex(32)
+        token_file.write_text(token + "\n")
+        token_file.chmod(0o600)
+        host_cmd.append(f"--token={token}")
+    (a.out / "command.json").write_text(json.dumps({"argv": sys.argv, "host": ["--token=<redacted>" if c.startswith("--token=") else c for c in host_cmd], "load": load}, indent=2))
     try:
         with (host_dir / "stdout.log").open("w") as log:
             host = subprocess.Popen(host_cmd, stdout=log, stderr=subprocess.STDOUT, env=env)
@@ -151,25 +182,35 @@ def main():
             return next((int(s.split()[1]) for s in text.splitlines()
                          if s.startswith("RS_LIVE_HOST_PORT ")), None)
         host_port = wait_for(host_dir / "stdout.log", port, host)
-        proxy_cmd = ["mise", "exec", "--", "pnpm", "exec", "tsx", "--conditions=development",
-                     str(HERE.parent / "throttle-proxy.ts"), "--target-port", str(host_port),
-                     "--profile", "unlimited", "--delay-ms", str(a.delay_ms),
-                     "--stats-out", str(a.out / "proxy-stats.json")]
-        with (a.out / "proxy.log").open("w") as log:
-            proxy = subprocess.Popen(proxy_cmd, stdout=log, stderr=subprocess.STDOUT, cwd=ROOT,
-                                     start_new_session=True)
-        def proxy_port(text):
-            return next((json.loads(s)["listening_port"] for s in text.splitlines()
-                         if s.startswith('{"listening_port"')), None)
-        shaped_port = wait_for(a.out / "proxy.log", proxy_port, proxy)
+        shaped_port = host_port
+        if not a.direct:
+            proxy_cmd = ["mise", "exec", "--", "pnpm", "exec", "tsx", "--conditions=development",
+                         str(HERE.parent / "throttle-proxy.ts"), "--target-port", str(host_port),
+                         "--profile", "unlimited", "--delay-ms", str(a.delay_ms),
+                         "--stats-out", str(a.out / "proxy-stats.json")]
+            with (a.out / "proxy.log").open("w") as log:
+                proxy = subprocess.Popen(proxy_cmd, stdout=log, stderr=subprocess.STDOUT, cwd=ROOT,
+                                         start_new_session=True)
+            def proxy_port(text):
+                return next((json.loads(s)["listening_port"] for s in text.splitlines()
+                             if s.startswith('{"listening_port"')), None)
+            shaped_port = wait_for(a.out / "proxy.log", proxy_port, proxy)
         rx_env = dict(os.environ, RS_BENCH_WS_URL=f"ws://127.0.0.1:{shaped_port}/render-stream",
                       RS_BENCH_HTTP_ORIGIN=f"http://127.0.0.1:{shaped_port}",
                       RS_BENCH_PAGE_PORT=str(a.page_port), RS_BENCH_RX_DIR=str(rx_dir),
-                      RS_BENCH_PROTOCOL=str(a.protocol), RS_BENCH_WINDOW=str(a.window))
+                      RS_BENCH_PROTOCOL=str(a.protocol), RS_BENCH_WINDOW=str(a.window),
+                      RS_BENCH_TOKEN_FILE=str(token_file) if a.token_auth else "")
+        timeout_s = receiver_timeout_s(a.frames)
+        rx_cmd = a.rx_cmd
+        if a.receiver == "null":
+            rx_cmd = shlex.join(null_receiver_argv(
+                rx_env["RS_BENCH_WS_URL"], f"http://127.0.0.1:{a.page_port}",
+                rx_dir, a.protocol, a.window, rx_env["RS_BENCH_TOKEN_FILE"], timeout_s))
+        (rx_dir / "command.txt").write_text(rx_cmd + "\n")
         with (rx_dir / "launcher.out").open("w") as log:
-            receiver = subprocess.Popen(["bash", "-c", a.rx_cmd], cwd=ROOT, env=rx_env,
+            receiver = subprocess.Popen(["bash", "-c", rx_cmd], cwd=ROOT, env=rx_env,
                                         stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
-        deadline = time.monotonic() + a.frames / 60 + 30
+        deadline = time.monotonic() + timeout_s
         with (a.out / "load.jsonl").open("w") as log:
             while receiver.poll() is None:
                 log.write(json.dumps({"t_s": time.monotonic() - started, "load": os.getloadavg()}) + "\n")
