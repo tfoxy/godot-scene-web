@@ -31,6 +31,7 @@ import {
   checkValidateAndRefusals,
   type ExpectedWithDrawPaths,
 } from "../lib/gate-minus1-checks";
+import { GATE0_HOOKS } from "../lib/gate0-checks";
 import {
   makeSelfTestTempDir,
   removeSelfTestTempDir,
@@ -1059,6 +1060,51 @@ const scenarios: Scenario[] = [
       "new-drawings-visible": "fail",
     },
   },
+  {
+    name: "an older record omitting every current optional hook passes the older-record criterion",
+    build: async (dir, expected) => {
+      await buildGoodEvidence(dir, expected);
+      const oldDir = join(dir, "old-record", "evidence");
+      const counters = await readCounters(join(oldDir, "counters.json"));
+      const planned = counters.hooks_planned as string[];
+      // Use the current capture contract independently of the spike expectation.
+      const omitted = GATE0_HOOKS.filter((name) => !planned.includes(name));
+      counters.hooks_omitted = omitted;
+      for (const name of omitted) counters.counts[name] = null;
+      await writeJson(join(oldDir, "counters.json"), counters);
+      await writeJson(join(oldDir, "calibration-check.json"), {
+        checks: [
+          {
+            name: "hook_plan",
+            ok: true,
+            detail: `${planned.length} of ${GATE0_HOOKS.length} hooks named by the record; omitted (record predates them): ${omitted.join(",")}`,
+          },
+        ],
+      });
+    },
+    run: async (dir, expected) => [await checkOlderRecord(dir, expected)],
+    expect: { "older-record-loads": "pass" },
+  },
+  ...[
+    "canvas_texture_set_shading_parameters",
+    "material_set_next_pass",
+    "material_set_render_priority",
+  ].map(
+    (hook): Scenario => ({
+      name: `an older record missing ${hook} from hooks_omitted fails the older-record criterion`,
+      build: async (dir, expected) => {
+        await buildGoodEvidence(dir, expected);
+        const path = join(dir, "old-record", "evidence", "counters.json");
+        const counters = await readCounters(path);
+        counters.hooks_omitted = (counters.hooks_omitted as string[]).filter(
+          (name) => name !== hook,
+        );
+        await writeJson(path, counters);
+      },
+      run: async (dir, expected) => [await checkOlderRecord(dir, expected)],
+      expect: { "older-record-loads": "fail" },
+    }),
+  ),
   {
     name: "an older record that refused instead of arming fails the older-record criterion",
     build: async (dir, expected) => {
