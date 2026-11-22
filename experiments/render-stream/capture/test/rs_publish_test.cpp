@@ -433,7 +433,7 @@ Snapshot one_item(float x) {
   Command c;
   c.rect = kRect;
   c.color = kRed;
-  it.commands = {c};
+  it.commands.push_back(c);
   it.content_version = 1;
   s.canvases = {root};
   s.items = {it};

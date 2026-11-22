@@ -1604,12 +1604,12 @@ void test_texture_replace_free_and_tombstones() {
   // The by-texture's RID is gone: a draw naming it is unknown-texture.
   m.add_texture_rect(100, kRect, 510, false, kRed, false, 2);
   c = m.snapshot(3, 3);
+  const std::vector<Entry> unknown_texture_entries{
+      {1, "canvas_item_add_texture_rect", UnsupportedReason::UnknownTexture}};
   check(item(c.state, 1)->commands.back().kind == CommandKind::Unsupported &&
             item(c.state, 1)->commands.back().unsupported_reason ==
                 grc::rs2::UnsupportedCmdReason::UnknownTexture &&
-            item_entries(c.state) ==
-                std::vector<Entry>{{1, "canvas_item_add_texture_rect",
-                                    UnsupportedReason::UnknownTexture}},
+            item_entries(c.state) == unknown_texture_entries,
         "a draw naming an unknown RID is an unsupported unknown-texture command");
 
   // Placeholder -> image through replace (kind change); P1 freed while still drawn.
