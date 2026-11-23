@@ -31,7 +31,7 @@ Recording RecordKind RecorderOptions RenderStreamRecorder
 PointerTargetResolverOptions RenderStreamPointerTarget RenderStreamPointerTargetResolver
 ColdPayload ResourceDiagnostic ResourceDiagnostics ResourceUnavailableReason
 HintEntry HintLead HintState ResourceHintRecord ResourceHintVariant
-RenderStreamFrameCap RenderStreamFrameCapBounds
+RenderStreamFrameCap RenderStreamFrameCapBounds RenderStreamPacing
 `
   .trim()
   .split(/\s+/);

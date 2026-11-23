@@ -67,7 +67,7 @@ import { type AckStage, AckWriter } from "./ack";
 import { type ColdPayload, ColdTracker } from "./cold";
 import type { Needed, SessionMeta, StreamCore } from "./core";
 import { failWith, StreamFailure } from "./core";
-import type { RenderStreamEndpoint } from "./endpoint";
+import { type RenderStreamEndpoint, sameEndpoint } from "./endpoint";
 import type { ExtensionHost } from "./extensions";
 import { type FetchResult, LiveFetcher } from "./fetcher";
 import {
@@ -79,6 +79,11 @@ import {
 } from "./frame-cap";
 import { clientHello, clientProtocol } from "./hello";
 import { type HintLead, HintTable } from "./hints";
+import {
+  PacingStarvationTracker,
+  type RenderStreamPacing,
+  resolvePacing,
+} from "./pacing";
 import type { ProgramCounts } from "./programs";
 import type { RenderStreamRecorder } from "./recorder";
 import { FETCH_PARALLEL } from "./resource-limits";
@@ -110,6 +115,24 @@ export type RenderStreamStatus =
   | { kind: "ended" };
 
 export interface RenderStreamStats {
+  /** Selected preset, or null when using the credit knobs directly. The pacing fields through
+   * `draws` are set by `stats()` before disposal; optional so consumer stats literals remain
+   * compatible, as with `frameCap`. */
+  pacing?: RenderStreamPacing | null;
+  /** Whether balanced has fallen back to fidelity for subsequent connections. */
+  pacingFallback?: boolean;
+  /** The current connection's hello stage, or the next one's before connecting. */
+  creditStage?: CreditStage;
+  /** The session's granted credit window; null before a session. */
+  creditWindowGranted?: number | null;
+  /** Starved cycles / sampled cycles in the last PACING_TRIAL_CYCLES eligible completed cycles after
+   * the first drawn frame, excluding payload work. Only during the active balanced trial (submitted
+   * stage, any session grant); null before a sample or outside the trial. */
+  starvedCycleShare?: number | null;
+  /** Presented stream draws over all connections, including revisits and restored redraws.
+   * Uses the loop's drawSerial counter. */
+  draws?: number;
+
   /** Opt-in tween diagnostics; pauses count payload waits, not frame callbacks. */
   clientTweens?: {
     payload_wait_pauses: number;
@@ -297,6 +320,7 @@ export interface LoopOptions {
   transport: RenderStreamTransportFactory;
   endpoint: RenderStreamEndpoint;
   creditWindow?: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
+  pacing?: RenderStreamPacing;
   /** The hello's credit stage: the ack the host waits on. Default `applied`. */
   creditStage?: CreditStage;
   /** Where a transaction with every payload in is applied (acked `applied`): `frame` (the next
@@ -400,10 +424,12 @@ type Phase =
 /** One connection's identity: events of an older one are ignored. */
 interface Connection {
   transport: RenderStreamTransport | null;
+  rehello: boolean;
   opened: boolean;
   closeInfo: { code: number; reason: string } | null;
   sessionSeen: boolean;
   streamId: string;
+  credit: ReturnType<typeof resolvePacing>;
 }
 
 export class StreamLoop {
@@ -505,13 +531,19 @@ export class StreamLoop {
   /** The idle frame cap; under `off` one branch per frame callback and nothing measured. */
   private readonly cap: FrameCap;
 
-  private readonly creditStage: CreditStage;
+  private creditStage: CreditStage;
+  private pacing: RenderStreamPacing | null;
+  private fellBack = false;
+  private starvation: PacingStarvationTracker | null = null;
   private readonly resourceHoldMs: number;
   private readonly ext: ExtensionHost | null;
   private readonly recorder: RenderStreamRecorder | null;
 
   constructor(private readonly o: LoopOptions) {
     this.endpoint = o.endpoint;
+    this.pacing = o.pacing ?? null;
+    if (this.pacing === "balanced")
+      this.starvation = new PacingStarvationTracker();
     this.creditStage = o.creditStage ?? DEFAULT_CREDIT_STAGE;
     this.ext = o.ext ?? null;
     this.recorder = o.recorder ?? null;
@@ -564,6 +596,10 @@ export class StreamLoop {
   /** A changed descriptor: an active client reconnects with it at once; an idle, failed or
    * ended one keeps it for the next `connect`. */
   setEndpoint(e: RenderStreamEndpoint): void {
+    if (!sameEndpoint(e, this.endpoint)) {
+      this.fellBack = false;
+      this.resetStarvation();
+    }
     this.endpoint = e;
     if (
       this.phase === "connecting" ||
@@ -594,6 +630,68 @@ export class StreamLoop {
   /** An input: an engaged cap presents from the next frame callback, and idle starts over. */
   wake(): void {
     this.cap.activity(this.o.clock.now(), "input");
+  }
+
+  setPacing(pacing: RenderStreamPacing): void {
+    if (this.phase === "disposed") return;
+    if (this.pacing === pacing && !this.fellBack) return;
+    this.pacing = pacing;
+    this.fellBack = false;
+    this.resetStarvation();
+    const next = this.resolveCredit();
+    const current = this.conn?.credit;
+    if (
+      (this.phase === "connecting" || this.phase === "streaming") &&
+      current !== undefined &&
+      (current.creditWindow !== next.creditWindow ||
+        current.creditStage !== next.creditStage)
+    )
+      this.quietRehello("pacing changed");
+  }
+
+  private resetStarvation(): void {
+    this.starvation =
+      this.pacing === "balanced" && !this.fellBack
+        ? new PacingStarvationTracker()
+        : null;
+  }
+
+  private pacingTrial(): boolean {
+    return (
+      this.pacing === "balanced" &&
+      !this.fellBack &&
+      this.conn?.sessionSeen === true &&
+      this.firstFrameSent &&
+      this.creditStage === "submitted"
+    );
+  }
+
+  /** Observe before arrival/frame processing can drain work that overlapped an open cycle. */
+  private skipPayloadCycle(): void {
+    if (
+      this.starvation?.isOpen &&
+      (this.pending?.stage === "fetch" ||
+        this.deferred.size > 0 ||
+        this.fetcher?.busy() === true)
+    )
+      this.starvation.payloadOutstanding();
+  }
+
+  /** Keep the retry count: only an actual draw resets failures' backoff. */
+  private quietRehello(reason: string): void {
+    const prev = this.conn;
+    const inherit = prev !== null && (prev.opened || prev.rehello);
+    this.teardown(1000, reason);
+    this.open(inherit);
+  }
+
+  private resolveCredit() {
+    return this.pacing === null
+      ? {
+          creditWindow: this.o.creditWindow ?? (this.protocol() >= 18 ? 8 : 2),
+          creditStage: this.o.creditStage ?? DEFAULT_CREDIT_STAGE,
+        }
+      : resolvePacing(this.pacing, this.protocol(), this.fellBack);
   }
 
   contextLost(): void {
@@ -639,6 +737,16 @@ export class StreamLoop {
             },
           }
         : {}),
+      pacing: this.pacing,
+      pacingFallback: this.fellBack,
+      creditStage: this.conn?.opened
+        ? this.creditStage
+        : this.resolveCredit().creditStage,
+      creditWindowGranted: this.conn?.sessionSeen ? this.grantedWindow : null,
+      starvedCycleShare: this.pacingTrial()
+        ? (this.starvation?.share ?? null)
+        : null,
+      draws: this.drawSerial,
       applied: this.applied,
       appliesPerSec: perSec,
       creditRttMsP50: p50,
@@ -740,16 +848,19 @@ export class StreamLoop {
   private executorPreparing = false;
   private executorNeedsBegin = false;
 
-  private open(): void {
+  private open(rehello = false): void {
+    this.starvation?.reset();
     const core = this.o.core;
     this.phase = "connecting";
     this.deadline = this.o.clock.now() + (this.o.connectTimeoutMs ?? 10000);
     const conn: Connection = {
       transport: null,
+      rehello,
       opened: false,
       closeInfo: null,
       sessionSeen: false,
       streamId: "",
+      credit: this.resolveCredit(),
     };
     this.conn = conn;
     this.firstFrameSent = false;
@@ -791,10 +902,13 @@ export class StreamLoop {
     conn.opened = true;
     this.phase = "streaming";
     const c = this.o.canvas();
+    const credit = this.resolveCredit();
+    conn.credit = credit;
+    this.creditStage = credit.creditStage;
     this.send(
       clientHello({
         protocol: this.protocol(),
-        creditWindow: this.o.creditWindow ?? (this.protocol() >= 18 ? 8 : 2),
+        creditWindow: credit.creditWindow,
         creditStage: this.creditStage,
         token: this.endpoint.token,
         backing: c.backing,
@@ -857,6 +971,10 @@ export class StreamLoop {
   /** Acks `submitted` every applied seq waiting for a draw, with one `t_us`, and clears them. */
   private ackUndrawnSubmitted(now: number): void {
     const undrawn = this.undrawn;
+    if (undrawn.length > 0 && this.pacingTrial()) {
+      this.starvation?.creditReturned();
+      this.skipPayloadCycle();
+    }
     for (let i = 0; i < undrawn.length; i++)
       this.ack(undrawn[i] as number, "submitted", now);
     undrawn.length = 0;
@@ -901,6 +1019,7 @@ export class StreamLoop {
   }
 
   private onBinary(conn: Connection, buf: ArrayBuffer): void {
+    this.skipPayloadCycle();
     const rec = this.recorder;
     const m = this.o.core.receive(buf, conn.sessionSeen, rec !== null);
     if (rec) {
@@ -945,6 +1064,12 @@ export class StreamLoop {
         this.endSeen = true;
         return;
       case "transaction":
+        if (this.pacingTrial() && this.starvation?.transaction()) {
+          this.fellBack = true;
+          this.starvation = null;
+          this.quietRehello("pacing fallback");
+          return;
+        }
         break;
       // After `transaction`: a transaction never reaches these compares.
       case "hint":
@@ -1033,6 +1158,7 @@ export class StreamLoop {
   }
 
   private beginSession(conn: Connection, session: SessionMeta): void {
+    this.starvation?.reset();
     this.tweenWaitPaused = false;
     conn.streamId = session.stream?.stream_id ?? "";
     // The pin rule ends with the connection; a new one re-sends the hints still in effect.
@@ -1145,10 +1271,12 @@ export class StreamLoop {
   }
 
   private readonly onFrame = (): void => {
+    const cycleWasOpen = this.starvation?.isOpen === true;
     this.frameId = null;
     this.lastFrameAt = this.o.clock.now();
     this.cold.beginFrame();
     try {
+      this.skipPayloadCycle();
       if (this.ext) this.ext.beginFrame();
       if (
         this.executorPreparing &&
@@ -1170,7 +1298,7 @@ export class StreamLoop {
           else throw e;
         }
       }
-      this.step();
+      this.step(cycleWasOpen);
     } catch (e) {
       this.fail(e);
       return;
@@ -1186,7 +1314,7 @@ export class StreamLoop {
   };
 
   /** receiver.gd `_process_live`, one callback. */
-  private step(): void {
+  private step(cycleWasOpen: boolean): void {
     const now = this.o.clock.now();
     const drawsBefore = this.drawSerial;
     const conn = this.conn as Connection;
@@ -1254,6 +1382,9 @@ export class StreamLoop {
         present = true;
       }
     }
+    this.skipPayloadCycle();
+    if (cycleWasOpen && this.pacingTrial())
+      this.starvation?.frame(this.ctx === "ok" && present);
     if (this.o.clientTweens) {
       const paused =
         this.ctx === "ok" &&
@@ -1308,7 +1439,12 @@ export class StreamLoop {
           "host-error",
           `${reason}: the host closed with ${code}`,
         );
-      if (!conn.sessionSeen && this.attempt === 0 && this.applied === 0)
+      if (
+        !conn.sessionSeen &&
+        !conn.rehello &&
+        this.attempt === 0 &&
+        this.applied === 0
+      )
         throw new StreamFailure(
           null,
           "live-connect-failed",
@@ -1327,8 +1463,11 @@ export class StreamLoop {
 
   private connectFailed(conn: Connection): void {
     const c = conn.closeInfo;
-    // A reconnect attempt that does not open just waits for the next one.
-    if (this.attempt > 0) {
+    // Authentication failures are terminal even during a quiet re-hello.
+    if (conn.rehello && c?.code === 1008 && c.reason === "unauthorized")
+      throw new StreamFailure(null, "live-connect-failed", "unauthorized");
+    // A reconnect or quiet re-hello that does not open waits for the next attempt.
+    if (this.attempt > 0 || conn.rehello) {
       this.scheduleReconnect();
       return;
     }
@@ -2007,14 +2146,17 @@ export class StreamLoop {
     const seq = this.lastAppliedSeq;
     if (this.ext) this.ext.beforeDraw(seq, this.o.clock.now());
     this.drawCore(seq);
+    // The first successful draw makes its returned credit eligible for the trial. Keep the
+    // first-frame notification after the submitted acks, as on every other connection.
+    const firstFrame = !this.firstFrameSent;
+    this.firstFrameSent = true;
     this.drawnSeq = seq;
     const now = this.o.clock.now();
     this.ackUndrawnSubmitted(now);
     this.revisitDraw = false;
     if (this.creditStage !== "applied") this.lastCreditAt = now;
     this.attempt = 0;
-    if (!this.firstFrameSent) {
-      this.firstFrameSent = true;
+    if (firstFrame) {
       this.status({ kind: "streaming", firstFrame: true });
     }
   }
@@ -2042,14 +2184,15 @@ export class StreamLoop {
   /** One draw of the applied state; it closes every missed payload in the store since the last
    * one (one branch when there is none). */
   private drawCore(seq: number): void {
-    this.drawSerial++;
     if (!this.cold.pending) {
       this.o.core.draw(seq);
+      this.drawSerial++;
       this.sampleDamage(this.o.clock.now());
       return;
     }
     const start = this.o.clock.now();
     this.o.core.draw(seq);
+    this.drawSerial++;
     this.sampleDamage(this.o.clock.now());
     this.cold.drew(start);
   }

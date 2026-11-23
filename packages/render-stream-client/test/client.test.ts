@@ -48,6 +48,50 @@ const core = {
 };
 
 describe("createRenderStreamClient", () => {
+  it("validates pacing and reserves explicit credit knobs", () => {
+    const options = {
+      canvas: document.createElement("canvas"),
+      core,
+      endpoint,
+    };
+    for (const pacing of ["fast", "", null, 1])
+      expect(() =>
+        createRenderStreamClient({ ...options, pacing: pacing as never }),
+      ).toThrow(TypeError);
+    for (const knob of [
+      { creditWindow: 1 as const },
+      { creditStage: "applied" as const },
+    ]) {
+      expect(() =>
+        createRenderStreamClient({ ...options, ...knob, pacing: "balanced" }),
+      ).toThrow(TypeError);
+      const client = createRenderStreamClient({ ...options, ...knob });
+      expect(() => client.setPacing!("balanced")).toThrow(TypeError);
+      client.dispose();
+      expect(() => client.setPacing!("balanced")).not.toThrow();
+    }
+    const client = createRenderStreamClient({
+      ...options,
+      endpoint: { ...endpoint, protocol: 18 },
+      pacing: "balanced",
+    });
+    expect(client.stats()).toMatchObject({
+      pacing: "balanced",
+      pacingFallback: false,
+      creditStage: "submitted",
+      creditWindowGranted: null,
+      starvedCycleShare: null,
+      draws: 0,
+    });
+    expect(() => client.setPacing!("bad" as never)).toThrow(TypeError);
+    client.setPacing!("fidelity");
+    expect(client.stats().creditStage).toBe("applied");
+    expect(() =>
+      client.setEndpoint({ ...endpoint, protocol: 17 }),
+    ).not.toThrow();
+    client.dispose();
+  });
+
   it("accepts /18 windows 1..8 and rejects invalid windows or an explicit large downgrade", () => {
     const canvas = document.createElement("canvas");
     for (const creditWindow of [1, 2, 3, 4, 5, 6, 7, 8] as const) {
@@ -909,6 +953,37 @@ describe("endpoint protocol changes", () => {
     } finally {
       set.mockRestore();
     }
+  });
+
+  it("stores pacing before core load, then changes the live hello without rebuilding wasm", async () => {
+    const h = mount(18);
+    h.c.setPacing!("balanced");
+    h.c.connect();
+    await vi.advanceTimersByTimeAsync(0);
+    h.open();
+    expect(JSON.parse(h.connections[0].send.mock.calls[0][0])).toMatchObject({
+      credit_window: 3,
+      credit_stage: "submitted",
+    });
+    h.instances[0].payloads.add("resident");
+    h.c.setPacing!("fidelity");
+    expect(h.connections[0].close).toHaveBeenCalledExactlyOnceWith(
+      1000,
+      "pacing changed",
+    );
+    expect(h.instances).toHaveLength(1);
+    expect(h.instances[0].payloads.has("resident")).toBe(true);
+    h.open();
+    expect(JSON.parse(h.connections[1].send.mock.calls[0][0])).toMatchObject({
+      credit_window: 8,
+      credit_stage: "applied",
+    });
+    expect(h.c.stats()).toMatchObject({
+      pacing: "fidelity",
+      creditStage: "applied",
+    });
+    expect(h.statuses.filter((s) => s.kind === "connecting")).toHaveLength(2); // loader + initial loop connect
+    h.c.dispose();
   });
 
   it("frameCap: validated, switched at runtime, and woken by input on the canvas's document", async () => {

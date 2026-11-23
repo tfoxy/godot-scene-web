@@ -44,6 +44,7 @@ import {
   type RenderStreamStatus,
   StreamLoop,
 } from "./loop";
+import { checkPacing, type RenderStreamPacing, resolvePacing } from "./pacing";
 import {
   clientToPresentation,
   presentationToClient,
@@ -103,9 +104,21 @@ export interface RenderStreamClientOptions {
    * extension that `wants` identities needs protocol 13 or 14; v2 wants upgrade /13 to /14. */
   extensions?: readonly RenderStreamExtension[];
   /** The credit window asked in the hello (the session grants it): 1..8 at /18 and later, else 1..2.
-   * Default 8 at /18 and later, else 2. */
+   * Default 8 at /18 and later, else 2. Mutually exclusive with `pacing`; an explicit value
+   * also prevents `setPacing`. Fixed for the connection's lifetime. */
   creditWindow?: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
-  /** The hello's credit stage, the ack the host's credit waits on; default `applied`. */
+  /** Resolve both credit knobs at each connection's effective protocol. `fidelity`: applied,
+   * window 8 at /18 and later, else 2 (today's defaults). `balanced`: submitted, window 3 at
+   * /18 and later, else 2, with a quiet reconnect to fidelity if more than half of the last
+   * 32 eligible credit cycles were starved (at any session grant).
+   * Samples begin after the first drawn frame and exclude cycles overlapping payload work.
+   * Fallback survives reconnects until `setPacing` or a different endpoint resets it. Omitted:
+   * preserve the existing credit-knob behaviour. Mutually exclusive with either explicit knob;
+   * invalid values or combinations throw `TypeError`. Change at runtime with `setPacing`. */
+  pacing?: RenderStreamPacing;
+  /** The hello's credit stage, the ack the host's credit waits on; default `applied`.
+   * `submitted` returns credit at a draw for every transaction folded into it. Mutually
+   * exclusive with `pacing`; an explicit value also prevents `setPacing`. Fixed per connection. */
   creditStage?: CreditStage;
   /** Where a ready transaction is applied (acked `applied`): the next frame callback (`frame`) or
    * its own `onmessage` while frames run (`message`, the default). Either way the renderer's
@@ -206,6 +219,14 @@ export interface RenderStreamClient {
    * next `connect`). Throws `RenderStreamEndpointError` for an invalid one.
    * A change in effective protocol rebuilds the core at the next connection. */
   setEndpoint(e: RenderStreamEndpoint): void;
+  /** Select a preset and reset balanced's fallback. If the resolved hello changes while connecting
+   * or streaming, quietly reconnect (no `connecting` status), retaining the core and payload
+   * store. The new connection emits `streaming` at its session and first draw as usual.
+   * Otherwise keep it for the next connection; the same preset and hello are a no-op unless
+   * resetting a fallback. Throws `TypeError` for an invalid preset or if either credit knob
+   * was explicit at creation. No-op after dispose. Always present on a created client;
+   * optional so consumer test doubles need not implement it. */
+  setPacing?(pacing: RenderStreamPacing): void;
   stats(): Readonly<RenderStreamStats>;
   /** The page point `(clientX, clientY)` (an event's, CSS px) as a presentation-space
    * point (the host window's px), or null where the picture is not: a letterbox bar, outside the
@@ -300,6 +321,13 @@ export function createRenderStreamClient(
     throw new TypeError(
       'render-stream client: carrier must be "auto", "websocket" or "webtransport"',
     );
+  if (options.pacing !== undefined) {
+    checkPacing(options.pacing);
+    if (options.creditWindow !== undefined || options.creditStage !== undefined)
+      throw new TypeError(
+        "render-stream client: pacing owns creditWindow and creditStage",
+      );
+  }
   const endpoint = validateEndpoint(options.endpoint);
   const creditWindow =
     options.creditWindow ?? (endpoint.protocol >= 18 ? 8 : 2);
@@ -415,6 +443,7 @@ class Client implements RenderStreamClient {
   };
   private readonly onRestored = () => this.loop?.contextRestored();
   /** The frame cap in effect (the loop's, once there is one). */
+  private pacing: RenderStreamPacing | null;
   private frameCap: RenderStreamFrameCap;
   private staticParticles: boolean;
   private drawBatching: number | undefined;
@@ -436,6 +465,7 @@ class Client implements RenderStreamClient {
     this.carrierFactory =
       o.transport ??
       carrierTransport(o.carrier ?? "auto", { fetchInWorker: o.fetchInWorker });
+    this.pacing = o.pacing ?? null;
     this.frameCap = o.frameCap ?? "off";
     this.staticParticles = o.staticParticles ?? false;
     this.drawBatching =
@@ -446,6 +476,17 @@ class Client implements RenderStreamClient {
     this.damageRedraw = o.damageRedraw ?? false;
     this.frameCapBounds = o.frameCapBounds;
     this.listenInput();
+  }
+
+  setPacing(pacing: RenderStreamPacing): void {
+    if (this.disposed) return;
+    checkPacing(pacing);
+    if (this.o.creditWindow !== undefined || this.o.creditStage !== undefined)
+      throw new TypeError(
+        "render-stream client: setPacing conflicts with explicit credit knobs",
+      );
+    this.pacing = pacing;
+    this.loop?.setPacing(pacing);
   }
 
   setFrameCap(
@@ -549,7 +590,10 @@ class Client implements RenderStreamClient {
       this.o.resourceHints,
       this.o.clientTweens,
     );
-    if ((this.o.creditWindow ?? 1) > (next.protocol >= 18 ? 8 : 2))
+    if (
+      this.o.creditWindow !== undefined &&
+      this.o.creditWindow > (next.protocol >= 18 ? 8 : 2)
+    )
       throw new TypeError(
         "render-stream client: creditWindow exceeds endpoint protocol range",
       );
@@ -559,7 +603,22 @@ class Client implements RenderStreamClient {
   }
 
   stats(): Readonly<RenderStreamStats> {
-    return this.loop?.stats() ?? EMPTY_STATS;
+    if (this.disposed) return EMPTY_STATS;
+    return (
+      this.loop?.stats() ?? {
+        ...EMPTY_STATS,
+        pacing: this.pacing,
+        pacingFallback: false,
+        creditStage:
+          this.pacing === null
+            ? (this.o.creditStage ?? "applied")
+            : resolvePacing(this.pacing, this.endpoint.protocol, false)
+                .creditStage,
+        creditWindowGranted: null,
+        starvedCycleShare: null,
+        draws: 0,
+      }
+    );
   }
 
   cssToPresentation(clientX: number, clientY: number): Point | null {
@@ -722,6 +781,7 @@ class Client implements RenderStreamClient {
       endpoint: this.endpoint,
       creditWindow: this.o.creditWindow,
       creditStage: this.o.creditStage,
+      pacing: this.pacing ?? undefined,
       applyOn: this.o.applyOn,
       resourceHoldMs: this.o.resourceHoldMs,
       ext: this.ext,

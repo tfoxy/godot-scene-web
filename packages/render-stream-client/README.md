@@ -4,6 +4,95 @@ A browser client for a render-stream host: it connects, applies the stream's tra
 wasm core, draws them on a WebGL2 canvas and returns credit. `createRenderStreamClient` is the entry
 point; `client.stats()` reports what it is doing.
 
+## Pacing
+
+`pacing` selects the existing hello's credit stage and window for each connection. It changes
+neither the wire format nor the host. `fidelity` matches the defaults: `applied`, with window 8
+at protocol /18 and later, else 2. Leave `pacing` out to keep the existing credit-knob behaviour.
+
+| Preset                    | Protocol /18 and later | Below /18 (including /16–17) |
+| ------------------------- | ---------------------- | ---------------------------- |
+| `fidelity` (default)      | `applied`, window 8    | `applied`, window 2          |
+| `balanced` trial          | `submitted`, window 3  | `submitted`, window 2        |
+| `balanced` after fallback | `applied`, window 8    | `applied`, window 2          |
+
+Choose `balanced` for short round trips, such as the same machine or a LAN: it can save sends
+while keeping draws and content age about unchanged. At `submitted`, the client returns credit
+for every transaction folded into a draw, so window N allows at most N transactions sent and not
+yet drawn. On slower networks that bound costs draws; balanced detects starvation and falls back
+to fidelity by itself, so the first few seconds of such a connection draw fewer frames until the
+trial trips. A host that publishes faster than the viewer's display makes content fresher only
+under fidelity: with balanced's bound on undrawn transactions, the extra host frames are not drawn
+sooner. The mapping uses each connection's effective protocol at its hello. The
+session grants the window; the requested value is not a guarantee.
+
+```ts
+const client = createRenderStreamClient({
+  canvas,
+  core,
+  endpoint,
+  pacing: "balanced",
+});
+client.connect();
+// Later, change the preset (created clients always have this optional interface method).
+client.setPacing?.("fidelity");
+```
+
+`pacing` owns both knobs: combining it with an explicit `creditWindow` or `creditStage` throws
+`TypeError`, as does any preset other than `fidelity` or `balanced`. An explicit knob at creation
+also prevents `setPacing`. A client created with neither knob may adopt a preset later, even if
+it was created without `pacing`.
+
+### Balanced trial and runtime changes
+
+The trial runs while balanced has not fallen back and the connection uses `submitted`, at any
+session grant. It samples only after the connection's first drawn frame (`streaming`,
+`firstFrame: true`). A cycle opens when a draw returns submitted credit for at least one
+transaction, and closes when the next transaction arrives. It is starved if a frame callback that
+began while the cycle was open presents with a usable context: a presentation opportunity found
+nothing new after credit returned. This definition also applies with several transactions in
+flight. The callback that opened the cycle does not count; callbacks skipped by `frameCap` do
+not count either.
+
+A cycle is skipped entirely if at any point while open a pending transaction waits on payloads,
+any deferred payload remains, or the fetcher is busy, even if that work finishes before the next
+transaction arrives. Start-up and payload fetches are not credit round-trip starvation; at long
+RTT, steady streaming still fills the ring with starved cycles. The tracker keeps the last
+`PACING_TRIAL_CYCLES` (32) completed, unskipped cycles and trips only when all 32 samples are
+present and their starved share is greater than `PACING_TRIP_SHARE` (0.5): 17/32 trips, 16/32 does
+not. These constants are defined in `src/pacing.ts`.
+
+Idle content is one long cycle, hence one sample: a static stretch barely moves the share. The
+sample ring and open cycle reset for each connection/session.
+
+On fallback the client closes with code 1000 and reason `"pacing fallback"`, then opens a new
+connection with the fidelity hello, retaining its wasm core and payload store. The fallback is
+sticky across later reconnects and backoff retries. `setPacing(preset)` resets it, including when
+selecting `balanced` again; `setEndpoint` with a different endpoint also resets it.
+
+`setPacing` quietly reconnects while connecting or streaming only if the resolved hello changes
+(close code 1000, reason `"pacing changed"`). Otherwise the selection takes effect on the next
+connection. Selecting the same preset and hello is a no-op unless resetting a fallback; after
+disposal every call is a no-op. A quiet reconnect emits no `connecting` status. The new session
+emits `streaming` with `firstFrame: false`, then its first drawn transaction emits it with
+`firstFrame: true`, once each per connection. Real failures retain the existing retry/backoff
+behaviour. The method is optional on `RenderStreamClient` so consumer test doubles remain valid;
+created clients always provide it. `RenderStreamPacing` is exported from the package entry point.
+
+### Pacing stats
+
+`stats()` sets these fields before disposal. They are optional on `RenderStreamStats` for
+compatibility with consumer stats literals, like the frame-cap fields.
+
+| Field                 | Meaning                                                                                                                                                                                        |
+| --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pacing`              | Selected preset, or `null` when no preset has been selected.                                                                                                                                   |
+| `pacingFallback`      | Whether balanced has fallen back to fidelity.                                                                                                                                                  |
+| `creditStage`         | Current connection's resolved hello stage, or the next connection's before connecting.                                                                                                         |
+| `creditWindowGranted` | Session's granted window; `null` before a session.                                                                                                                                             |
+| `starvedCycleShare`   | Starved samples / samples in the last 32 eligible completed cycles (after the first drawn frame, excluding payload work) during balanced's trial; `null` before a sample or outside the trial. |
+| `draws`               | Presented stream draws over all connections, including revisits and restored redraws; uses the loop's `drawSerial` counter.                                                                    |
+
 ## Extension clip outsets
 
 `overrides.set(id, { clipOutset: [left, top, right, bottom] })` widens the clip that

@@ -1,4 +1,4 @@
-// @godot-scene-web/render-stream-client: a lean live render-stream client.
+// @godot-scene-web/render-stream-client: a live render-stream client.
 // Private until the wire freezes; consumers alias this source.
 
 export {
@@ -66,6 +66,7 @@ export {
   type ResourceDiagnostics,
   type ResourceUnavailableReason,
 } from "./loop";
+export type { RenderStreamPacing } from "./pacing";
 export {
   type PointerTargetResolverOptions,
   pointerTargetIdentity,
