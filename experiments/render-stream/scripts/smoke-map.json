@@ -880,6 +880,18 @@
       "reach": ["native:gate8@*"]
     },
     {
+      "why": "Phone pacing proof tooling: run by hand through the host-only live-scale bench, with a standalone delay unit test and summary self-test; pure checks TypeScript. No native or device leg runs this entry point automatically.",
+      "paths": [
+        "experiments/render-stream/scripts/client-device-check.ts",
+        "experiments/render-stream/web/client-phone/**",
+        "experiments/render-stream/scripts/pacing-proof.sh",
+        "experiments/render-stream/scripts/lib/pacing-proof-summary.py",
+        "experiments/render-stream/scripts/lib/delay-transport.ts",
+        "experiments/render-stream/scripts/lib/delay-transport.test.ts"
+      ],
+      "reach": ["pure"]
+    },
+    {
       "why": "MIR-1's client live check (results/p3/mir-1.md): a real-time page driven by hand through bench-live-scale.sh's host-only mode, not a validate-increment target; the package it mounts is reached above",
       "paths": ["experiments/render-stream/scripts/client-live-check.ts"],
       "reach": ["pure"]

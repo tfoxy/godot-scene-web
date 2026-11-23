@@ -1,8 +1,9 @@
 // PHN's page-side probes (scripts/client-device-check.ts). Installed before the
 // client package is created, they time what the package does on the phone's main thread without
 // touching it:
-//   - every requestAnimationFrame callback: its frame timestamp (the rAF interval is the phone's
-//     frame time) and its duration (the client's per-frame apply + lower + GL submission);
+//   - every requestAnimationFrame callback: its frame timestamp and synchronous wall duration.
+//     This includes the stream client's apply + lower + GL submission, the GPU-load loop and
+//     the recorder. The runner groups shared timestamps into display frames and sums costs;
 //   - every WebSocket `onmessage` handler: its duration and the message bytes (receive: the zstd
 //     decode and the transaction accept);
 //   - every fetch(): its duration to the response (resource GETs);
@@ -41,7 +42,7 @@ class Series {
 const now = () => performance.now();
 /** rAF: (frame timestamp, callback duration ms). */
 const frames = new Series();
-/** rAF: (GL ms inside the callback, GL calls inside the callback) when the GL probe is on. */
+/** Per callback across all page loops: (GL ms, GL calls) when the GL probe is on. */
 const frameGl = new Series();
 /** onmessage: (bytes, handler ms). */
 const messages = new Series();

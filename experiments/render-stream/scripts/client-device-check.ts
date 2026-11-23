@@ -15,6 +15,19 @@
 //       [--credit-stage submitted|applied] [--apply-on frame|message]' \
 //     -- GRC_LIVE_AUTH=token
 //
+// Pacing proof: --protocol 18|19 --pacing fidelity|balanced --one-way-ms 0|24
+//   --gpu-load-hz 30|45 --gpu-load-mode coupled|always (default coupled)
+//   --main-s 180 --remounts 0 --attrib-s 0 --core <prebuilt dir>.
+// Coupled GPU load runs after stream draws only; always submits a heavy pass every rAF.
+// --pacing excludes explicitly supplied --window and --credit-stage. GPU-load calibration
+// runs before the first connection. --one-way-ms delays stream messages both ways, not GETs.
+// The pacing report uses an independent page rAF draw recorder over the main measured window.
+// Probe cadence groups all page rAF callbacks by timestamp. Callback cost sums each frame's
+// stream-client apply/lower/GL submission, GPU-load and recorder callbacks (synchronous wall time).
+// Balanced trial/after-fallback rates split that window at the first observed fallback.
+// Explicit submitted windows w1..w8 use --credit-stage submitted --window 1..8.
+// --remounts 0 mounts once; --attrib-s 0 skips all three attribution windows.
+//
 // --credit-stage and --apply-on pass the client's pacing options; omitted,
 // the package's defaults.
 //
@@ -57,6 +70,17 @@ import {
   stopTracing,
   traceCategoriesFor,
 } from "../../../packages/perf-harness/src/trace";
+import type {
+  RenderStreamClient,
+  RenderStreamEndpoint,
+} from "../../../packages/render-stream-client/src/index";
+import { pacingTrial } from "../web/client-phone/pacing-trial";
+import {
+  dist,
+  pct,
+  summarize,
+  type Taken,
+} from "../web/client-phone/probe-summary";
 import {
   checkDeviceProvenance,
   DEVICE_PAGE_FACTS_EXPRESSION,
@@ -83,6 +107,47 @@ function args(): Record<string, string> {
   }
   for (const k of ["dir", "port", "ws", "http"])
     if (!out[k]) throw new Error(`client-device-check: --${k} is required`);
+  if (
+    out["gpu-load-mode"] !== undefined &&
+    !["always", "coupled"].includes(out["gpu-load-mode"])
+  )
+    throw new Error("client-device-check: --gpu-load-mode always|coupled");
+  if (out.pacing !== undefined) {
+    if (!["fidelity", "balanced"].includes(out.pacing))
+      throw new Error("client-device-check: --pacing fidelity|balanced");
+    if (out.window !== undefined || out["credit-stage"] !== undefined)
+      throw new Error(
+        "client-device-check: --pacing excludes --window/--credit-stage",
+      );
+  }
+  for (const key of ["one-way-ms", "attrib-s", "remounts"]) {
+    if (
+      out[key] !== undefined &&
+      (!Number.isFinite(Number(out[key])) || Number(out[key]) < 0)
+    )
+      throw new Error(`client-device-check: --${key} must be nonnegative`);
+  }
+  if (out.remounts !== undefined && !Number.isInteger(Number(out.remounts)))
+    throw new Error("client-device-check: --remounts must be an integer");
+  for (const key of ["main-s", "cycle-s", "gpu-load-hz"]) {
+    if (
+      out[key] !== undefined &&
+      (!Number.isFinite(Number(out[key])) || Number(out[key]) <= 0)
+    )
+      throw new Error(`client-device-check: --${key} must be positive`);
+  }
+  if (
+    out.protocol !== undefined &&
+    ![11, 12, 18, 19].includes(Number(out.protocol))
+  )
+    throw new Error("client-device-check: --protocol 11|12|18|19");
+  if (
+    out.window !== undefined &&
+    (!Number.isInteger(Number(out.window)) ||
+      Number(out.window) < 1 ||
+      Number(out.window) > 8)
+  )
+    throw new Error("client-device-check: --window 1..8");
   return out;
 }
 
@@ -90,70 +155,14 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const r1 = (x: number) => Math.round(x * 10) / 10;
 const r2 = (x: number) => Math.round(x * 100) / 100;
 
-function pct(xs: readonly number[], p: number): number | null {
-  if (xs.length === 0) return null;
-  const s = [...xs].sort((a, b) => a - b);
-  return s[Math.min(s.length - 1, Math.floor((p / 100) * s.length))];
-}
-function dist(xs: readonly number[]) {
-  const mean = xs.length ? xs.reduce((s, x) => s + x, 0) / xs.length : null;
-  const f = (v: number | null) => (v === null ? null : r2(v));
-  return {
-    n: xs.length,
-    mean: f(mean),
-    p50: f(pct(xs, 50)),
-    p95: f(pct(xs, 95)),
-    p99: f(pct(xs, 99)),
-    max: f(xs.length ? xs.reduce((m, x) => (x > m ? x : m), -Infinity) : null),
-  };
-}
-
-interface Stats {
-  applied: number;
-  appliesPerSec: number;
-  creditRttMsP50: number | null;
-  heapBytes: number;
+type Stats = ReturnType<RenderStreamClient["stats"]> & { t: number };
+interface Recording {
   t: number;
-}
-interface Taken {
-  frames: { a: number[]; b: number[]; dropped: number };
-  frameGl: { a: number[]; b: number[]; dropped: number };
-  messages: { a: number[]; b: number[]; dropped: number };
-  fetches: { a: number[]; b: number[]; dropped: number };
-  longTasks: { a: number[]; b: number[]; dropped: number };
-}
-
-/** The probes over one window: frame time, per-frame callback cost, receive and GET cost. */
-function summarize(t: Taken, seconds: number) {
-  const ts = t.frames.a;
-  const intervals: number[] = [];
-  for (let i = 1; i < ts.length; i++) intervals.push(ts[i] - ts[i - 1]);
-  const tp = pct(intervals, 50) ?? 16.7;
-  const bytes = t.messages.a.reduce((s, x) => s + x, 0);
-  return {
-    seconds,
-    raf_per_s: r1(ts.length / seconds),
-    frame_interval_ms: dist(intervals),
-    frames_over_1_5_tp: intervals.filter((x) => x > 1.5 * tp).length,
-    raf_callback_ms: dist(t.frames.b),
-    raf_callback_busy_ms_per_s: r1(
-      t.frames.b.reduce((s, x) => s + x, 0) / seconds,
-    ),
-    messages_per_s: r1(t.messages.a.length / seconds),
-    message_kb_per_s: r1(bytes / 1024 / seconds),
-    message_bytes: dist(t.messages.a),
-    onmessage_ms: dist(t.messages.b),
-    onmessage_busy_ms_per_s: r1(
-      t.messages.b.reduce((s, x) => s + x, 0) / seconds,
-    ),
-    fetches: t.fetches.a.length,
-    fetch_ms: dist(t.fetches.b),
-    long_tasks: t.longTasks.a.length,
-    long_task_ms: dist(t.longTasks.b),
-    gl_ms_in_raf: t.frameGl.a.length ? dist(t.frameGl.a) : null,
-    gl_calls_in_raf: t.frameGl.b.length ? dist(t.frameGl.b) : null,
-    dropped: t.frames.dropped + t.messages.dropped,
-  };
+  mountAt: number;
+  drawTimes: number[];
+  firstFrameAt: number | null;
+  fallbackAt: number | null;
+  calibration: unknown;
 }
 
 /** `dumpsys meminfo <pid>`: TOTAL PSS / TOTAL RSS (KiB) and the process name. */
@@ -237,8 +246,13 @@ async function main(): Promise<number> {
   const attribS = Number(a["attrib-s"] ?? 10);
   const backingScale = Number(a["backing-scale"] ?? 1);
   const tolerance = Number(a.tolerance ?? 0.15);
-  const protocol = Number(a.protocol ?? 12) as 11 | 12;
-  const creditWindow = Number(a.window ?? 2) as 1 | 2;
+  const protocol = Number(a.protocol ?? 12) as RenderStreamEndpoint["protocol"];
+  const creditWindow = Number(a.window ?? 2) as 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
+  const pacing = a.pacing as "fidelity" | "balanced" | undefined;
+  const oneWayMs = Number(a["one-way-ms"] ?? 0);
+  const gpuLoadHz =
+    a["gpu-load-hz"] === undefined ? undefined : Number(a["gpu-load-hz"]);
+  const gpuLoadMode = (a["gpu-load-mode"] ?? "coupled") as "always" | "coupled";
   // PH3: the client's pacing options (omitted: the package's defaults).
   const creditStage = a["credit-stage"] as "submitted" | "applied" | undefined;
   const applyOn = a["apply-on"] as "frame" | "message" | undefined;
@@ -305,8 +319,8 @@ async function main(): Promise<number> {
     origin,
     ws: a.ws,
     protocol,
-    credit_window: creditWindow,
-    credit_stage: creditStage ?? "default",
+    credit_window: pacing ? null : creditWindow,
+    credit_stage: pacing ? null : (creditStage ?? "default"),
     apply_on: applyOn ?? "default",
     backing_scale: backingScale,
     core_build: coreBuild,
@@ -459,9 +473,11 @@ async function main(): Promise<number> {
 
     for (let m = 1; m <= 1 + remounts; m++) {
       const t0 = Date.now();
-      const box = await ev<unknown>(
-        `window.__rsc.mount(${JSON.stringify({ endpoint, core, creditWindow, creditStage, applyOn, backingScale })})`,
+      const box = await client.evaluate<unknown>(
+        `window.__rsc.mount(${JSON.stringify({ endpoint, core, ...(pacing ? { pacing } : { creditWindow, creditStage }), applyOn, backingScale, oneWayMs, gpuLoadHz, gpuLoadMode })})`,
+        { timeoutMs: 120_000, awaitPromise: true },
       );
+      const waitFirstAt = Date.now();
       let firstFrameMs: number | null = null;
       let firstStats: Stats | null = null;
       for (;;) {
@@ -471,7 +487,7 @@ async function main(): Promise<number> {
           firstStats = s;
           break;
         }
-        if (Date.now() - t0 > 60_000) break;
+        if (Date.now() - waitFirstAt > 60_000) break;
         await sleep(50);
       }
       // The page's own clock: mount() to the status `streaming` firstFrame.
@@ -489,8 +505,16 @@ async function main(): Promise<number> {
         aps: number;
         rtt: number | null;
         heap: number;
+        starvedCycleShare: number | null;
+        pacingFallback: boolean;
+        creditWindowGranted: number | null;
+        draws: number;
       }[] = [];
       const freqs: unknown[] = [];
+      const pageWindowStart = await ev<number>("performance.now()");
+      // Linux steady_clock and Node hrtime share CLOCK_MONOTONIC; the summary can
+      // select host sends/timeline samples from the same measured window.
+      const hostWindowStartUs = Number(process.hrtime.bigint() / 1000n);
       const w0 = Date.now();
       let nextFreq = w0;
       while (Date.now() - w0 < windowS * 1000) {
@@ -502,6 +526,10 @@ async function main(): Promise<number> {
             aps: s.appliesPerSec,
             rtt: s.creditRttMsP50,
             heap: s.heapBytes,
+            starvedCycleShare: s.starvedCycleShare ?? null,
+            pacingFallback: s.pacingFallback ?? false,
+            creditWindowGranted: s.creditWindowGranted ?? null,
+            draws: s.draws ?? 0,
           });
         if (m === 1 && Date.now() >= nextFreq) {
           freqs.push({
@@ -512,6 +540,66 @@ async function main(): Promise<number> {
         }
         await sleep(1000 - ((Date.now() - w0) % 1000));
       }
+      const hostWindowEndUs = Number(process.hrtime.bigint() / 1000n);
+      const end = await ev<{
+        recording: Recording;
+        stats: Stats;
+        statuses: unknown[];
+      }>(
+        "({recording: window.__rsc.recording(), stats: window.__rsc.stats(), statuses: window.__rsc.statuses})",
+      );
+      const rec = end.recording;
+      const drawTimes = rec.drawTimes.filter(
+        (t) => t >= pageWindowStart && t <= rec.t,
+      );
+      const drawIntervals = drawTimes.slice(1).map((t, i) => t - drawTimes[i]);
+      const median = pct(drawIntervals, 50);
+      const pacingReport = {
+        preset: pacing ?? null,
+        ...pacingTrial(
+          pacing,
+          drawTimes,
+          pageWindowStart,
+          rec.t,
+          rec.fallbackAt,
+        ),
+        one_way_ms: oneWayMs,
+        gpu_load: {
+          mode: gpuLoadMode,
+          target_hz: gpuLoadHz ?? null,
+          calibration: rec.calibration,
+        },
+        window_s: (rec.t - pageWindowStart) / 1000,
+        host_window_start_us: hostWindowStartUs,
+        host_window_end_us: hostWindowEndUs,
+        draws: drawTimes.length,
+        draws_per_s: (drawTimes.length * 1000) / (rec.t - pageWindowStart),
+        draw_interval_ms: dist(drawIntervals),
+        stutter_share:
+          median === null
+            ? null
+            : drawIntervals.filter((t) => t > 1.5 * median).length /
+              drawIntervals.length,
+        // Keep the original alias (since first frame) for existing report readers.
+        fallback_at_mount_ms:
+          rec.fallbackAt === null ? null : rec.fallbackAt - rec.mountAt,
+        fallback_at_first_frame_ms:
+          rec.fallbackAt === null || rec.firstFrameAt === null
+            ? null
+            : rec.fallbackAt - rec.firstFrameAt,
+        fallback_at_ms:
+          rec.fallbackAt === null || rec.firstFrameAt === null
+            ? null
+            : rec.fallbackAt - rec.firstFrameAt,
+        starvedCycleShare: end.stats.starvedCycleShare ?? null,
+        creditWindowGranted: end.stats.creditWindowGranted ?? null,
+        creditStage: end.stats.creditStage ?? null,
+        connections_seen: end.statuses.filter(
+          (s) => (s as { kind: string }).kind === "connecting",
+        ).length,
+        statuses: end.statuses,
+      };
+      if (m === 1) report.pacing = pacingReport;
       const wSecs = (Date.now() - w0) / 1000;
       const probes = summarize(await take(), wSecs);
       const applied0 = perSec[0]?.applied ?? 0;
@@ -520,6 +608,7 @@ async function main(): Promise<number> {
       const row: Record<string, unknown> = {
         mount: m,
         box,
+        pacing: pacingReport,
         first_frame_ms: firstFrameMs,
         first_frame_page_ms: pageFirst === null ? null : Math.round(pageFirst),
         first_stats: firstStats,
@@ -534,12 +623,12 @@ async function main(): Promise<number> {
           `window.__rsc.heapAtStart[${m}] ?? null`,
         ),
         probes,
-        per_second: m === 1 ? perSec : undefined,
+        per_second: perSec,
         cpufreq: m === 1 ? freqs : undefined,
         host_load: readFileSync("/proc/loadavg", "utf8").trim(),
       };
       log(
-        `mount ${m}: ${row.applies_per_s} applies/s, rAF ${probes.raf_per_s}/s, frame p95 ${probes.frame_interval_ms.p95} ms, rAF cb p95 ${probes.raf_callback_ms.p95} ms, onmessage ${probes.onmessage_busy_ms_per_s} ms/s, ${probes.message_kb_per_s} KB/s`,
+        `mount ${m}: ${row.applies_per_s} applies/s, rAF ${probes.raf_per_s}/s, frame p95 ${probes.frame_interval_ms.p95} ms, all-page rAF callbacks/frame p95 ${probes.raf_callback_ms.p95} ms (stream + GPU load + recorder), onmessage ${probes.onmessage_busy_ms_per_s} ms/s, ${probes.message_kb_per_s} KB/s`,
       );
       row.streaming_memory = await memory(`mount ${m} streaming`);
 
