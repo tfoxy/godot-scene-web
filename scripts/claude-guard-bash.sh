@@ -43,6 +43,22 @@ Or, if you need a different display setup, put the wrapper around the INNER vite
   xvfb-run -a npx vitest run packages/test-harness/test/webgpuCompositeXvfb.test.ts"
 fi
 
+# ---------------------------------------------------------------------------------------------
+# 5a. BLOCK: a while/until loop polling `pgrep -f` / `pkill -f`. The pattern is also in the command
+#     line of the `bash -c` process running the loop, so it matches itself and the loop never exits.
+#     (The same rule lives in the user-level ~/.claude/hooks/guard-self-pgrep.sh; this copy reaches
+#     Codex workers, which run only this guard.)
+# ---------------------------------------------------------------------------------------------
+pgrep_full_re='(^|[[:space:];&|(`$"'"'"'])(pgrep|pkill)([[:space:]]+-[A-Za-z0-9]+)*[[:space:]]+(-[A-Za-z]*f[A-Za-z]*|--full)([[:space:]]|$)'
+pgrep_loop_re='(^|[[:space:];&|(`"'"'"'])(while|until)[[:space:]]'
+if has "$pgrep_full_re" && has "$pgrep_loop_re"; then
+  deny "Refusing: this loop polls \`pgrep -f\`/\`pkill -f\` with a pattern that is also in this command's own command line, so it matches itself and never exits. Wait on the process itself instead:
+  - you started it here:            cmd & pid=\$!; ...; wait \$pid   (or: tail --pid=\$pid -f /dev/null)
+  - started earlier, PID known:     tail --pid=<PID> -f /dev/null
+  - a tool with its own wait:       e.g. codex_task.py wait <name>
+  - match by exact process name:    pgrep -x <name>   (no -f, so the shell's argv is not searched)"
+fi
+
 # --- private companion guard (begin) ----------------------------------------------------------
 # BLOCK: force-adding the private companion. private/ (a worktree's `private` link) is gitignored
 # because this repository is public; `git add -f` is the one way it gets committed anyway.
@@ -102,6 +118,13 @@ if has '(^|[[:space:];&|])(pnpm|npm|yarn)[[:space:]]' && [ -n "$cwd" ]; then
   if [ -n "$root" ] && [ "$cwd" != "$root" ] && ! has 'cd[[:space:]]'; then
     warn "AGENTS.md: run package managers from the repo root ($root) unless a package-specific command requires it. You are in $cwd. Also prefer \`mise exec -- pnpm …\` so the pinned node/pnpm/godot versions apply."
   fi
+fi
+
+# ---------------------------------------------------------------------------------------------
+# 5b. WARN: a one-shot `pgrep -f` / `pkill -f` also matches the calling shell (see 5a).
+# ---------------------------------------------------------------------------------------------
+if has "$pgrep_full_re"; then
+  warn "\`pgrep -f\`/\`pkill -f\` also matches the shell running this command (its command line contains the pattern): pgrep lists it, pkill would kill it. Filter out \$\$ and its parent, use \`pgrep -x <name>\`, or check a known PID."
 fi
 
 exit 0

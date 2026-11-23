@@ -116,9 +116,10 @@ shared contracts: change them deliberately, never as a side effect.
 
 Run `scripts/install-agent-config.sh` after cloning and in every new worktree. It links the agent config in
 for the supported harnesses and registers the PreToolUse guard `scripts/claude-guard-bash.sh` (self-tested by
-`scripts/test-claude-guard.sh`), which blocks nested `xvfb-run` and warns on a `git push`, a `tsx` call missing
-`--conditions=development` (that one silently tests `dist/` instead of your edit), and a package manager run
-from outside the repo root.
+`scripts/test-claude-guard.sh`), which blocks nested `xvfb-run` and a `while`/`until` loop polling `pgrep -f`
+(the pattern matches the loop's own shell, so it never exits), and warns on a `git push`, a `tsx` call missing
+`--conditions=development` (that one silently tests `dist/` instead of your edit), a one-shot `pgrep -f`, and
+a package manager run from outside the repo root.
 
 ## Worktrees
 

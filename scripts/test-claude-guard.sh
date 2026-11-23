@@ -72,6 +72,19 @@ expect allow 'git -C private add -f .'
 expect allow 'git add -A'
 expect allow 'git commit -m "git add -f private"'
 
+echo "== must block: loops polling a self-matching pgrep -f =="
+expect deny 'while pgrep -f "codex_task.py gate pacing --model" >/dev/null; do sleep 15; done; head x'
+expect deny 'until ! pgrep -af foo; do sleep 1; done'
+expect deny "timeout 3 bash -c 'while pgrep -f probe >/dev/null; do sleep 1; done'"
+expect deny 'while pkill -0 -f server; do sleep 1; done'
+echo "== must warn: one-shot pgrep -f =="
+expect warn 'pgrep -af "codex_task.py gate|claude -p" | cut -c1-150'
+expect warn 'pkill -f my-server'
+echo "== must allow: other process waits =="
+expect allow 'while pgrep -x godot >/dev/null; do sleep 1; done'
+expect allow 'tail --pid=123 -f /dev/null'
+expect allow 'git log --grep pgrep'
+
 echo "== must warn, not block =="
 expect warn 'tsx packages/perf-harness/src/cli.ts run S1'
 expect warn 'pnpm test' "$REPO/packages/canvas"
