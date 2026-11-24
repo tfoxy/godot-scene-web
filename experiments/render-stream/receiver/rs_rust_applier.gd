@@ -158,6 +158,11 @@ func set_digest_deferred(on: bool) -> void:
 	_core.call("set_digest_deferred", on)
 
 
+## The next session's evidence: 0 inline, 1 deferred, 2 never (validation stays enabled).
+func set_digest_policy(policy: int) -> bool:
+	return _core.call("set_digest_policy", policy)
+
+
 ## G7o2 (D31): the record at `offset` of `data`'s sha256 hex, what an inline record.sha256 would
 ## have been ("" when there is no record there).
 func record_digest(data: PackedByteArray, offset: int) -> String:

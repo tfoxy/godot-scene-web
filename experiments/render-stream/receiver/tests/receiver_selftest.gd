@@ -48,6 +48,7 @@ func _run_checks() -> void:
 	_check_row_log()
 	_check_cache_budget()
 	_check_native_queries()
+	_check_digest_policies()
 	_check_protocol_helpers()
 	_check_json_descriptor()
 	_check_view_tapped()
@@ -726,3 +727,68 @@ func _check_live_hello_versions() -> void:
 			OS.unset_environment(key)
 		else:
 			OS.set_environment(key, str(saved[key]))
+
+
+## Full evidence stays byte-identical; opting out crosses the GDScript/C++/C boundary.
+func _check_digest_policies() -> void:
+	var data: PackedByteArray = FileAccess.get_file_as_bytes("res://../protocol/golden-11/full.rs11")
+	var records: Array[Dictionary] = RsWire.split_records(data, 11)["records"]
+	var core: RefCounted = ClassDB.instantiate("RsCore")
+	for policy: int in [0, 1, 2]:
+		_checked += 1
+		if not core.call("set_digest_policy", policy):
+			_fail("digest policy %d rejected" % policy)
+		if core.call("set_digest_policy", 3):
+			_fail("invalid digest policy accepted")
+		for i: int in range(records.size()):
+			var offset: int = RsWire.as_int(records[i]["offset"])
+			var out: Dictionary = core.call("session", data, offset, 11) if i == 0 else core.call("accept", data, offset)
+			_checked += 1
+			var errors: PackedStringArray = out["errors"]
+			if not errors.is_empty():
+				_fail("digest policy %d rejected golden-11 record %d" % [policy, i])
+			var expected: String = RsWire.sha256_hex(data.slice(offset, offset + RsWire.as_int(records[i]["byte_length"]))) if policy == 0 else ""
+			if out["record"]["sha256"] != expected:
+				_fail("digest policy %d: record %d digest changed" % [policy, i])
+	# The compatibility setter must replace Never in both directions.
+	for deferred: bool in [true, false]:
+		core.call("set_digest_deferred", deferred)
+		var out: Dictionary = core.call("session", data, RsWire.as_int(records[0]["offset"]), 11)
+		_checked += 1
+		if (out["record"]["sha256"] == "") != deferred:
+			_fail("legacy digest setter did not replace policy")
+	var receiver_script: GDScript = load("res://receiver.gd")
+	var receiver: Node = receiver_script.new()
+	var old_log: String = OS.get_environment("RS_RECEIVER_LOG")
+	var old_digest: String = OS.get_environment("RS_RECEIVER_DIGEST")
+	for mode: String in ["full", "summary"]:
+		OS.set_environment("RS_RECEIVER_LOG", mode)
+		for digest: String in ["", "inline", "none"]:
+			OS.set_environment("RS_RECEIVER_DIGEST", digest)
+			for with_states: bool in [false, true]:
+				var states: Array[int] = []
+				if with_states:
+					states.append(1)
+				receiver.set("_state_seqs", states)
+				_checked += 1
+				var ok: bool = receiver.call("_parse_perf_env")
+				var expected: bool = digest == "none" or (digest == "" and mode == "summary" and states.is_empty())
+				if not ok or receiver.get("_digest_none") != expected:
+					_fail("receiver digest selection %s/%s/%s" % [mode, digest, states])
+	# Live shot windows request state dumps without populating the file-mode state seqs.
+	var no_states: Array[int] = []
+	var windows: Array[Dictionary] = [{"step": 1, "from": 1, "to": 2, "shot": false}]
+	receiver.set("_state_seqs", no_states)
+	receiver.set("_windows", windows)
+	OS.set_environment("RS_RECEIVER_LOG", "summary")
+	for digest: String in ["", "none"]:
+		OS.set_environment("RS_RECEIVER_DIGEST", digest)
+		_checked += 1
+		var ok: bool = receiver.call("_parse_perf_env")
+		if not ok or receiver.get("_digest_none") != (digest == "none"):
+			_fail("receiver shot-window digest selection %s" % (digest if digest != "" else "default"))
+	windows.clear()
+	receiver.set("_windows", windows)
+	OS.set_environment("RS_RECEIVER_LOG", old_log)
+	OS.set_environment("RS_RECEIVER_DIGEST", old_digest)
+	receiver.free()

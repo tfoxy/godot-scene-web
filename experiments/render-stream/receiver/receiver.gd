@@ -18,6 +18,8 @@ extends Node
 ## frame.
 ##
 ## Resources (G2b2; both modes unless noted):
+##   RS_RECEIVER_DIGEST           inline | none; default none in native summary without state seqs
+##                                or shot windows.
 ##   RS_RECEIVER_CACHE_DIR        absolute content-addressed cache (sha256/<hash>.grt, and
 ##                                <hash>.grm for mesh surfaces since G5e, <hash>.grp for shader
 ##                                code since G55d); required
@@ -451,6 +453,7 @@ var _io := RsIo.new()
 ## frame (RenderingServer.frame_post_draw), not inside decode_us: the offsets of accepted records
 ## not digested yet, every digest taken (offset -> sha256 hex), and the [entry, record offset]
 ## pairs of logged transactions still without their record_sha256.
+var _digest_none: bool = false
 var _digest_deferred: bool = false
 var _digest_offsets: Array[int] = []
 var _digest_hex: Dictionary = {}
@@ -723,7 +726,7 @@ func _ready() -> void:
 		_perf.enable_render_time_measurement(get_viewport().get_viewport_rid())
 	# G7o2 (D31): a browser receiver computes the record digest after the frame. The native
 	# receiver and live mode keep it inline.
-	if RsConfig.is_web():
+	if RsConfig.is_web() and not _digest_none:
 		_digest_deferred = true
 		_applier.set_digest_deferred(true)
 		RenderingServer.frame_post_draw.connect(_flush_digests)
@@ -909,6 +912,13 @@ func _parse_perf_env() -> bool:
 	if _log_mode != "full" and _log_mode != "summary":
 		_log("error: RS_RECEIVER_LOG must be full or summary (got %s)" % JSON.stringify(_log_mode))
 		return false
+	var digest: String = RsConfig.get_env("RS_RECEIVER_DIGEST").strip_edges()
+	if digest != "" and digest != "inline" and digest != "none":
+		_log("error: RS_RECEIVER_DIGEST must be inline or none (got %s)" % JSON.stringify(digest))
+		return false
+	# Summary omits transaction/dynamic evidence. State seqs and live shot windows request
+	# state dumps that read body identities, so keep SHA-256; web file replay retains its deferred path.
+	_digest_none = digest == "none" or (digest == "" and _log_mode == "summary" and _state_seqs.is_empty() and _windows.is_empty() and not RsConfig.is_web())
 	if _perf_out_path != "":
 		_perf = RsPerf.new()
 		_perf_headless = DisplayServer.get_name() == "headless"
@@ -1649,7 +1659,7 @@ func _finish() -> void:
 		_fail(null, "record-digest-incomplete", "%d accepted record(s), %d digests" % [_accepted_records(), _digest_hex.size()])
 		return
 	for entry: Dictionary in _transactions:
-		if entry["record_sha256"] == "":
+		if not _digest_none and entry["record_sha256"] == "":
 			_fail(entry["seq"], "record-digest-incomplete", "transaction seq %d has no record digest" % entry["seq"])
 			return
 	_report["status"] = "ok"
@@ -2324,7 +2334,7 @@ func _note_w11(entry: Dictionary) -> void:
 	_w11["dynamic_body_bytes_total"] = w.get("body_bytes_total", 0)
 	_w11["cache_released"] = _cache.released
 	_w11["cache_released_bytes"] = _cache.released_bytes
-	if _log_mode != "summary":
+	if _log_mode != "summary" and not _digest_none:
 		entry["w11"] = {"store_entries": entries, "names": w.get("names", 0), "carried": w.get("carried", 0), "dynamic_meshes": w.get("dynamic_meshes", 0), "dynamic_surfaces": w.get("dynamic_surfaces", 0)}
 		entry["dynamic_sha256"] = _applier.dynamic_sha256()
 		var after: Dictionary = _applier.w11_counters()
@@ -3030,6 +3040,7 @@ func _new_applier() -> void:
 	var viewport: RID = get_viewport().get_viewport_rid()
 	var canvas: RID = get_viewport().find_world_2d().canvas
 	_applier = RsRustApplier.new(viewport, canvas)
+	_applier.set_digest_policy(2 if _digest_none else 0)
 	_apply_delivery()
 	# G7o3 (D31): payloads are verified and decoded by the core as they arrive (the cache stages
 	# them), not in the frame; the verify-in-frame sabotage keeps the pre-G7o3 path.

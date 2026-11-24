@@ -191,7 +191,16 @@ pub unsafe extern "C" fn rsc_sha256_hex(data: *const u8, len: usize, out: *mut u
 /// export's file mode).
 #[no_mangle]
 pub extern "C" fn rsc_set_digest_deferred(h: *mut RsCore, on: i32) {
-    guard(h, (), |c| c.digest_deferred = on != 0);
+    guard(h, (), |c| {
+        c.set_digest_policy(if on != 0 { 1 } else { 0 });
+    });
+}
+
+/// Select the next session's digest policy (0 inline, 1 deferred, 2 never).
+/// Returns 1 on success, 0 for an invalid policy, leaving the selection unchanged.
+#[no_mangle]
+pub extern "C" fn rsc_set_digest_policy(h: *mut RsCore, policy: i32) -> i32 {
+    guard(h, 0, |c| i32::from(c.set_digest_policy(policy)))
 }
 
 /// G7o2 (D31): the record at `offset`'s SHA-256 hex into text: 1, or 0 with the error in text.

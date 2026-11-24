@@ -37,6 +37,8 @@ void rsc_sha256_hex(const uint8_t *data, size_t len, uint8_t *out);
 // G7o2 (D31): the next session defers the record digest; rsc_record_digest fills it later
 // (text: the record at `offset`'s sha256 hex; 1, or 0 with the error in text).
 void rsc_set_digest_deferred(RsCore *h, int32_t on);
+// Next session: 0 inline, 1 deferred, 2 never. Returns 0 for an invalid policy.
+int32_t rsc_set_digest_policy(RsCore *h, int32_t policy);
 int32_t rsc_record_digest(RsCore *h, const uint8_t *data, size_t len, size_t offset);
 // 4 (session) or 0 (error); vt: {record, errors, kind}. `version` is the stream's wire version,
 // 6 through 19.

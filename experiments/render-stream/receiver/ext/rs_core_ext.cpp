@@ -2013,6 +2013,7 @@ enum Method : int {
   M_SET_FULL_SCAN,
   M_OP_COUNT,
   M_SET_DIGEST_DEFERRED,
+  M_SET_DIGEST_POLICY,
   M_RECORD_DIGEST,
   M_STAGE,
   M_UNSTAGE,
@@ -2066,6 +2067,7 @@ constexpr MethodSpec METHODS[M_COUNT] = {
     {"set_full_scan", 1},    // (on: bool) -> void
     {"op_count", 0},         // () -> int (the core's opcode count, a constant: G7xw's probe call)
     {"set_digest_deferred", 1}, // (on: bool) -> void (G7o2: the next session defers record digests)
+    {"set_digest_policy", 1}, // (policy: int) -> bool (0 inline, 1 deferred, 2 never)
     {"record_digest", 2},    // (data: PackedByteArray, offset: int) -> String (sha256 hex, "" on error)
     {"stage", 2},            // (hash: String, data: PackedByteArray) -> String ("" ok; G7o3)
     {"unstage", 1},          // (hash: String) -> void (G7o3)
@@ -2296,6 +2298,9 @@ void method_call(void *userdata, GDExtensionClassInstancePtr instance, const GDE
       return;
     case M_SET_DIGEST_DEFERRED:
       rsc_set_digest_deferred(inst->core, arg_bool(args[0]) ? 1 : 0);
+      return;
+    case M_SET_DIGEST_POLICY:
+      ret_bool(ret, rsc_set_digest_policy(inst->core, static_cast<int32_t>(arg_int(args[0]))) == 1);
       return;
     case M_RECORD_DIGEST: {
       if (!arg_is(args[0], GDEXTENSION_VARIANT_TYPE_PACKED_BYTE_ARRAY)) {

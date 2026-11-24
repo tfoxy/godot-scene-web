@@ -70,6 +70,17 @@ fn replay_data(
     full_scan: bool,
     sabotage: &str,
 ) -> Vec<(Vec<u32>, Vec<u8>)> {
+    replay_data_policy(path, data, version, full_scan, sabotage, 0)
+}
+
+fn replay_data_policy(
+    path: &std::path::Path,
+    data: &[u8],
+    version: u8,
+    full_scan: bool,
+    sabotage: &str,
+    policy: i32,
+) -> Vec<(Vec<u32>, Vec<u8>)> {
     let name = path.display().to_string();
     let data = data.to_vec();
     // A golden directory's own payloads when it has them (golden-9, golden-10), else golden-6's.
@@ -93,6 +104,7 @@ fn replay_data(
         payloads()
     };
     let mut core = Core::new();
+    assert!(core.set_digest_policy(policy));
     core.planner.full_scan = full_scan;
     core.set_sabotage(sabotage);
     let spans = wire::split_records(&data, version).unwrap();
@@ -1360,4 +1372,34 @@ fn golden_16_to_19_match_core_resolved_state_and_full_scan() {
             );
         }
     }
+}
+
+#[test]
+fn never_digest_preserves_golden_16_to_19_draw_ops() {
+    let mut recordings = 0;
+    for version in 16..=19 {
+        let dir = golden().join(format!("../golden-{version}"));
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().and_then(|x| x.to_str()) != Some(&format!("rs{version}"))
+                || path
+                    .file_name()
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .starts_with("corrupt")
+            {
+                continue;
+            }
+            let data = std::fs::read(&path).unwrap();
+            assert_eq!(
+                replay_data_policy(&path, &data, version, false, "", 0),
+                replay_data_policy(&path, &data, version, false, "", 2),
+                "{}: Inline and Never draw ops",
+                path.display()
+            );
+            recordings += 1;
+        }
+    }
+    assert!(recordings > 0);
 }

@@ -121,6 +121,8 @@ pub struct Core {
     /// G7o2 (D31): the next `session()` defers the per-record digest (`record.sha256` is "" in
     /// every answer; the caller fills it after the frame with `record_digest`).
     pub digest_deferred: bool,
+    /// The next session skips evidence hashes, retaining all validation checks.
+    pub digest_never: bool,
     /// W11d (render-stream-11.md "Receivers"): the newest body of every /11 dynamic mesh surface,
     /// ingested right after each accepted transaction (the record's bytes are the caller's and are
     /// reused by the next message).
@@ -210,6 +212,17 @@ impl Core {
             version: VERSION,
             ..Core::default()
         }
+    }
+
+    /// Select the next session's digest policy: 0 inline, 1 deferred, 2 never.
+    /// Invalid values leave the selection unchanged.
+    pub fn set_digest_policy(&mut self, policy: i32) -> bool {
+        if !(0..=2).contains(&policy) {
+            return false;
+        }
+        self.digest_deferred = policy == 1;
+        self.digest_never = policy == 2;
+        true
     }
 
     pub fn set_sabotage(&mut self, name: &str) {
@@ -347,7 +360,9 @@ impl Core {
         };
         let opts = Options {
             version,
-            digest: if self.digest_deferred {
+            digest: if self.digest_never {
+                DigestPolicy::Never
+            } else if self.digest_deferred {
                 DigestPolicy::Deferred
             } else {
                 DigestPolicy::Inline
