@@ -77,7 +77,7 @@ gs_launch_godot "$GS_DISPLAY" "$EDITOR" "$RS/receiver" "$OUT/oracle.log" --resol
   --rs-env=RS_RECEIVER_STATE_SEQS=6
 wait "$GS_LAST_GODOT_PID"
 GS_GODOT_ENV=("XDG_DATA_HOME=$OUT/user-data")
-gs_launch_godot "$GS_DISPLAY" "$EDITOR" "$BUILD/shell" "$OUT/desktop.log" --resolution 640x360 --max-fps 60 --quit-after 1800 -- \
+gs_launch_godot "$GS_DISPLAY" "$EDITOR" "$BUILD/shell" "$OUT/desktop.log" --rendering-method mobile --rendering-driver vulkan --resolution 640x360 --max-fps 60 --quit-after 1800 -- \
   "--pack-base=$base" "--pack-shot=$OUT/desktop-replay.png" --pack-quit \
   "--rs-env=RS_RECEIVER_OUT=$OUT/pack/applied.json"
 godot_pid="$GS_LAST_GODOT_PID"
@@ -93,7 +93,7 @@ wait "$godot_pid"
 gs_teardown "$OUT/display"
 # A different window aspect must not change the receiver's logical viewport or digest.
 gs_start 960 600 "$OUT/display-letterbox"
-gs_launch_godot "$GS_DISPLAY" "$EDITOR" "$BUILD/shell" "$OUT/letterbox.log" --resolution 960x600 --max-fps 60 --quit-after 1800 -- \
+gs_launch_godot "$GS_DISPLAY" "$EDITOR" "$BUILD/shell" "$OUT/letterbox.log" --rendering-method mobile --rendering-driver vulkan --resolution 960x600 --max-fps 60 --quit-after 1800 -- \
   "--pack-base=$base" "--pack-shot=$OUT/desktop-letterbox.png" --pack-quit \
   "--rs-env=RS_RECEIVER_OUT=$OUT/letterbox/applied.json"
 wait "$GS_LAST_GODOT_PID"
@@ -118,6 +118,8 @@ oracle_errors = re.findall(r'^ERROR:.*', oracle_text, re.M)
 for name in ['desktop', 'letterbox', 'cache', 'cache-recovery']:
     text = (out / (name + '.log')).read_text()
     assert 'SCRIPT ERROR:' not in text, text
+    if name in ['desktop', 'letterbox']:
+        assert re.search(r'Vulkan .* - Forward Mobile - ', text), text
     errors = re.findall(r'^ERROR:.*', text, re.M)
     assert errors == (oracle_errors if name in ['desktop', 'letterbox'] else []), (name, errors, oracle_errors)
     found = re.findall(r'\[pack-demo\] digest=([0-9a-f]{64}) records=(\d+)', text)
