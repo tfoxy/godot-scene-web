@@ -1313,6 +1313,17 @@
       "reach": ["pure", "g7x:*"]
     },
     {
+      "why": "Android script-pack shell spike and its build/serve scripts: android-shell/check-desktop.sh and check-device.sh are its own acceptance; no gate leg or package test runs them",
+      "paths": [
+        "experiments/render-stream/android-shell/**",
+        "experiments/render-stream/scripts/build-android-shell.sh",
+        "experiments/render-stream/scripts/fetch-android-template.sh",
+        "experiments/render-stream/scripts/serve-android-pack.py"
+      ],
+      "reach": ["none"],
+      "exclusive": true
+    },
+    {
       "why": "repo metadata, playground and maintenance tooling: no gate leg or package test runs them (agent config, hooks, changelog, public-tree and worktree tools have separate scripts/test-* self-tests); .gitignore changes tracking, not execution",
       "paths": [
         ".gitignore",
