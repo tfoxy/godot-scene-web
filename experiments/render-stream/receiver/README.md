@@ -255,3 +255,81 @@ accepted state, which may not yet be on screen. An empty mapping emits **nothing
 with no picked item emits `item = -1`. `RsCore.hit_test(x, y)` returns the GUI tree pick with
 mouse filters, and `RsCore.to_game(x, y)` returns a `PackedFloat64Array` containing
 `[item_or_minus_one, game_x, game_y]`, or an empty array when the mapping is unavailable.
+
+## Android script-pack shell spike
+
+This shell is a spike, kept so packs can be tried on a phone. It will move to its own app
+repository and be removed from here; the receiver and the arm64 adapter build stay in GSW.
+
+`../android-shell/` is a small non-mono Godot 4.5.1 shell (`dev.gsw.shellspike`, arm64-v8a,
+GL compatibility). The APK carries the native adapter; a downloaded pack carries only
+GDScript, a scene and an inline-resource golden recording. The shell never calls `RsCore`.
+The exporter stages an Android-only `ext/` descriptor inside the shell without `.gdignore`,
+so the APK registers the library before the downloaded pack instantiates the receiver core.
+For desktop play, the build restores the receiver's full descriptor and removes the editor's
+extension autoload list; the pack loads the adapter through `RsRustApplier.load_core`.
+Preloading this adapter inside the desktop editor crashes on editor shutdown. The Android-only
+staging descriptor avoids that preload; import/export logs consequently report no matching
+Linux library. The Android preset is non-runnable to keep editor device polling disabled.
+
+From the repository root:
+
+```bash
+experiments/render-stream/scripts/build-rs-core-ext.sh
+experiments/render-stream/scripts/build-rs-core-ext-android.sh
+experiments/render-stream/scripts/build-android-shell.sh
+experiments/render-stream/android-shell/check-desktop.sh
+```
+
+The Android build uses the installed NDK (`ANDROID_NDK_HOME` can override its path), Rust's
+`aarch64-linux-android` target and static libc++. The template fetcher verifies the official
+non-mono archive and its Android files by sha256. The shell build uses the non-mono editor
+from `mise where godot@4.5.1-stable`, debug signing from the editor settings and no Gradle build.
+It writes `../android-shell/build/shell.apk`, `client-pack/manifest.json`, a sha256-named PCK,
+staged projects and import/export logs. All are ignored. The build checks the APK's actual
+`lib/arm64-v8a/librs_core_ext.so` bytes and checks the PCK contains no native library.
+
+To serve a build, run `experiments/render-stream/scripts/serve-android-pack.py` from the repo
+root. The default base is `http://127.0.0.1:8765`; `--pack-base=<base>` after Godot's `--`
+overrides it. The shell fetches `/client-pack/manifest.json` (`packVersion`, `sha256`, `entry`),
+then `/client-pack/<sha256>.pck`, verifies with `HashingContext`, and caches the verified bytes
+at `user://packs/<sha256>/pack.pck`. Cached bytes are hashed again before loading. A mismatch
+from the server logs `[shell] refused: sha256 mismatch; pack not loaded` and exits with code 1.
+The server's `--bad-sha` option exercises that refusal with a real PCK body under a false hash.
+
+The demo's receiver scripts are copied unchanged from this directory on every build. It replays
+`protocol/golden-8/inline.rs8` (17 records, 6 transactions, resources included), and prints
+`[pack-demo] digest=<hex> records=17`. The digest is sha256 of the receiver's final `state_json`
+UTF-8 bytes, with no trailing newline. The demo supplies defaults through the copied `RsConfig`
+argument map; ordinary environment or `--rs-env=NAME=VALUE` settings take precedence. Its
+`_quit` override keeps the final frame visible; `--pack-quit` exits after replay, and
+`--pack-shot=<absolute-path>` saves the rendered frame before exiting when combined with it.
+The pack's reusable `demo/replay-view.tscn` presents a 640×360 SubViewport (the recording's
+presentation size) through a full-window TextureRect with centered aspect-preserving fit.
+Its own World2D keeps the receiver's canvas inside that viewport, with letterbox space around
+it on wider or taller screens. The receiver's strict visible-rect check reads this SubViewport.
+Its separate physical-window presentation diagnostic can still report a mismatch; it does
+not prevent replay. Receiver scripts and checks are unchanged.
+
+The desktop runner compares the digest and engine error lines against the unchanged receiver
+under the same rendered gamescope setup. It proves bad-hash
+refusal and cache behavior, and saves a private-gamescope replay to
+`artifacts/p0a/desktop-replay.png`, with logs and `desktop-summary.json` alongside it. A second
+render at 960×600 checks the 640×360 replay viewport and saves `desktop-letterbox.png`. This
+establishes parity with the receiver, including any engine errors from the chosen recording;
+it does not assert that every recorded mesh is valid.
+
+For an attached, leased device, set `ANDROID_SERIAL` and run:
+
+```bash
+experiments/render-stream/android-shell/check-device.sh
+```
+
+The device checker starts the pack server on port 8765 and uses only `scripts/phone-leg.sh`.
+It installs the APK, clears app data for the first replay, and sets up the port reverse. It
+checks the device digest against `desktop-summary.json`, refuses a bad-hash manifest, then
+reuses the verified cache without downloading the pack again. Logs show the download, hash
+verification, pack mount and `RsCore` creation by the pack. The replay screenshot is
+`artifacts/p0a/device/device-replay.png`; the two other legs have their own log directories,
+and `device-summary.json` reports all three checks. The wrapper force-stops the app and removes
+the reverse after every leg; the checker stops its server on exit. Device evidence is ignored.

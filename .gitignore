@@ -71,3 +71,6 @@ apps/playground/public/recovered
 experiments/render-stream/capture/build/
 experiments/render-stream/capture/build-windows/
 experiments/render-stream/capture/build-libcxx/
+
+# Android shell spike: staged projects, native libraries, APKs and downloadable script packs.
+experiments/render-stream/android-shell/build/

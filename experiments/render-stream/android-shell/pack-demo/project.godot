@@ -1,0 +1,8 @@
+config_version=5
+
+[application]
+config/name="GSW Pack Demo"
+run/main_scene="res://demo/entry.tscn"
+
+[rendering]
+renderer/rendering_method="gl_compatibility"
