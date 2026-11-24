@@ -88,6 +88,9 @@ echo "build-web-receiver: side module (build-rs-core-web.sh)" >&2
 mkdir -p "$RECEIVER_DIR/ext/build"
 if ! bash "$SCRIPT_DIR/build-rs-core-web.sh" >"$RECEIVER_DIR/ext/build/build-rs-core-web.log" 2>&1; then
 	echo "build-web-receiver: build-rs-core-web.sh failed, see $RECEIVER_DIR/ext/build/build-rs-core-web.log" >&2
+	echo "build-web-receiver: --- build-rs-core-web.log (last 60 lines) ---" >&2
+	tail -n 60 "$RECEIVER_DIR/ext/build/build-rs-core-web.log" | sed 's/^/build-web-receiver: /' >&2
+	echo "build-web-receiver: --- end build-rs-core-web.log ---" >&2
 	exit 1
 fi
 

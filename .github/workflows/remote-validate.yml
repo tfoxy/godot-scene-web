@@ -345,6 +345,7 @@ jobs:
           set +e # best effort: a job that died in setup has no run dir, and that must not fail here
           art="$RUNNER_TEMP/art"
           mkdir -p "$art"
+          [ -f "experiments/render-stream/receiver/ext/build/build-rs-core-web.log" ] && cp "experiments/render-stream/receiver/ext/build/build-rs-core-web.log" "$art/"
           [ -f "$RUNNER_TEMP/v/validate-summary.json" ] && cp "$RUNNER_TEMP/v/validate-summary.json" "$art/"
           [ -f "$RUNNER_TEMP/v/rtc/run/rtc-linux.json" ] && cp "$RUNNER_TEMP/v/rtc/run/rtc-linux.json" "$art/"
           [ -f "$RUNNER_TEMP/v/$ID/run/libcxx-control.json" ] && cp "$RUNNER_TEMP/v/$ID/run/libcxx-control.json" "$art/"
