@@ -6,7 +6,13 @@ if [ -z "${RS_QUIET_BUILD_WRAPPED:-}" ]; then
   RS_QUIET_BUILD_WRAPPED=1 exec bash "$(dirname "${BASH_SOURCE[0]}")/lib/quiet.sh" shared \
     --label "$(basename "${BASH_SOURCE[0]}")" -- bash "${BASH_SOURCE[0]}" "$@"
 fi
-[[ $# = 0 ]] || { echo "usage: $0" >&2; exit 2; }
+mode=release
+case "${1:-}" in
+  --debug) mode=debug; shift ;;
+  "") ;;
+  *) echo "usage: $0 [--debug]" >&2; exit 2 ;;
+esac
+[[ $# = 0 ]] || { echo "usage: $0 [--debug]" >&2; exit 2; }
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RS="$(cd "$HERE/.." && pwd)"
 SHELL_SRC="$RS/android-shell"
@@ -21,7 +27,7 @@ bash "$HERE/build-rs-core-ext-android.sh"
 }
 mkdir -p "$OUT"
 rm -f "$OUT/shell.apk" "$OUT/pack-import.log" "$OUT/pack-export.log" \
-  "$OUT/shell-import.log" "$OUT/android-export.log"
+  "$OUT/shell-import.log" "$OUT/android-export.log" "$OUT/build.json" "$OUT/signing-config.log"
 # Recreate only staging trees, leaving evidence and already-served content-addressed packs intact.
 python3 - "$RS" "$OUT" <<'PY'
 from pathlib import Path
@@ -79,7 +85,54 @@ with open(sys.argv[1], 'w') as f:
     f.write('\n')
 PY
 run_editor "$OUT/shell" shell-import.log --import
-run_editor "$OUT/shell" android-export.log --export-debug Android "$OUT/shell.apk"
+# Godot's standard signing environment overrides never enter the tracked preset or logs.
+# For local release builds, copy the editor's debug signing settings into the staged preset.
+if [[ "$mode" = release && -z "${GODOT_ANDROID_KEYSTORE_RELEASE_PATH:-}" ]]; then
+  cat > "$OUT/configure-signing.gd" <<'GDSIGN'
+extends SceneTree
+
+func _init() -> void:
+	_configure.call_deferred()
+
+func _configure() -> void:
+	var settings: EditorSettings = EditorInterface.get_editor_settings()
+	var preset := ConfigFile.new()
+	if preset.load("res://export_presets.cfg") != OK:
+		quit(1)
+		return
+	for entry: Array in [["", "PATH", ""], ["_user", "USER", "_user"], ["_password", "PASSWORD", "_pass"]]:
+		var value: String = OS.get_environment("GODOT_ANDROID_KEYSTORE_DEBUG_" + str(entry[1]))
+		if value == "":
+			value = str(settings.get_setting("export/android/debug_keystore" + str(entry[2])))
+		preset.set_value("preset.0.options", "keystore/release" + str(entry[0]), value)
+	quit(0 if preset.save("res://export_presets.cfg") == OK else 1)
+GDSIGN
+  run_editor "$OUT/shell" signing-config.log --editor --script "$OUT/configure-signing.gd"
+  rm "$OUT/configure-signing.gd"
+elif [[ "$mode" = release ]]; then
+  : "${GODOT_ANDROID_KEYSTORE_RELEASE_USER:?set the release keystore alias}"
+  : "${GODOT_ANDROID_KEYSTORE_RELEASE_PASSWORD:?set the release keystore password}"
+fi
+run_editor "$OUT/shell" android-export.log "--export-$mode" Android "$OUT/shell.apk"
+# Verify the selected engine template, as well as the native adapter below.
+template="${GRC_ANDROID_TEMPLATES:-$HOME/.local/share/godot/export_templates/4.5.1.stable}/android_$mode.apk"
+python3 - "$template" "$OUT/shell.apk" "$OUT/build.json" "$mode" <<'PYMETA'
+from pathlib import Path
+import hashlib, json, sys, zipfile
+template, apk, report = map(Path, sys.argv[1:4])
+engine = 'lib/arm64-v8a/libgodot_android.so'
+with zipfile.ZipFile(template) as original, zipfile.ZipFile(apk) as exported:
+    engine_bytes = original.read(engine)
+    assert exported.read(engine) == engine_bytes, 'packaged Godot engine differs from template'
+metadata = {
+    'mode': sys.argv[4], 'template': str(template),
+    'template_sha256': hashlib.sha256(template.read_bytes()).hexdigest(),
+    'apk_sha256': hashlib.sha256(apk.read_bytes()).hexdigest(),
+    'engine_sha256': hashlib.sha256(engine_bytes).hexdigest(),
+}
+report.write_text(json.dumps(metadata, indent=2) + '\n')
+print(json.dumps(metadata, indent=2))
+PYMETA
 unzip -Z1 "$OUT/shell.apk" > "$OUT/apk-files.txt"
 grep -Fx 'lib/arm64-v8a/librs_core_ext.so' "$OUT/apk-files.txt"
 if grep -E '^lib/(armeabi-v7a|x86|x86_64)/' "$OUT/apk-files.txt"; then

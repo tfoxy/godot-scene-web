@@ -263,7 +263,8 @@ This shell is a spike, kept so packs can be tried on a phone. It will move to it
 repository and be removed from here; the receiver and the arm64 adapter build stay in GSW.
 
 `../android-shell/` is a small non-mono Godot 4.5.1 shell (`dev.gsw.shellspike`, arm64-v8a,
-GL compatibility). The APK carries the native adapter; a downloaded pack carries only
+Mobile Vulkan, with Android frame pacing disabled for comparable A/B runs). The APK carries
+the native adapter; a downloaded pack carries only
 GDScript, a scene and an inline-resource golden recording. The shell never calls `RsCore`.
 The exporter stages an Android-only `ext/` descriptor inside the shell without `.gdignore`,
 so the APK registers the library before the downloaded pack instantiates the receiver core.
@@ -285,7 +286,17 @@ experiments/render-stream/android-shell/check-desktop.sh
 The Android build uses the installed NDK (`ANDROID_NDK_HOME` can override its path), Rust's
 `aarch64-linux-android` target and static libc++. The template fetcher verifies the official
 non-mono archive and its Android files by sha256. The shell build uses the non-mono editor
-from `mise where godot@4.5.1-stable`, debug signing from the editor settings and no Gradle build.
+from `mise where godot@4.5.1-stable` and no Gradle build. It exports the official release
+template by default; `build-android-shell.sh --debug` selects the debuggable debug template.
+Both modes default to the editor's debug keystore. To use another debug key, set
+`GODOT_ANDROID_KEYSTORE_DEBUG_PATH`,
+`GODOT_ANDROID_KEYSTORE_DEBUG_USER` and `GODOT_ANDROID_KEYSTORE_DEBUG_PASSWORD`. To sign a
+release with your own key, set all three `GODOT_ANDROID_KEYSTORE_RELEASE_PATH`,
+`GODOT_ANDROID_KEYSTORE_RELEASE_USER` and `GODOT_ANDROID_KEYSTORE_RELEASE_PASSWORD` instead.
+Keep keystores outside the source tree; credentials are passed in the environment, never stored
+in the tracked preset. The fallback debug credentials are copied only into the ignored staging
+preset. `build/build.json` records the mode, template path and sha256, APK sha256
+and engine sha256; the build checks that the packaged engine bytes match the selected template.
 It writes `../android-shell/build/shell.apk`, `client-pack/manifest.json`, a sha256-named PCK,
 staged projects and import/export logs. All are ignored. The build checks the APK's actual
 `lib/arm64-v8a/librs_core_ext.so` bytes and checks the PCK contains no native library.
