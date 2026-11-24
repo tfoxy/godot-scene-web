@@ -330,7 +330,7 @@ extends Node
 ## RS_RECEIVER_EVIDENCE_URL before the exit). Natively both are what they always were.
 ##
 ## Stretch (G6b, Q5): at the session, before any item exists, a `canvas_items` session makes the
-## receiver's root window adopt the session's stretch (content_scale_mode, _aspect, _stretch,
+## receiver's own window adopt the session's stretch (content_scale_mode, _aspect, _stretch,
 ## _size = logical_size, _factor), so the engine computes the reference's stretch transform and
 ## oversampling. `disabled` keeps the project's settings; `viewport` is typed `stretch-mode` and
 ## drawn with the receiver's own settings. Then (1) the root window size must equal
@@ -340,6 +340,10 @@ extends Node
 ## a replay failure, as before). RS_RECEIVER_SABOTAGE=ignore-presentation keeps stretch disabled
 ## whatever the session says and skips (3), so it presents the top-left of the logical frame at
 ## scale 1 (it exists only to fail pixel checks).
+
+## Opt in before entering the tree when this receiver owns its Window's presentation.
+## Fits the host content rect with letterbox, directly in the window's render target.
+@export var fit_presentation: bool = false
 
 const SCHEMA: String = "render-stream-receiver-applied/7"
 const EXIT_OK: int = 0
@@ -1269,11 +1273,11 @@ func _begin_session(accepted: Dictionary) -> bool:
 		# stretch's visible size for its presentation (wider than logical_size under expand,
 		# keep_width or keep_height at another aspect; the core validated it), so that is what
 		# this window must lay out. Any other host is held to logical_size, as before.
-		var expected_size: Vector2 = logical_size
+		var expected_size: Vector2 = _expected_visible_size(session_viewport, blocks_for_stretch)
 		var expected_name: String = "logical_size"
-		if str(session_viewport.get("host_size_status", "")) == "match":
-			var host_visible: PackedFloat32Array = blocks_for_stretch[2]
-			expected_size = Vector2(host_visible[2], host_visible[3])
+		if _presentation_space_viewport:
+			expected_name = "host content rect size"
+		elif str(session_viewport.get("host_size_status", "")) == "match":
 			expected_name = "host_visible_rect size"
 		if visible_size != expected_size:
 			_viewport_report["size_check"] = "mismatch"
@@ -1323,58 +1327,96 @@ func _begin_session(accepted: Dictionary) -> bool:
 	return true
 
 
-## adopts the session's stretch on the receiver's root window, then
+## Use the same integer target size for fitted presentation checks, including headless tests.
+func _expected_visible_size(session_viewport: Dictionary, blocks: Array) -> Vector2:
+	if _presentation_space_viewport:
+		return Vector2(_host_content_size)
+	if str(session_viewport.get("host_size_status", "")) == "match":
+		var host_visible: PackedFloat32Array = blocks[2]
+		return Vector2(host_visible[2], host_visible[3])
+	var logical: Array = session_viewport["logical_size"]
+	return Vector2(RsWire.as_int(logical[0]), RsWire.as_int(logical[1]))
+
+
+## Adopts the session stretch in the receiver's viewport, or fits host content in an
+## owned window when fit_presentation is enabled, then
 ## checks the presentation size and the oversampling. Runs once per process (a reconnect's second
 ## session carries the same declaration). A /5 or older session has no presentation keys: its
 ## stretch is still adopted, the checks are skipped.
 var _presentation_done: bool = false
 ## Picking consumes host presentation pixels, independent of this receiver window's size.
 var _host_final_xform: Transform2D = Transform2D.IDENTITY
+var _host_content_rect: Rect2 = Rect2()
+var _host_content_size: Vector2i = Vector2i.ZERO
+var _presentation_fitted: bool = false
+var _presentation_space_viewport: bool = false
 
 
 func _adopt_presentation(session_viewport: Dictionary, blocks: Array) -> void:
 	var host_final: PackedFloat32Array = blocks[3]
 	_host_final_xform = Transform2D(Vector2(host_final[0], host_final[1]), Vector2(host_final[2], host_final[3]), Vector2(host_final[4], host_final[5]))
+	var host_visible: PackedFloat32Array = blocks[2]
+	_host_content_rect = _host_final_xform * Rect2(host_visible[0], host_visible[1], host_visible[2], host_visible[3])
+	# Recover the integer host target from float32 stretch products on either side of it.
+	_host_content_size = Vector2i(_host_content_rect.size.round())
 	if _presentation_done:
+		if _presentation_space_viewport:
+			_fit_host_content()
 		return
 	_presentation_done = true
 	var stretch: Dictionary = session_viewport["stretch"]
 	var mode: String = stretch["mode"]
-	var root: Window = get_tree().root
+	# Only configure the viewport that owns this receiver. A SubViewport must not
+	# change its ancestor Window, which would stretch the presentation twice.
+	var window: Window = get_viewport() as Window
 	var headless: bool = DisplayServer.get_name() == "headless"
 	var logical: Array = session_viewport["logical_size"]
-	if mode == "canvas_items" and _sabotage != "ignore-presentation":
+	var presentation: Array = session_viewport.get("presentation_size", logical)
+	_presentation_fitted = fit_presentation and window != null and mode != "viewport" and _sabotage != "ignore-presentation"
+	_presentation_space_viewport = _presentation_fitted or (window == null and mode == "canvas_items" and _sabotage != "ignore-presentation")
+	if _presentation_fitted:
+		window.content_scale_aspect = Window.CONTENT_SCALE_ASPECT_KEEP
+		window.content_scale_stretch = Window.CONTENT_SCALE_STRETCH_FRACTIONAL
+		window.content_scale_factor = 1.0
+		window.content_scale_mode = Window.CONTENT_SCALE_MODE_CANVAS_ITEMS
+		_fit_host_content()
+		var visible_size: Vector2 = window.get_visible_rect().size
+		_viewport_report["size"] = [int(visible_size.x), int(visible_size.y)]
+		_viewport_report["stretch_applied"] = true
+	elif window == null and mode == "canvas_items" and _sabotage != "ignore-presentation":
+		_fit_host_content()
+		_viewport_report["stretch_applied"] = true
+	elif window != null and mode == "canvas_items" and _sabotage != "ignore-presentation":
 		var aspect_name: String = stretch["aspect"]
 		var scale_mode: String = stretch["scale_mode"]
 		match aspect_name:
 			"ignore":
-				root.content_scale_aspect = Window.CONTENT_SCALE_ASPECT_IGNORE
+				window.content_scale_aspect = Window.CONTENT_SCALE_ASPECT_IGNORE
 			"keep_width":
-				root.content_scale_aspect = Window.CONTENT_SCALE_ASPECT_KEEP_WIDTH
+				window.content_scale_aspect = Window.CONTENT_SCALE_ASPECT_KEEP_WIDTH
 			"keep_height":
-				root.content_scale_aspect = Window.CONTENT_SCALE_ASPECT_KEEP_HEIGHT
+				window.content_scale_aspect = Window.CONTENT_SCALE_ASPECT_KEEP_HEIGHT
 			"expand":
-				root.content_scale_aspect = Window.CONTENT_SCALE_ASPECT_EXPAND
+				window.content_scale_aspect = Window.CONTENT_SCALE_ASPECT_EXPAND
 			_:
-				root.content_scale_aspect = Window.CONTENT_SCALE_ASPECT_KEEP
-		root.content_scale_stretch = Window.CONTENT_SCALE_STRETCH_INTEGER if scale_mode == "integer" else Window.CONTENT_SCALE_STRETCH_FRACTIONAL
-		root.content_scale_size = Vector2i(RsWire.as_int(logical[0]), RsWire.as_int(logical[1]))
+				window.content_scale_aspect = Window.CONTENT_SCALE_ASPECT_KEEP
+		window.content_scale_stretch = Window.CONTENT_SCALE_STRETCH_INTEGER if scale_mode == "integer" else Window.CONTENT_SCALE_STRETCH_FRACTIONAL
+		window.content_scale_size = Vector2i(RsWire.as_int(logical[0]), RsWire.as_int(logical[1]))
 		# The session's content_scale_factor block (render-stream-1.md "Session record", blocks[4]).
 		var factor: PackedFloat32Array = blocks[4]
-		root.content_scale_factor = factor[0]
-		root.content_scale_mode = Window.CONTENT_SCALE_MODE_CANVAS_ITEMS
+		window.content_scale_factor = factor[0]
+		window.content_scale_mode = Window.CONTENT_SCALE_MODE_CANVAS_ITEMS
 		_viewport_report["stretch_applied"] = true
 	elif mode == "viewport":
 		_unsupported.append({"seq": null, "item": null, "name": "viewport", "reason": "stretch-mode"})
 		_log("session: stretch mode viewport is typed stretch-mode, drawn at the receiver's own settings")
-	var window_size: Vector2i = root.size
+	var window_size: Vector2i = get_window().size
 	var oversampling: float = get_viewport().get_oversampling()
 	_viewport_report["window_size"] = [window_size.x, window_size.y]
 	_viewport_report["oversampling"] = oversampling
 	if not session_viewport.has("presentation_size"):
 		_viewport_report["presentation_check"] = "skipped-headless" if headless else null
 		return
-	var presentation: Array = session_viewport["presentation_size"]
 	var presentation_size := Vector2i(RsWire.as_int(presentation[0]), RsWire.as_int(presentation[1]))
 	_viewport_report["presentation_size"] = [presentation_size.x, presentation_size.y]
 	if headless:
@@ -1393,6 +1435,26 @@ func _adopt_presentation(session_viewport: Dictionary, blocks: Array) -> void:
 		_unsupported.append({"seq": null, "item": null, "name": "viewport", "reason": "oversampling-mismatch"})
 		_log("session: oversampling %s, font_oversampling %s: oversampling-mismatch (still drawn)" % [str(oversampling), str(declared)])
 	_viewport_report["presentation_check"] = "mismatch" if mismatch else "ok"
+
+
+## Crop at the render target, so the session clear and every canvas layer stay out of bars.
+## The host margin remains in _host_final_xform for picking in full presentation pixels.
+func _fit_host_content() -> void:
+	var viewport: Viewport = get_viewport()
+	var window: Window = viewport as Window
+	if window != null:
+		window.content_scale_size = _host_content_size
+	else:
+		var subviewport: SubViewport = viewport as SubViewport
+		# A SubViewport has no window attach rect: expose only the content-sized
+		# texture. Its presenter owns the uniform fit and black background.
+		subviewport.size_2d_override = Vector2i.ZERO
+		subviewport.size = _host_content_size
+	var content_xform: Transform2D = _host_final_xform
+	content_xform.origin -= _host_content_rect.position
+	viewport.global_canvas_transform = content_xform
+	var visible_size: Vector2 = viewport.get_visible_rect().size
+	_viewport_report["size"] = [int(visible_size.x), int(visible_size.y)]
 
 
 func _process(_delta: float) -> void:
@@ -3373,11 +3435,18 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventScreenTouch:
 		var touch: InputEventScreenTouch = event
 		if not touch.pressed:
-			_client.tap(_host_final_xform * touch.position, _applier)
+			_tap_local_point(touch.position)
 	elif event is InputEventMouseButton:
 		var mouse: InputEventMouseButton = event
 		if mouse.device != InputEvent.DEVICE_ID_EMULATION and mouse.button_index == MOUSE_BUTTON_LEFT and not mouse.pressed:
-			_client.tap(_host_final_xform * mouse.position, _applier)
+			_tap_local_point(mouse.position)
+
+
+func _tap_local_point(local: Vector2) -> void:
+	var presentation: Vector2 = _host_final_xform * local
+	if _presentation_space_viewport and not _host_content_rect.has_point(presentation):
+		return
+	_client.tap(presentation, _applier)
 
 
 func live_client() -> RsLiveClient:

@@ -54,6 +54,12 @@ func _run_checks() -> void:
 	_check_json_descriptor()
 	_check_view_tapped()
 	_check_view_tap_presentation()
+	_check_view_tap_presentation(true)
+	_check_subviewport_presentation()
+	_check_host_letterbox_presentation(false)
+	_check_host_letterbox_presentation(true)
+	_check_fractional_host_content(false)
+	_check_fractional_host_content(true)
 	_check_live_hello_versions()
 	var golden2: String = OS.get_environment("RS_SELFTEST_GOLDEN_DIR").strip_edges()
 	if golden2 == "":
@@ -546,7 +552,7 @@ func _tap_record(record: Dictionary) -> PackedByteArray:
 
 
 ## Localized input must use the host's presentation transform, even in a smaller receiver.
-func _check_view_tap_presentation() -> void:
+func _check_view_tap_presentation(fitted: bool = false) -> void:
 	var path: String = ProjectSettings.globalize_path("res://../protocol/golden-6/full.decoded.json")
 	var fixture: Dictionary = JSON.parse_string(FileAccess.get_file_as_string(path))
 	var session: Dictionary = fixture["records"][0]
@@ -569,9 +575,10 @@ func _check_view_tap_presentation() -> void:
 		floats[18 * index + 16] = 20
 		floats[18 * index + 17] = 20
 	var view := InputView.new()
+	view.fit_presentation = fitted
 	root.add_child(view)
 	var saved_size: Vector2i = root.size
-	root.size = Vector2i(640, 360)
+	root.size = Vector2i(640, 480) if fitted else Vector2i(640, 360)
 	var applier := RsRustApplier.new(RID(), RID())
 	var accepted: Dictionary = applier.accept_session(_tap_record(session), 0, 6)
 	var applied: Dictionary = applier.accept(_tap_record(transaction), 0)
@@ -592,7 +599,7 @@ func _check_view_tap_presentation() -> void:
 			events.append({"screen": screen, "item": item, "game": game})
 		)
 		# Godot localizes receiver pixels (40, 10) to logical coordinates before dispatch.
-		var local: Vector2 = root.get_final_transform().affine_inverse() * Vector2(40, 10)
+		var local: Vector2 = root.get_final_transform().affine_inverse() * (Vector2(40, 70) if fitted else Vector2(40, 10))
 		_checked += 1
 		if not local.is_equal_approx(Vector2(120, 30)):
 			_fail("tap fixture receiver transform did not localize (40, 10) to (120, 30): %s" % local)
@@ -614,6 +621,22 @@ func _check_view_tap_presentation() -> void:
 			var game: Vector2 = tapped.get("game", Vector2.ZERO)
 			if events.size() != (1 if touch else 2) or tapped.get("item") != 1 or not screen.is_equal_approx(Vector2(60, 15)) or not game.is_equal_approx(Vector2(60, 15)):
 				_fail("tap with different host/receiver presentations: %s" % str(events))
+		if fitted:
+			_checked += 1
+			if root.content_scale_size != Vector2i(960, 540) or view.get_viewport() != root:
+				_fail("fitted receiver must draw in the Window at host presentation size")
+			var outside := InputEventScreenTouch.new()
+			outside.position = root.get_final_transform().affine_inverse() * Vector2(40, 10)
+			view._unhandled_input(outside)
+			_checked += 1
+			if events.size() != 2:
+				_fail("letterbox release emitted tapped")
+			root.size = Vector2i(1000, 360)
+			var wide_local: Vector2 = root.get_final_transform().affine_inverse() * Vector2(220, 10)
+			_checked += 1
+			if not wide_local.is_equal_approx(Vector2(120, 30)):
+				_fail("resized fitted receiver did not preserve host coordinates: %s" % wide_local)
+			root.size = Vector2i(640, 480)
 		# Accept another state, then hold its resource GETs while frame 1 remains on screen.
 		transaction["meta"]["seq"] = 2
 		transaction["meta"]["frame"] = 2
@@ -640,10 +663,171 @@ func _check_view_tap_presentation() -> void:
 		if events.size() != before:
 			_fail("pending HTTP apply emitted %d taps" % (events.size() - before))
 		fetcher.cancel()
+	root.global_canvas_transform = Transform2D.IDENTITY
 	root.content_scale_mode = Window.CONTENT_SCALE_MODE_DISABLED
 	root.content_scale_size = Vector2i.ZERO
 	root.size = saved_size
 	view.free()
+
+
+## The host's black bars are outside its render target, even in a larger presentation.
+func _check_host_letterbox_presentation(subviewport: bool) -> void:
+	var fixture: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://../protocol/golden-6/full.decoded.json"))
+	var session: Dictionary = fixture["records"][0]
+	var declaration: Dictionary = session["meta"]["viewport"]
+	declaration["logical_size"] = [640, 360]
+	declaration["presentation_size"] = [960, 600]
+	declaration["host_window_size"] = [960, 600]
+	declaration["root_size_policy"] = "presentation"
+	declaration["stretch"] = {"mode": "canvas_items", "aspect": "keep", "scale_mode": "fractional"}
+	session["blocks"][2] = [0, 0, 640, 360]
+	session["blocks"][3] = [1.5, 0, 0, 1.5, 0, 30]
+	var saved_size: Vector2i = root.size
+	root.size = Vector2i(960, 600)
+	var target: Viewport = root
+	if subviewport:
+		var host := SubViewport.new()
+		host.size = Vector2i(960, 600)
+		root.add_child(host)
+		target = host
+	var view := InputView.new()
+	view.fit_presentation = not subviewport
+	target.add_child(view)
+	var applier := RsRustApplier.new(RID(), RID())
+	var accepted: Dictionary = applier.accept_session(_tap_record(session), 0, 6)
+	var errors: PackedStringArray = accepted["errors"]
+	_checked += 1
+	if not errors.is_empty():
+		_fail("barred host fixture rejected: %s" % errors)
+	else:
+		view.set("_applier", applier)
+		view.set("_last_applied_frame", 1)
+		var blocks: Array = accepted["record"]["blocks"]
+		var events: Array[Dictionary] = []
+		view.live_client().tapped.connect(func(screen: Vector2, item: int, game: Vector2) -> void:
+			events.append({"screen": screen, "item": item, "game": game})
+		)
+		# Re-adoption on reconnect must retain the crop and margin-free canvas transform.
+		for adoption: int in 2:
+			view._adopt_presentation(declaration, blocks)
+			_checked += 1
+			if target.get_visible_rect().size != Vector2(960, 540):
+				_fail("barred host target includes host bars (SubViewport=%s, adoption=%d): %s" % [subviewport, adoption, target.get_visible_rect()])
+			var outside: Vector2 = Vector2(100, -10)
+			_checked += 1
+			if target.get_visible_rect().has_point(target.global_canvas_transform * outside):
+				_fail("barred host crop includes out-of-content geometry (SubViewport=%s)" % subviewport)
+			_checked += 1
+			if not (target.global_canvas_transform * Vector2(120, 30)).is_equal_approx(Vector2(180, 45)):
+				_fail("barred host crop did not remove host margin (SubViewport=%s)" % subviewport)
+			var input_pixel: Vector2 = Vector2(180, 45) if subviewport else Vector2(180, 75)
+			var inside: Vector2 = target.get_final_transform().affine_inverse() * input_pixel
+			_checked += 1
+			if not inside.is_equal_approx(Vector2(120, 30)):
+				_fail("barred host input did not localize through the content target (SubViewport=%s): %s" % [subviewport, inside])
+			for touch: bool in [true, false]:
+				var release: InputEvent = InputEventScreenTouch.new() if touch else InputEventMouseButton.new()
+				if release is InputEventMouseButton:
+					var mouse: InputEventMouseButton = release
+					mouse.button_index = MOUSE_BUTTON_LEFT
+				release.set("position", outside) # Host presentation (150, 15), inside its upper bar.
+				var before: int = events.size()
+				view._unhandled_input(release)
+				_checked += 1
+				if events.size() != before:
+					_fail("host-bar release emitted tapped (SubViewport=%s)" % subviewport)
+				before = events.size()
+				release.set("position", inside)
+				view._unhandled_input(release)
+				var tapped: Dictionary = events.back() if not events.is_empty() else {}
+				var screen: Vector2 = tapped.get("screen", Vector2.ZERO)
+				var game: Vector2 = tapped.get("game", Vector2.ZERO)
+				_checked += 1
+				if events.size() != before + 1 or not screen.is_equal_approx(Vector2(180, 75)) or not game.is_equal_approx(Vector2(180, 75)):
+					_fail("barred host tap lost full presentation coordinates (SubViewport=%s): %s" % [subviewport, events])
+	view.free()
+	if subviewport:
+		target.free()
+	root.global_canvas_transform = Transform2D.IDENTITY
+	root.content_scale_mode = Window.CONTENT_SCALE_MODE_DISABLED
+	root.content_scale_size = Vector2i.ZERO
+	root.size = saved_size
+
+
+## Wire float32 stretch products can fall on either side of the integer host target size.
+func _check_fractional_host_content(subviewport: bool) -> void:
+	for sizes: Array in [
+		[Vector2i(1000, 600), Vector2i(1000, 562), Vector2(0, 19)],
+		[Vector2i(733, 411), Vector2i(730, 411), Vector2(2, 0)],
+	]:
+		var window_size: Vector2i = sizes[0]
+		var content_size: Vector2i = sizes[1]
+		var margin: Vector2 = sizes[2]
+		var fixture: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://../protocol/golden-6/full.decoded.json"))
+		var session: Dictionary = fixture["records"][0]
+		var declaration: Dictionary = session["meta"]["viewport"]
+		declaration["logical_size"] = [1920, 1080]
+		declaration["presentation_size"] = [window_size.x, window_size.y]
+		declaration["host_window_size"] = [window_size.x, window_size.y]
+		declaration["root_size_policy"] = "presentation"
+		declaration["stretch"] = {"mode": "canvas_items", "aspect": "keep", "scale_mode": "fractional"}
+		session["blocks"][2] = [0, 0, 1920, 1080]
+		var wire_xform := PackedFloat32Array([content_size.x / 1920.0, 0, 0, content_size.y / 1080.0, margin.x, margin.y])
+		session["blocks"][3] = Array(wire_xform)
+		var saved_size: Vector2i = root.size
+		root.size = window_size
+		var target: Viewport = root
+		if subviewport:
+			var host := SubViewport.new()
+			host.size = window_size
+			root.add_child(host)
+			target = host
+		var view := InputView.new()
+		view.fit_presentation = not subviewport
+		target.add_child(view)
+		var applier := RsRustApplier.new(RID(), RID())
+		var accepted: Dictionary = applier.accept_session(_tap_record(session), 0, 6)
+		var errors: PackedStringArray = accepted["errors"]
+		_checked += 1
+		if not errors.is_empty():
+			_fail("fractional host fixture rejected: %s" % errors)
+		else:
+			view.set("_applier", applier)
+			view.set("_last_applied_frame", 1)
+			var blocks: Array = accepted["record"]["blocks"]
+			var events: Array[Dictionary] = []
+			view.live_client().tapped.connect(func(screen: Vector2, _item: int, game: Vector2) -> void:
+				events.append({"screen": screen, "game": game})
+			)
+			for adoption: int in 2:
+				view._adopt_presentation(declaration, blocks)
+				var visible_size: Vector2 = target.get_visible_rect().size
+				_checked += 1
+				if visible_size != Vector2(content_size):
+					_fail("fractional host target size (SubViewport=%s, window=%s, adoption=%d): %s, expected %s" % [subviewport, window_size, adoption, visible_size, content_size])
+				_checked += 1
+				if not view.has_method("_expected_visible_size"):
+					_fail("fractional host size check needs the receiver's expected-visible-size helper")
+				elif view.call("_expected_visible_size", declaration, blocks) != visible_size:
+					_fail("fractional host expected size differs from visible size (SubViewport=%s, window=%s)" % [subviewport, window_size])
+				var release := InputEventScreenTouch.new()
+				# Localize a pixel inside the content through the same transform as Godot input.
+				var content_pixel: Vector2 = Vector2(100, 50)
+				release.position = target.get_final_transform().affine_inverse() * (content_pixel if subviewport else content_pixel + margin)
+				view._unhandled_input(release)
+				var tapped: Dictionary = events.back() if not events.is_empty() else {}
+				var screen: Vector2 = tapped.get("screen", Vector2.ZERO)
+				var game: Vector2 = tapped.get("game", Vector2.ZERO)
+				_checked += 1
+				if events.size() != adoption + 1 or not screen.is_equal_approx(content_pixel + margin) or not game.is_equal_approx(content_pixel + margin):
+					_fail("fractional host tap lost full presentation coordinates (SubViewport=%s, window=%s): %s" % [subviewport, window_size, events])
+		view.free()
+		if subviewport:
+			target.free()
+		root.global_canvas_transform = Transform2D.IDENTITY
+		root.content_scale_mode = Window.CONTENT_SCALE_MODE_DISABLED
+		root.content_scale_size = Vector2i.ZERO
+		root.size = saved_size
 
 
 ## Touch input and its synthesized mouse event describe one physical release.
@@ -868,3 +1052,31 @@ func _check_summary_uploads() -> void:
 	_checked += 1
 	if texture_rows == 0 or mesh_rows == 0:
 		_fail("upload count fixture must exercise texture and mesh uploads")
+
+
+## A hosted receiver must never change the ancestor window's stretch or input mapping.
+func _check_subviewport_presentation() -> void:
+	var host := SubViewport.new()
+	host.size = Vector2i(960, 540)
+	root.add_child(host)
+	var view := InputView.new()
+	host.add_child(view)
+	var before: Transform2D = root.get_final_transform()
+	var before_size: Vector2i = root.content_scale_size
+	var before_mode: Window.ContentScaleMode = root.content_scale_mode
+	var session: Dictionary = {
+		"logical_size": [1920, 1080], "presentation_size": [960, 540],
+		"font_oversampling": 1.0,
+		"stretch": {"mode": "canvas_items", "aspect": "keep", "scale_mode": "fractional"},
+	}
+	var blocks: Array = [PackedFloat32Array(), PackedFloat32Array(), PackedFloat32Array([0, 0, 1920, 1080]), PackedFloat32Array([0.5, 0, 0, 0.5, 0, 0]), PackedFloat32Array([1])]
+	view._adopt_presentation(session, blocks)
+	_checked += 1
+	if root.get_final_transform() != before or root.content_scale_size != before_size or root.content_scale_mode != before_mode:
+		_fail("SubViewport receiver changed ancestor window stretch")
+	_checked += 1
+	if not (host.get_final_transform() * Vector2(120, 30)).is_equal_approx(Vector2(60, 15)):
+		_fail("SubViewport receiver did not apply the host presentation transform locally")
+	root.content_scale_mode = before_mode
+	root.content_scale_size = before_size
+	host.free()

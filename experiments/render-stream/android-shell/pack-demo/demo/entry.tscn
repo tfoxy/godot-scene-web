@@ -1,9 +1,7 @@
-[gd_scene load_steps=3 format=3]
+[gd_scene load_steps=2 format=3]
 
 [ext_resource type="Script" path="res://demo/entry.gd" id="1"]
-[ext_resource type="PackedScene" path="res://demo/replay-view.tscn" id="2"]
 
-[node name="PackDemo" instance=ExtResource("2")]
-
-[node name="Receiver" type="Node" parent="ReplayViewport" index="0"]
+[node name="PackDemo" type="Node"]
 script = ExtResource("1")
+fit_presentation = true

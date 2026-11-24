@@ -257,6 +257,47 @@ with no picked item emits `item = -1`. `RsCore.hit_test(x, y)` returns the GUI t
 mouse filters, and `RsCore.to_game(x, y)` returns a `PackedFloat64Array` containing
 `[item_or_minus_one, game_x, game_y]`, or an empty array when the mapping is unavailable.
 
+### Fit directly in an owned window
+
+For a receiver that owns the presentation of its containing `Window`, set
+`view.fit_presentation = true` before adding it to the tree (or set `fit_presentation = true`
+on the receiver scene node). Add that receiver directly under the shell; no `SubViewport`,
+`ViewportTexture` or `TextureRect` is needed. Use only one such receiver per window, because
+this mode configures that window's content scale and global canvas transform.
+
+The receiver computes the host content rect in presentation pixels by transforming the session's
+visible rect (block 2) through its host final transform (block 3). It uniformly fits **that content
+rect**, with the host's margins removed, into the window using fractional canvas-items scaling
+and centered black letterbox bars. This also applies when the window and host presentation have
+different aspects: the content rect determines the fit, rather than the full presentation with
+its existing bars. For example, a 640×360 logical canvas in a 960×600 host presentation has a
+960×540 content rect at (0,30). It fills a 960×540 receiver window, or has black 30 px bars in a
+960×600 receiver window.
+
+Godot crops every canvas layer and the session clear at the content target boundary, so geometry
+outside the host's visible rect cannot fill the bars. It draws directly at the fitted physical
+resolution; there is no intermediate receiver render target. Window resize updates the fit
+automatically. Input is localized through the drawing transform and reported as **full host
+presentation pixels**, including the original host margin. Releases outside the host content
+rect, including host bars and receiver bars, emit nothing. The descriptor's presentation size
+continues to select the host presentation and hello; it is independent of the actual window size.
+
+The default is `false`, preserving the standalone gate receiver's stretch and diagnostics.
+A receiver hosted in a `SubViewport` for a `canvas_items` session sets that viewport's size to
+the host content rect's size, clears its 2D size override, and applies the host transform with
+the content rect's origin removed. The resulting texture contains only the host content, without
+host bars; the presenter must uniformly fit this texture over a black background. Do not put this
+viewport under a `SubViewportContainer` with `stretch` enabled, which prevents manual sizing.
+Input forwarded to this viewport is localized by its margin-free transform and still emits full
+host presentation coordinates. It never changes an ancestor window's stretch.
+A pack that previously fitted a `SubViewport`
+should remove that viewport and its texture presenter, mount the receiver directly in the
+window, and enable `fit_presentation`. Keep any pack UI in the same content coordinate
+system, or put it in a separate window. The existing presentation-size and oversampling
+mismatch diagnostics still compare the physical window with the host and may be reported
+when fitting to a different size; they do not prevent drawing. Stream stretch mode `viewport`
+remains unsupported as before.
+
 ## Android script-pack shell spike
 
 This shell is a spike, kept so packs can be tried on a phone. It will move to its own app
@@ -315,19 +356,20 @@ The demo's receiver scripts are copied unchanged from this directory on every bu
 UTF-8 bytes, with no trailing newline. The demo supplies defaults through the copied `RsConfig`
 argument map; ordinary environment or `--rs-env=NAME=VALUE` settings take precedence. Its
 `_quit` override keeps the final frame visible; `--pack-quit` exits after replay, and
-`--pack-shot=<absolute-path>` saves the rendered frame before exiting when combined with it.
-The pack's reusable `demo/replay-view.tscn` presents a 640×360 SubViewport (the recording's
-presentation size) through a full-window TextureRect with centered aspect-preserving fit.
-Its own World2D keeps the receiver's canvas inside that viewport, with letterbox space around
-it on wider or taller screens. The receiver's strict visible-rect check reads this SubViewport.
-Its separate physical-window presentation diagnostic can still report a mismatch; it does
-not prevent replay. Receiver scripts and checks are unchanged.
+`--pack-shot=<absolute-path>` saves the rendered viewport before exiting when combined with it
+(window letterbox bars are outside that texture).
+The demo's receiver node enables `fit_presentation` and draws its 640×360 recording directly
+in the shell window with uniform scaling and centered letterbox bars. Its input and replay
+viewport use host presentation coordinates, without a SubViewport pass.
 
-The desktop runner compares the digest and engine error lines against the unchanged receiver
-under the same rendered gamescope setup. It proves bad-hash
+The desktop runner compares the digest and engine error lines against the standalone GL receiver
+under the same rendered gamescope setup. Shell rendering explicitly uses Vulkan Mobile and
+checks the engine banner, overriding the shared launcher's OpenGL default. It proves bad-hash
 refusal and cache behavior, and saves a private-gamescope replay to
 `artifacts/p0a/desktop-replay.png`, with logs and `desktop-summary.json` alongside it. A second
-render at 960×600 checks the 640×360 replay viewport and saves `desktop-letterbox.png`. This
+render at 960×600 checks the 640×360 replay viewport. It uses `gamescopectl screenshot` on the
+private runner's socket to save the full window, including bars, as `desktop-letterbox.png`,
+and keeps the viewport readback as `desktop-letterbox-viewport.png`. This
 establishes parity with the receiver, including any engine errors from the chosen recording;
 it does not assert that every recorded mesh is valid.
 

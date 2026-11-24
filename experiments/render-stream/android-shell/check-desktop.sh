@@ -10,7 +10,10 @@ EDITOR="$(mise where godot@4.5.1-stable)/Godot_v4.5.1-stable_linux.x86_64"
 only_bad=0
 case "${1:-}" in --bad-sha-only) only_bad=1 ;; "") ;; *) echo "usage: $0 [--bad-sha-only]" >&2; exit 2 ;; esac
 mkdir -p "$OUT"
-if [[ "$only_bad" = 0 ]]; then rm -f "$OUT/desktop-summary.json"; fi
+if [[ "$only_bad" = 0 ]]; then
+  command -v gamescopectl >/dev/null || { echo 'gamescopectl is required for the window screenshot' >&2; exit 1; }
+  rm -f "$OUT/desktop-summary.json"
+fi
 source "$RS/scripts/lib/quiet.sh"
 source "$RS/scripts/lib/gamescope.sh"
 QUIET_LOG="$OUT/quiet-lock.jsonl"
@@ -19,6 +22,7 @@ start="$EPOCHREALTIME"
 server_pid=""
 cleanup() {
   if [[ -n "$server_pid" ]]; then kill "$server_pid" 2>/dev/null || true; wait "$server_pid" 2>/dev/null || true; fi
+  gs_teardown "$OUT/display-letterbox"
   gs_teardown "$OUT/display"
   quiet_release
   quiet_summary "$OUT" "$(python3 - "$start" "$EPOCHREALTIME" <<'PY'
@@ -68,6 +72,12 @@ stop_server
 if [[ "$only_bad" = 1 ]]; then echo '[p0a-desktop] bad-sha passed'; exit 0; fi
 rm -rf "$OUT/user-data" "$OUT/oracle"
 mkdir -p "$OUT/oracle"
+# gs_start reads its readiness log while the compositor starts. Remove old logs
+# synchronously so a repeated check cannot mistake the previous run for readiness.
+rm -f "$OUT/display/gamescope.log" "$OUT/display-letterbox/gamescope.log"
+# Godot can fall back from X11 to Wayland even with --display-driver x11.
+# An invalid explicit Wayland socket makes that fail closed instead of using the desktop.
+GS_GODOT_ENV=("WAYLAND_SOCKET=-1")
 # The unchanged receiver is the rendered oracle, with the same editor, display and recording.
 start_server "$OUT/server.log"
 gs_start 640 360 "$OUT/display"
@@ -76,7 +86,7 @@ gs_launch_godot "$GS_DISPLAY" "$EDITOR" "$RS/receiver" "$OUT/oracle.log" --resol
   "--rs-env=RS_RECEIVER_OUT=$OUT/oracle/applied.json" \
   --rs-env=RS_RECEIVER_STATE_SEQS=6
 wait "$GS_LAST_GODOT_PID"
-GS_GODOT_ENV=("XDG_DATA_HOME=$OUT/user-data")
+GS_GODOT_ENV=("XDG_DATA_HOME=$OUT/user-data" "WAYLAND_SOCKET=-1")
 gs_launch_godot "$GS_DISPLAY" "$EDITOR" "$BUILD/shell" "$OUT/desktop.log" --rendering-method mobile --rendering-driver vulkan --resolution 640x360 --max-fps 60 --quit-after 1800 -- \
   "--pack-base=$base" "--pack-shot=$OUT/desktop-replay.png" --pack-quit \
   "--rs-env=RS_RECEIVER_OUT=$OUT/pack/applied.json"
@@ -92,10 +102,28 @@ gs_verify_display_ownership "$GS_DISPLAY" "$GS_PID" "$GS_SID" "$godot_pid" "$OUT
 wait "$godot_pid"
 gs_teardown "$OUT/display"
 # A different window aspect must not change the receiver's logical viewport or digest.
+rm -f "$OUT/desktop-letterbox.png" "$OUT/desktop-letterbox-viewport.png"
 gs_start 960 600 "$OUT/display-letterbox"
 gs_launch_godot "$GS_DISPLAY" "$EDITOR" "$BUILD/shell" "$OUT/letterbox.log" --rendering-method mobile --rendering-driver vulkan --resolution 960x600 --max-fps 60 --quit-after 1800 -- \
-  "--pack-base=$base" "--pack-shot=$OUT/desktop-letterbox.png" --pack-quit \
+  "--pack-base=$base" "--pack-shot=$OUT/desktop-letterbox-viewport.png" \
   "--rs-env=RS_RECEIVER_OUT=$OUT/letterbox/applied.json"
+# Window stretch bars are outside the viewport texture. Capture the compositor's
+# actual output after replay, using only the socket announced by this private runner.
+for attempt in {1..200}; do
+  [[ -s "$OUT/desktop-letterbox-viewport.png" ]] && break
+  kill -0 "$GS_LAST_GODOT_PID" 2>/dev/null || { cat "$OUT/letterbox.log"; exit 1; }
+  sleep 0.05
+done
+[[ -s "$OUT/desktop-letterbox-viewport.png" ]]
+private_wayland="$(sed -n "s/.*Running compositor on wayland display '\([^']*\)'.*/\1/p" "$GS_LOG")"
+[[ -n "$private_wayland" ]]
+env -u DISPLAY -u WAYLAND_DISPLAY GAMESCOPE_WAYLAND_DISPLAY="$private_wayland" \
+  timeout 10 gamescopectl screenshot "$OUT/desktop-letterbox.png" > "$OUT/letterbox-capture.log" 2>&1
+for attempt in {1..100}; do
+  [[ -s "$OUT/desktop-letterbox.png" ]] && break
+  sleep 0.05
+done
+[[ -s "$OUT/desktop-letterbox.png" ]]
 wait "$GS_LAST_GODOT_PID"
 gs_teardown "$OUT/display-letterbox"
 run_headless "$OUT/cache.log" "$OUT/user-data" "--rs-env=RS_RECEIVER_OUT=$OUT/cached/applied.json"
