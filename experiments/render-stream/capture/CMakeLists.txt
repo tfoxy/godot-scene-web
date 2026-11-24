@@ -69,6 +69,20 @@ include(cmake/tests.cmake)
 if(GRC_LINUX_LIBCXX)
   include(cmake/linux-libcxx.cmake)
 endif()
+# Pure audio wire judge; deliberately not linked into the live capture yet.
+# Source-tree golden data is not part of the Windows bundle; floating-point
+# to_chars is unavailable at the supported macOS deployment targets.
+if(NOT GRC_WINDOWS AND NOT GRC_MACOS)
+add_executable(rs_audio_wire_test test/rs_audio_wire_test.cpp src/rs_audio_wire.cpp src/rs_sha256.cpp)
+target_include_directories(rs_audio_wire_test PRIVATE src)
+target_link_libraries(rs_audio_wire_test PRIVATE grc_warnings)
+target_compile_definitions(rs_audio_wire_test PRIVATE
+  GRC_AUDIO_VECTORS="${CMAKE_CURRENT_SOURCE_DIR}/../protocol/audio-vectors.json")
+grc_add_test(NAME rs_audio_wire COMMAND rs_audio_wire_test)
+else()
+  grc_linux_only("rs_audio_wire_test" "Windows omits source-tree goldens; supported macOS targets lack floating-point to_chars.")
+endif()
+
 if(GRC_MACOS)
   enable_testing()
   grc_macos_engine_free_tests()

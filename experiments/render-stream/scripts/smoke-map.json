@@ -1452,6 +1452,12 @@
       ],
       "reach": ["pure", "capture-build"],
       "exclusive": true
+    },
+    {
+      "why": "AUD1 audio wire vectors: protocol/audio-vectors.json is judged by the rs_audio_wire ctest (capture build) and the render-stream-client audio wire vitest (pnpm test); nothing live reads it yet",
+      "paths": ["experiments/render-stream/protocol/audio-vectors.json"],
+      "reach": ["pure", "capture-build", "pnpm-test"],
+      "exclusive": true
     }
   ]
 }
