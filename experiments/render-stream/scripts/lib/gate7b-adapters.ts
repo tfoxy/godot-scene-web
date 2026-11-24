@@ -1034,17 +1034,10 @@ function resolvedStates(
 ): Map<number, unknown> | undefined {
   try {
     const data = new Uint8Array(readFileSync(recordingPath));
-    // G8g: a gate 8 recording names its version by its magic (GRS8, GRS9; CG1: GRSA).
+    // G8g: a gate 8 recording names its version by its magic (GRS8, GRS9, ...), /8 through /19
+    // (g8vp records /16); older recordings are tried newest first.
     const wire = wireVersionOf(data);
-    const versions =
-      wire === 8 ||
-      wire === 9 ||
-      wire === 10 ||
-      wire === 11 ||
-      wire === 12 ||
-      wire === 13
-        ? [wire]
-        : ([6, 5, 4, 3, 2] as const);
+    const versions = wire >= 8 ? [wire] : ([6, 5, 4, 3, 2] as const);
     for (const version of versions) {
       try {
         const r = resolveRecording(data, version);
