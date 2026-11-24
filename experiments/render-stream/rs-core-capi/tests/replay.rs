@@ -24,24 +24,6 @@ fn golden7() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../protocol/golden-7")
 }
 
-#[test]
-fn native_receiver_rejects_client_tween_protocol_and_records() {
-    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../protocol/golden-17");
-    let data = std::fs::read(dir.join("full.rs17")).unwrap();
-    let spans = wire::split_records(&data, 17).unwrap();
-    let mut core = Core::new();
-    assert_eq!(core.session(&data, spans[0].offset, 17), KIND_ERROR);
-    assert!(mentions(&core.vt.out, "bad-magic"));
-
-    let data = std::fs::read(dir.join("../golden-15/full.rs15")).unwrap();
-    let spans = wire::split_records(&data, 15).unwrap();
-    assert_eq!(core.session(&data, spans[0].offset, 15), KIND_SESSION);
-    let tween = std::fs::read(dir.join("begin.record")).unwrap();
-    assert_eq!(core.accept(&tween, 0), KIND_ERROR);
-    assert!(mentions(&core.vt.out, "meta-schema: tween without grant"));
-    assert!(core.state().unwrap().items.is_empty());
-}
-
 fn payloads() -> HashMap<Hash, Vec<u8>> {
     payloads_in(&golden().join("payloads"))
 }
@@ -97,7 +79,10 @@ fn replay_data(
     if path.parent().unwrap().ends_with("golden-11") {
         own = path.parent().unwrap().join("../golden-10/payloads");
     }
-    let mut store = if ["golden-12", "golden-13", "golden-14", "golden-15"]
+    let mut store = if [
+        "golden-12", "golden-13", "golden-14", "golden-15",
+        "golden-16", "golden-17", "golden-18", "golden-19",
+    ]
         .iter()
         .any(|g| path.parent().unwrap().ends_with(g))
     {
@@ -1313,5 +1298,66 @@ fn a_changed_or_removed_size_override_is_set_again() {
             .flat_map(|(k, (w, _))| size_overrides(w).into_iter().map(move |o| (k, o.2, o.3)))
             .collect();
         assert_eq!(set, vec![(9, 15, 13), (21, want.0, want.1)], "{to:?}");
+    }
+}
+
+#[test]
+fn golden_16_to_19_match_core_resolved_state_and_full_scan() {
+    use render_stream_core::goldens::{resolve_recording, states_equal, GoldenOptions};
+    for version in 16..=19 {
+        let dir = golden().join(format!("../golden-{version}"));
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().and_then(|x| x.to_str()) != Some(&format!("rs{version}"))
+                || path
+                    .file_name()
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .starts_with("corrupt")
+            {
+                continue;
+            }
+            let data = std::fs::read(&path).unwrap();
+            let (expected, _) =
+                resolve_recording(&data, version, GoldenOptions::default()).unwrap();
+            let mut core = Core::new();
+            let mut tx = 0;
+            for (i, span) in wire::split_records(&data, version)
+                .unwrap()
+                .iter()
+                .enumerate()
+            {
+                let kind = if i == 0 {
+                    core.session(&data, span.offset, version)
+                } else {
+                    core.accept(&data, span.offset)
+                };
+                assert_ne!(
+                    kind,
+                    KIND_ERROR,
+                    "{}: record {i}: {:?}",
+                    path.display(),
+                    core.vt.out
+                );
+                if kind == KIND_TRANSACTION {
+                    core.state_json();
+                    let actual: serde_json::Value = serde_json::from_slice(&core.text).unwrap();
+                    assert!(
+                        states_equal(&actual, &expected["transactions"][tx]["state"]),
+                        "{}: transaction {tx}",
+                        path.display()
+                    );
+                    tx += 1;
+                }
+            }
+            assert_eq!(tx, expected["transactions"].as_array().unwrap().len());
+            assert_eq!(
+                replay_at(&path, version, false, ""),
+                replay_at(&path, version, true, ""),
+                "{}: applied ops",
+                path.display()
+            );
+        }
     }
 }

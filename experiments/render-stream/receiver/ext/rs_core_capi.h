@@ -39,11 +39,19 @@ void rsc_sha256_hex(const uint8_t *data, size_t len, uint8_t *out);
 void rsc_set_digest_deferred(RsCore *h, int32_t on);
 int32_t rsc_record_digest(RsCore *h, const uint8_t *data, size_t len, size_t offset);
 // 4 (session) or 0 (error); vt: {record, errors, kind}. `version` is the stream's wire version,
-// 6 or 7 (G7xwl).
+// 6 through 19.
 int32_t rsc_session(RsCore *h, const uint8_t *data, size_t len, size_t offset, uint32_t version);
+// Native picking is GUI tree order only, with no drawn-order fallback. With no filters,
+// rsc_pick returns -1 and rsc_to_game returns [-1, x, y] (no native overrides yet).
+// set_hit_filters: 1 success, 0 invalid (text holds the error); replaces the whole table.
+int32_t rsc_set_hit_filters(RsCore *h, const uint32_t *ids, const uint8_t *filters, size_t n);
+int64_t rsc_pick(RsCore *h, float x, float y);
+// false for a singular override; out is unchanged. true writes [item|-1, game_x, game_y].
+bool rsc_to_game(RsCore *h, float x, float y, double out[3]);
 // ops.
 void rsc_begin_session(RsCore *h);
-// 1 resource, 2 transaction, 3 end, 0 error; vt: {record, errors, kind}.
+// 1 resource, 2 transaction, 3 end, 5 held, 6 item_meta, 7 hint, 8 tween, 0 error;
+// vt: {record, errors, kind}. Advisory hints and recorded tweens require no apply.
 int32_t rsc_accept(RsCore *h, const uint8_t *data, size_t len, size_t offset);
 // text: the last resource record's payload; 0 when there is none.
 int32_t rsc_resource_payload(RsCore *h);

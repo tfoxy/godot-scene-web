@@ -53,7 +53,9 @@ pub const VERSION: u8 = 6;
 /// (`KIND_HINT`), and a texture entry's `size_override`, which the planner applies with
 /// `texture_set_size_override`; the live hello offers .15 under RS_RECEIVER_PROTOCOL=15 (the
 /// native receiver never asks for item_meta v2, so it does not offer .14).
-pub const VERSIONS: [u8; 10] = [6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+/// /16–/19 retain the native planner: viewport/proxy samples are counted unsupported,
+/// resource hints and announced tweens are accepted without client-side evaluation.
+pub const VERSIONS: [u8; 14] = [6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19];
 
 pub const KIND_ERROR: i32 = 0;
 pub const KIND_RESOURCE: i32 = 1;
@@ -73,6 +75,8 @@ pub const KIND_ITEM_META: i32 = 6;
 /// its hint table, there is nothing to apply and nothing to ack, and a receiver that never
 /// prefetches may drop every one.
 pub const KIND_HINT: i32 = 7;
+/// Recorded announced tweens are validated but never evaluated by the native receiver.
+pub const KIND_TWEEN: i32 = 8;
 
 /// W13d (as GSW's W13c `peek_transaction`): a transaction record's `seq` and whether it is full,
 /// read from its meta's canonical prefix (`{"type":"transaction","seq":N,"frame":N,"encoding":"…"`,
@@ -93,6 +97,8 @@ fn peek_transaction(record: &[u8]) -> Option<(i64, bool)> {
 #[derive(Default)]
 pub struct Core {
     validator: Option<Validator>,
+    /// GUI filters are client-owned; native picking has no drawn-order fallback.
+    hit_filters: HashMap<u32, u8>,
     pub planner: Planner,
     provided: HashMap<Hash, Vec<u8>>,
     /// G7o3 (D31): payloads verified and checked when they arrived (`stage`, the receiver's fetch
@@ -315,12 +321,13 @@ impl Core {
         if !VERSIONS.contains(&version) {
             let e = Error::new(
                 "bad-magic",
-                format!("the receiver core speaks render-stream/6 to /15, not /{version}"),
+                format!("the receiver core speaks render-stream/6 to /19, not /{version}"),
             );
             self.write_failure(&[], offset, &e);
             return KIND_ERROR;
         }
         self.version = version;
+        self.hit_filters.clear();
         self.provided.clear();
         self.library.clear();
         self.planner.touched.clear();
@@ -515,13 +522,10 @@ impl Core {
         v.key("meta");
         match accepted {
             Accepted::Tween => {
-                // Native sessions stop at /15 and cannot negotiate client tweens.
-                self.write_failure(
-                    record,
-                    offset,
-                    &Error::new("meta-schema", "native receiver does not support client tweens"),
-                );
-                return KIND_ERROR;
+                kind = KIND_TWEEN;
+                v.dict(1);
+                v.key("type");
+                v.str("tween");
             }
             Accepted::Resource { hash } => {
                 kind = KIND_RESOURCE;
@@ -605,6 +609,7 @@ impl Core {
             KIND_END => "end",
             KIND_ITEM_META => "item_meta",
             KIND_HINT => "hint",
+            KIND_TWEEN => "tween",
             _ => "transaction",
         });
         kind
@@ -1044,5 +1049,55 @@ impl Core {
             v.key(k);
             v.int(n);
         }
+    }
+}
+
+impl render_stream_core::apply::overrides::PickSource for Core {
+    fn hit_filter(&self, id: u32) -> Option<u8> {
+        self.hit_filters.get(&id).copied()
+    }
+    fn display_local_xform(&self, _id: u32, item: &render_stream_core::state::Item) -> [f32; 6] {
+        item.xform
+    }
+    // Extension overrides can be supplied here when the native client supports them.
+    fn override_of(&self, _id: u32) -> Option<render_stream_core::apply::overrides::Override> {
+        None
+    }
+    fn drawn_rect(&self, _id: u32) -> Option<[f32; 4]> {
+        None
+    }
+    fn viewport_xform(&self) -> [f32; 6] {
+        // Godot applies this viewport stretch before the planner's per-canvas transform.
+        self.validator
+            .as_ref()
+            .map_or([1., 0., 0., 1., 0., 0.], |v| v.session().host_final_xform)
+    }
+    fn has_overrides(&self) -> bool {
+        false
+    }
+}
+
+impl Core {
+    pub fn set_hit_filters(&mut self, ids: &[u32], filters: &[u8]) -> Result<(), String> {
+        render_stream_core::apply::overrides::check_hit_filters(ids, filters)?;
+        self.hit_filters.clear();
+        self.hit_filters
+            .extend(ids.iter().copied().zip(filters.iter().copied()));
+        Ok(())
+    }
+
+    pub fn pick(&self, x: f32, y: f32) -> i64 {
+        self.state()
+            .and_then(|state| render_stream_core::apply::overrides::pick_tree(self, state, x, y))
+            .map_or(-1, i64::from)
+    }
+
+    pub fn to_game(&self, x: f32, y: f32) -> Option<[f64; 3]> {
+        let Some(state) = self.state() else {
+            return Some([-1.0, x as f64, y as f64]);
+        };
+        let hit = render_stream_core::apply::overrides::pick_tree(self, state, x, y);
+        render_stream_core::apply::overrides::map_pick_to_game(self, state, hit, x, y)
+            .map(|(id, p)| [id.map_or(-1.0, f64::from), p[0] as f64, p[1] as f64])
     }
 }

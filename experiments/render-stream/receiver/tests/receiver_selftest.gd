@@ -41,6 +41,7 @@ func _init() -> void:
 	_check_folded_full()
 	_check_row_log()
 	_check_cache_budget()
+	_check_native_queries()
 	var golden2: String = OS.get_environment("RS_SELFTEST_GOLDEN_DIR").strip_edges()
 	if golden2 == "":
 		golden2 = ProjectSettings.globalize_path("res://").path_join("../protocol/golden-2").simplify_path()
@@ -318,3 +319,28 @@ func _check_invalid(dir: String, version: int) -> void:
 		_checked += 1
 		if errors.is_empty() or RsWire.code_of(errors[0]) != code:
 			_fail("%s: expected framing code %s, got %s" % [path, code, errors])
+
+
+## Exercise the dynamic GDExtension boundary, including packed array argument/return types.
+func _check_native_queries() -> void:
+	_checked += 1
+	var load_error: String = RsRustApplier.load_core(RsRustApplier.DEFAULT_EXTENSION)
+	if load_error != "":
+		_fail("native query adapter unavailable: " + load_error)
+		return
+	var core: RefCounted = ClassDB.instantiate("RsCore")
+	for method: String in ["set_hit_filters", "hit_test", "to_game"]:
+		if not core.has_method(method):
+			_fail("native query adapter missing " + method)
+			return
+	if core.call("hit_test", 10.0, 20.0) != -1:
+		_fail("native hit_test before a session must return -1")
+	var point: Variant = core.call("to_game", 10.0, 20.0)
+	if not point is PackedFloat64Array or point != PackedFloat64Array([-1.0, 10.0, 20.0]):
+		_fail("native to_game before a session has the wrong packed result")
+	if core.call("set_hit_filters", PackedInt32Array([1]), PackedByteArray([1])) != "":
+		_fail("native set_hit_filters rejected INPUT")
+	if core.call("set_hit_filters", PackedInt32Array([1]), PackedByteArray()) == "":
+		_fail("native set_hit_filters accepted mismatched lengths")
+	if core.call("set_hit_filters", PackedInt32Array([1]), PackedByteArray([0])) == "":
+		_fail("native set_hit_filters accepted an invalid filter")

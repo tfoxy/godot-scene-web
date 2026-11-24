@@ -908,90 +908,7 @@ impl Applier {
     /// walk culled (alpha under 0.007, off screen) is still found. Items with no filter or
     /// [`HIT_IGNORE`] are passed through, never returned. O(visible items), nothing per frame.
     pub fn pick_tree(&self, state: &ResolvedState, x: f32, y: f32) -> Option<Id> {
-        let mut canvases: Vec<&crate::state::Canvas> =
-            state.canvases.values().filter(|c| c.attached).collect();
-        insertion_sort_by_key(&mut canvases, |c| (c.layer, c.sublayer, c.id));
-        let ov = !self.overrides.is_empty();
-        let p = [x, y];
-        let mut stack: Vec<PickVisit> = Vec::new();
-        for cv in canvases.iter().rev() {
-            let canvas_xf = geom::mul(&self.viewport.global_xform, &cv.xform);
-            stack.clear();
-            push_siblings(state, &cv.items, canvas_xf, &mut stack);
-            while let Some(v) = stack.pop() {
-                match v {
-                    PickVisit::Enter(id, parent_xf) => {
-                        let Some(it) = state.items.get(&id) else {
-                            continue;
-                        };
-                        if !it.visible {
-                            continue;
-                        }
-                        let mut final_xf = geom::mul(&parent_xf, &self.display_local(id, it).xform);
-                        if ov {
-                            if let Some(o) = self.overrides.get(&id) {
-                                if !o.visible {
-                                    continue;
-                                }
-                                final_xf = geom::mul(&o.xform, &final_xf);
-                            }
-                        }
-                        if singular(&final_xf) {
-                            continue;
-                        }
-                        // UIT: the item itself is drawn (and tested) in its canvas's space; its
-                        // children keep the composed transform.
-                        let own_xf = if it.use_identity_transform {
-                            canvas_xf
-                        } else {
-                            final_xf
-                        };
-                        stack.push(PickVisit::Leave(id, own_xf));
-                        if it.clip && !self.ov_sabotage.pick_no_clip {
-                            let inside = self.pick_rect(id, it).is_some_and(|r| {
-                                match self.overrides.get(&id) {
-                                    Some(o) if o.clip_outset != [0.0; 4] => {
-                                        let clip = o.outset_clip(geom::xform_rect(&own_xf, &r));
-                                        contains_local(&geom::IDENTITY, &clip, p)
-                                    }
-                                    _ => contains_local(&own_xf, &r, p),
-                                }
-                            });
-                            if !inside {
-                                continue;
-                            }
-                        }
-                        push_siblings(state, &it.children, final_xf, &mut stack);
-                    }
-                    PickVisit::Leave(id, own_xf) => {
-                        if self.hit_filters.get(&id) != Some(&HIT_INPUT) {
-                            continue;
-                        }
-                        let Some(it) = state.items.get(&id) else {
-                            continue;
-                        };
-                        if self
-                            .pick_rect(id, it)
-                            .is_some_and(|r| contains_local(&own_xf, &r, p))
-                        {
-                            return Some(id);
-                        }
-                    }
-                }
-            }
-        }
-        None
-    }
-
-    /// ID2 (ID-D2): the rect a tree pick tests, in the item's own space: its custom rect, or the
-    /// drawn content rect when it never set one (no flag and an all-zero rect: a Control sends
-    /// one at every draw, so only a non-Control stated as input lands here).
-    fn pick_rect(&self, id: Id, it: &crate::state::Item) -> Option<Rect> {
-        if !self.ov_sabotage.pick_no_rect && (it.custom_rect || it.custom_rect_rect != [0.0; 4]) {
-            return Some(it.custom_rect_rect);
-        }
-        let rec = self.items.get(&id)?;
-        (!rec.lowered.draws.is_empty()).then_some(rec.lowered.rect)
+        pick_tree(self, state, x, y)
     }
 
     /// The nearest proper ancestor of `id` with [`HIT_INPUT`], or None.
@@ -1013,44 +930,190 @@ impl Applier {
     /// sees is `E⁻¹ · p`. Returns the hit item and that point, or `(None, p)` when no item is
     /// drawn there (nothing overrides bare clear colour), or `None` for a singular `E`.
     pub fn to_game(&self, state: &ResolvedState, x: f32, y: f32) -> Option<(Option<Id>, [f32; 2])> {
-        let p = [x, y];
-        let Some(hit) = self.pick(state, x, y) else {
-            return Some((None, p));
-        };
-        if self.overrides.is_empty() || self.ov_sabotage.inverse_skip {
-            return Some((Some(hit), p));
-        }
-        // An item drawn under `use_identity_transform` ignores its ancestors' transforms, and so
-        // their overrides.
-        if state
-            .items
-            .get(&hit)
-            .is_some_and(|it| it.use_identity_transform)
-        {
-            return Some((Some(hit), p));
-        }
-        let mut e = geom::IDENTITY;
-        let mut cur = Some(hit);
-        let mut guard = state.items.len() + 1;
-        while let Some(id) = cur {
-            if let Some(o) = self.overrides.get(&id) {
-                e = geom::mul(&e, &o.xform);
-            }
-            cur = state
-                .items
-                .get(&id)
-                .and_then(|it| it.parent)
-                .filter(|p| p.kind == ParentKind::Item)
-                .map(|p| p.id);
-            guard -= 1;
-            if guard == 0 {
-                break;
-            }
-        }
-        let det = e[0] * e[3] - e[1] * e[2];
-        if det == 0.0 || !det.is_finite() {
-            return None;
-        }
-        Some((Some(hit), geom::xform_point(&geom::affine_inverse(&e), p)))
+        map_pick_to_game(self, state, self.pick(state, x, y), x, y)
     }
+}
+
+/// Geometry and client state needed for GUI tree picking, independent of draw-list lowering.
+/// Native receivers can supply host transforms and no drawn-rect fallback or overrides.
+pub trait PickSource {
+    fn hit_filter(&self, id: Id) -> Option<u8>;
+    fn display_local_xform(&self, id: Id, item: &crate::state::Item) -> Xform;
+    fn override_of(&self, id: Id) -> Option<Override>;
+    fn drawn_rect(&self, id: Id) -> Option<Rect>;
+    fn viewport_xform(&self) -> Xform;
+    fn has_overrides(&self) -> bool;
+    fn pick_no_clip(&self) -> bool {
+        false
+    }
+    fn pick_no_rect(&self) -> bool {
+        false
+    }
+    fn inverse_skip(&self) -> bool {
+        false
+    }
+}
+
+impl PickSource for Applier {
+    fn hit_filter(&self, id: Id) -> Option<u8> {
+        self.hit_filters.get(&id).copied()
+    }
+    fn display_local_xform(&self, id: Id, item: &crate::state::Item) -> Xform {
+        self.display_local(id, item).xform
+    }
+    fn override_of(&self, id: Id) -> Option<Override> {
+        self.overrides.get(&id).copied()
+    }
+    fn drawn_rect(&self, id: Id) -> Option<Rect> {
+        let rec = self.items.get(&id)?;
+        (!rec.lowered.draws.is_empty()).then_some(rec.lowered.rect)
+    }
+    fn viewport_xform(&self) -> Xform {
+        self.viewport.global_xform
+    }
+    fn has_overrides(&self) -> bool {
+        !self.overrides.is_empty()
+    }
+    fn pick_no_clip(&self) -> bool {
+        self.ov_sabotage.pick_no_clip
+    }
+    fn pick_no_rect(&self) -> bool {
+        self.ov_sabotage.pick_no_rect
+    }
+    fn inverse_skip(&self) -> bool {
+        self.ov_sabotage.inverse_skip
+    }
+}
+
+/// Godot GUI tree order, with custom rectangles and source-specific display transforms.
+pub fn pick_tree(source: &impl PickSource, state: &ResolvedState, x: f32, y: f32) -> Option<Id> {
+    let mut canvases: Vec<&crate::state::Canvas> =
+        state.canvases.values().filter(|c| c.attached).collect();
+    insertion_sort_by_key(&mut canvases, |c| (c.layer, c.sublayer, c.id));
+    let ov = source.has_overrides();
+    let p = [x, y];
+    let mut stack: Vec<PickVisit> = Vec::new();
+    for cv in canvases.iter().rev() {
+        let canvas_xf = geom::mul(&source.viewport_xform(), &cv.xform);
+        stack.clear();
+        push_siblings(state, &cv.items, canvas_xf, &mut stack);
+        while let Some(v) = stack.pop() {
+            match v {
+                PickVisit::Enter(id, parent_xf) => {
+                    let Some(it) = state.items.get(&id) else {
+                        continue;
+                    };
+                    if !it.visible {
+                        continue;
+                    }
+                    let mut final_xf = geom::mul(&parent_xf, &source.display_local_xform(id, it));
+                    if ov {
+                        if let Some(o) = source.override_of(id) {
+                            if !o.visible {
+                                continue;
+                            }
+                            final_xf = geom::mul(&o.xform, &final_xf);
+                        }
+                    }
+                    if singular(&final_xf) {
+                        continue;
+                    }
+                    // UIT: the item itself is drawn (and tested) in its canvas's space; its
+                    // children keep the composed transform.
+                    let own_xf = if it.use_identity_transform {
+                        canvas_xf
+                    } else {
+                        final_xf
+                    };
+                    stack.push(PickVisit::Leave(id, own_xf));
+                    if it.clip && !source.pick_no_clip() {
+                        let inside = pick_rect(source, id, it).is_some_and(|r| {
+                            match source.override_of(id) {
+                                Some(o) if o.clip_outset != [0.0; 4] => {
+                                    let clip = o.outset_clip(geom::xform_rect(&own_xf, &r));
+                                    contains_local(&geom::IDENTITY, &clip, p)
+                                }
+                                _ => contains_local(&own_xf, &r, p),
+                            }
+                        });
+                        if !inside {
+                            continue;
+                        }
+                    }
+                    push_siblings(state, &it.children, final_xf, &mut stack);
+                }
+                PickVisit::Leave(id, own_xf) => {
+                    if source.hit_filter(id) != Some(HIT_INPUT) {
+                        continue;
+                    }
+                    let Some(it) = state.items.get(&id) else {
+                        continue;
+                    };
+                    if pick_rect(source, id, it).is_some_and(|r| contains_local(&own_xf, &r, p)) {
+                        return Some(id);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// ID2 (ID-D2): the rect a tree pick tests, in the item's own space: its custom rect, or the
+/// drawn content rect when it never set one (no flag and an all-zero rect: a Control sends
+/// one at every draw, so only a non-Control stated as input lands here).
+fn pick_rect(source: &impl PickSource, id: Id, it: &crate::state::Item) -> Option<Rect> {
+    if !source.pick_no_rect() && (it.custom_rect || it.custom_rect_rect != [0.0; 4]) {
+        return Some(it.custom_rect_rect);
+    }
+    source.drawn_rect(id)
+}
+
+/// Map a picked presentation point through the inverse of its effective override.
+pub fn map_pick_to_game(
+    source: &impl PickSource,
+    state: &ResolvedState,
+    hit: Option<Id>,
+    x: f32,
+    y: f32,
+) -> Option<(Option<Id>, [f32; 2])> {
+    let p = [x, y];
+    let Some(hit) = hit else {
+        return Some((None, p));
+    };
+    if !source.has_overrides() || source.inverse_skip() {
+        return Some((Some(hit), p));
+    }
+    // An item drawn under `use_identity_transform` ignores its ancestors' transforms, and so
+    // their overrides.
+    if state
+        .items
+        .get(&hit)
+        .is_some_and(|it| it.use_identity_transform)
+    {
+        return Some((Some(hit), p));
+    }
+    let mut e = geom::IDENTITY;
+    let mut cur = Some(hit);
+    let mut guard = state.items.len() + 1;
+    while let Some(id) = cur {
+        if let Some(o) = source.override_of(id) {
+            e = geom::mul(&e, &o.xform);
+        }
+        cur = state
+            .items
+            .get(&id)
+            .and_then(|it| it.parent)
+            .filter(|p| p.kind == ParentKind::Item)
+            .map(|p| p.id);
+        guard -= 1;
+        if guard == 0 {
+            break;
+        }
+    }
+    let det = e[0] * e[3] - e[1] * e[2];
+    if det == 0.0 || !det.is_finite() {
+        return None;
+    }
+    Some((Some(hit), geom::xform_point(&geom::affine_inverse(&e), p)))
 }

@@ -97,7 +97,7 @@ pub extern "C" fn rsc_set_full_scan(h: *mut RsCore, on: i32) {
     guard(h, (), |c| c.planner.full_scan = on != 0);
 }
 
-/// The session record at `offset` of `data`, a render-stream/`version` stream (6 or 7, G7xwl):
+/// The session record at `offset` of `data`, a render-stream/`version` stream (6 through 19):
 /// returns 4 (session) or 0 (error); vt holds the accept_record()-shaped Dictionary either way.
 ///
 /// # Safety
@@ -562,4 +562,58 @@ pub extern "C" fn rsc_transport_skip(h: *mut RsCore) {
 #[no_mangle]
 pub extern "C" fn rsc_dynamic_sha256(h: *mut RsCore) {
     guard(h, (), |c| c.dynamic_sha256());
+}
+
+/// Replace GUI filters atomically; 1 on success, 0 with an error in text.
+/// # Safety
+/// Both arrays contain `n` elements; `h` is a live handle.
+#[no_mangle]
+pub unsafe extern "C" fn rsc_set_hit_filters(
+    h: *mut RsCore,
+    ids: *const u32,
+    filters: *const u8,
+    n: usize,
+) -> i32 {
+    if n > 0 && (ids.is_null() || filters.is_null()) {
+        return guard(h, 0, |c| {
+            c.text = b"hit-filters: null table pointer".to_vec();
+            0
+        });
+    }
+    let ids = if n == 0 {
+        &[]
+    } else {
+        std::slice::from_raw_parts(ids, n)
+    };
+    let filters = bytes(filters, n);
+    guard(h, 0, |c| match c.set_hit_filters(ids, filters) {
+        Ok(()) => 1,
+        Err(e) => {
+            c.text = e.into_bytes();
+            0
+        }
+    })
+}
+
+/// GUI tree order only; no filters means no hit (-1).
+#[no_mangle]
+pub extern "C" fn rsc_pick(h: *mut RsCore, x: f32, y: f32) -> i64 {
+    guard(h, -1, |c| c.pick(x, y))
+}
+
+/// Map a presentation point into game space; false leaves `out` untouched.
+/// # Safety
+/// `out` points to three writable doubles; `h` is a live handle.
+#[no_mangle]
+pub unsafe extern "C" fn rsc_to_game(h: *mut RsCore, x: f32, y: f32, out: *mut f64) -> bool {
+    if out.is_null() {
+        return false;
+    }
+    guard(h, false, |c| match c.to_game(x, y) {
+        Some(p) => {
+            std::ptr::copy_nonoverlapping(p.as_ptr(), out, 3);
+            true
+        }
+        None => false,
+    })
 }

@@ -25,3 +25,6 @@ opt-level = 3
 lto = true
 codegen-units = 1
 debug = 1
+
+[dev-dependencies]
+gsw-canvas-draw-list = { path = "../../../packages/canvas/rust-draw-list" }

@@ -78,6 +78,7 @@ struct Gd {
   GDExtensionPtrDestructor dtor[GDEXTENSION_VARIANT_TYPE_VARIANT_MAX] = {};
   GDExtensionPtrBuiltInMethod resize[GDEXTENSION_VARIANT_TYPE_VARIANT_MAX] = {};
   GDExtensionPtrBuiltInMethod pba_size = nullptr;
+  GDExtensionPtrBuiltInMethod pi32_size = nullptr;
   GDExtensionPtrBuiltInMethod array_push_back = nullptr;
   GDExtensionPtrBuiltInMethod strings_push_back = nullptr;
 };
@@ -1937,6 +1938,13 @@ int64_t arg_int(GDExtensionConstVariantPtr v) {
   return out;
 }
 
+double arg_float(GDExtensionConstVariantPtr v) {
+  if (arg_is(v, GDEXTENSION_VARIANT_TYPE_INT)) return static_cast<double>(arg_int(v));
+  double out = 0;
+  gd.to[GDEXTENSION_VARIANT_TYPE_FLOAT](&out, const_cast<GDExtensionVariantPtr>(v));
+  return out;
+}
+
 bool arg_bool(GDExtensionConstVariantPtr v) {
   GDExtensionBool out = 0;
   gd.to[GDEXTENSION_VARIANT_TYPE_BOOL](&out, const_cast<GDExtensionVariantPtr>(v));
@@ -2027,6 +2035,9 @@ enum Method : int {
   M_CODING_SEQ,
   M_CODING_ERROR,
   M_CODING_STATS,
+  M_SET_HIT_FILTERS,
+  M_HIT_TEST,
+  M_TO_GAME,
   M_COUNT,
 };
 
@@ -2036,7 +2047,7 @@ struct MethodSpec {
 };
 constexpr MethodSpec METHODS[M_COUNT] = {
     {"open", 3},             // (viewport: RID, root_canvas: RID, sabotage: String) -> String ("" ok)
-    {"session", 3},          // (data: PackedByteArray, offset: int, version: int 6..9) -> Dictionary
+    {"session", 3},          // (data: PackedByteArray, offset: int, version: int 6..19) -> Dictionary
     {"begin_session", 0},    // () -> int (ops executed)
     {"accept", 2},           // (data: PackedByteArray, offset: int) -> Dictionary
     {"resource_payload", 0}, // () -> PackedByteArray
@@ -2072,6 +2083,9 @@ constexpr MethodSpec METHODS[M_COUNT] = {
     {"coding_seq", 0},       // () -> int: the last message's envelope seq (0: not a transaction)
     {"coding_error", 0},     // () -> String: the last -1's error
     {"coding_stats", 0},     // () -> String: the connection's coding stats (JSON)
+    {"set_hit_filters", 2},  // (PackedInt32Array, PackedByteArray) -> String (empty on success)
+    {"hit_test", 2},         // (x, y) -> int: GUI tree order only
+    {"to_game", 2},          // (x, y) -> PackedFloat64Array (empty for a singular override)
 };
 
 void method_call(void *userdata, GDExtensionClassInstancePtr instance, const GDExtensionConstVariantPtr *args,
@@ -2084,6 +2098,16 @@ void method_call(void *userdata, GDExtensionClassInstancePtr instance, const GDE
                                           : GDEXTENSION_CALL_ERROR_TOO_MANY_ARGUMENTS;
     error->expected = METHODS[m].args;
     return;
+  }
+  if (m == M_HIT_TEST || m == M_TO_GAME) {
+    for (int i = 0; i < 2; ++i) {
+      if (!arg_is(args[i], GDEXTENSION_VARIANT_TYPE_FLOAT) && !arg_is(args[i], GDEXTENSION_VARIANT_TYPE_INT)) {
+        error->error = GDEXTENSION_CALL_ERROR_INVALID_ARGUMENT;
+        error->argument = i;
+        error->expected = GDEXTENSION_VARIANT_TYPE_FLOAT;
+        return;
+      }
+    }
   }
   switch (m) {
     case M_OPEN: {
@@ -2346,6 +2370,40 @@ void method_call(void *userdata, GDExtensionClassInstancePtr instance, const GDE
       ret_string(ret, std::string(reinterpret_cast<const char *>(b), n));
       return;
     }
+    case M_SET_HIT_FILTERS: {
+      if (!arg_is(args[0], GDEXTENSION_VARIANT_TYPE_PACKED_INT32_ARRAY) ||
+          !arg_is(args[1], GDEXTENSION_VARIANT_TYPE_PACKED_BYTE_ARRAY)) {
+        ret_string(ret, "hit-filters: expected PackedInt32Array and PackedByteArray");
+        return;
+      }
+      PackedArray ids(GDEXTENSION_VARIANT_TYPE_PACKED_INT32_ARRAY);
+      gd.dtor[ids.type](&ids.p);
+      gd.to[ids.type](&ids.p, const_cast<GDExtensionVariantPtr>(args[0]));
+      int64_t n = 0;
+      gd.pi32_size(&ids.p, nullptr, &n, 0);
+      BytesArg filters(args[1]);
+      if (static_cast<size_t>(n) != filters.size) {
+        ret_string(ret, "hit-filters: ids and filters differ in length");
+        return;
+      }
+      int ok = rsc_set_hit_filters(inst->core, n ? static_cast<const uint32_t *>(ids.data()) : nullptr,
+                                   filters.data, filters.size);
+      if (ok) ret_string(ret, "");
+      else text_string(inst, static_cast<Variant *>(ret));
+      return;
+    }
+    case M_HIT_TEST:
+      ret_int(ret, rsc_pick(inst->core, static_cast<float>(arg_float(args[0])), static_cast<float>(arg_float(args[1]))));
+      return;
+    case M_TO_GAME: {
+      double point[3];
+      bool ok = rsc_to_game(inst->core, static_cast<float>(arg_float(args[0])), static_cast<float>(arg_float(args[1])), point);
+      PackedArray out(GDEXTENSION_VARIANT_TYPE_PACKED_FLOAT64_ARRAY);
+      out.resize(ok ? 3 : 0);
+      if (ok) std::memcpy(out.data(), point, sizeof(point));
+      gd.from[out.type](ret, &out.p);
+      return;
+    }
     case M_COUNT:
       return;
   }
@@ -2510,10 +2568,11 @@ bool load(GDExtensionInterfaceGetProcAddress get, GDExtensionClassLibraryPtr lib
     if (gd.resize[t] == nullptr) return false;
   }
   gd.pba_size = gd.get_builtin_method(GDEXTENSION_VARIANT_TYPE_PACKED_BYTE_ARRAY, size.ptr(), 3173160232);
+  gd.pi32_size = gd.get_builtin_method(GDEXTENSION_VARIANT_TYPE_PACKED_INT32_ARRAY, size.ptr(), 3173160232);
   gd.array_push_back = gd.get_builtin_method(GDEXTENSION_VARIANT_TYPE_ARRAY, push_back.ptr(), 3316032543);
   gd.strings_push_back =
       gd.get_builtin_method(GDEXTENSION_VARIANT_TYPE_PACKED_STRING_ARRAY, push_back.ptr(), 816187996);
-  return gd.pba_size != nullptr && gd.array_push_back != nullptr && gd.strings_push_back != nullptr;
+  return gd.pi32_size != nullptr && gd.pba_size != nullptr && gd.array_push_back != nullptr && gd.strings_push_back != nullptr;
 }
 
 bool g_loaded = false;
