@@ -2435,9 +2435,28 @@ void method_call(void *userdata, GDExtensionClassInstancePtr instance, const GDE
         return;
       }
       const std::string input = arg_string(args[0]);
-      using Fn = int32_t (*)(RsCore *, const uint8_t *, size_t);
-      constexpr Fn calls[] = {rsc_client_hello, rsc_resolve_descriptor, rsc_parse_host_error, rsc_encode_ack, rsc_subprotocol};
-      calls[m - M_CLIENT_HELLO](inst->core, reinterpret_cast<const uint8_t *>(input.data()), input.size());
+      const auto *data = reinterpret_cast<const uint8_t *>(input.data());
+      // Keep these as direct calls: taking the C ABI functions' addresses makes the wasm
+      // side-module linker export them for dynamic linking, beyond rs_core_ext_init.
+      switch (m) {
+        case M_CLIENT_HELLO:
+          rsc_client_hello(inst->core, data, input.size());
+          break;
+        case M_RESOLVE_DESCRIPTOR:
+          rsc_resolve_descriptor(inst->core, data, input.size());
+          break;
+        case M_PARSE_HOST_ERROR:
+          rsc_parse_host_error(inst->core, data, input.size());
+          break;
+        case M_ENCODE_ACK:
+          rsc_encode_ack(inst->core, data, input.size());
+          break;
+        case M_SUBPROTOCOL:
+          rsc_subprotocol(inst->core, data, input.size());
+          break;
+        default:
+          break;
+      }
       text_string(inst, static_cast<Variant *>(ret));
       return;
     }
