@@ -50,12 +50,12 @@ for scenario in missing unreadable empty zero negative receiver-error receiver-e
   [ -z "$G6C_BURN_ITERATIONS" ]
   [ -s "$G6C/gpu-heavy/failed.txt" ]
   if [ "$scenario" != ceiling ]; then
-   rg -q 'gpu timing unavailable:' "$G6C/gpu-heavy/failed.txt"
+   grep -Fq 'gpu timing unavailable:' "$G6C/gpu-heavy/failed.txt"
   fi
  fi
  case "$scenario" in
  receiver-error | receiver-error-with-perf)
-  rg -Fq 'receiver exited 2: [receiver] error: rs_core.gdextension load_extension returned 1' "$G6C/gpu-heavy/failed.txt"
+  grep -Fq 'receiver exited 2: [receiver] error: rs_core.gdextension load_extension returned 1' "$G6C/gpu-heavy/failed.txt"
   ;;
  esac
  passed=$((passed + 1))
