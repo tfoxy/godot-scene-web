@@ -63,7 +63,7 @@ const READ_CHUNK: int = 65536
 const MAX_POLLS_PER_CALL: int = 64
 ## The largest decoded body a coded response may declare (a bound on a hostile frame header).
 const MAX_DECODED_BYTES: int = 1 << 30
-const KEPT_HEADERS: Array[String] = ["Content-Type", "Content-Length", "Cache-Control", "ETag", "Content-Encoding", "Vary"]
+const KEPT_HEADERS: Array[String] = ["Content-Type", "Content-Length", "Cache-Control", "ETag", "Content-Encoding", "Vary", "Transfer-Encoding", "Connection"]
 ## A running web page polls every frame; a longer gap is the page hidden or frozen.
 const SUSPEND_GAP_MS: int = 1000
 
@@ -95,6 +95,7 @@ var _current: Dictionary = {}
 var _delay_until_msec: int = 0
 var _deadline_msec: int = 0
 var _connects: int = 0
+var _http_poll_error: Error = OK
 ## The last poll() of the running GET (web): the suspension rule's clock.
 var _last_poll_msec: int = 0
 ## Suspension time not counted toward timeouts (web), in total and as gaps.
@@ -211,6 +212,7 @@ func _next() -> void:
 
 
 func _fail(detail: String) -> void:
+	_trace("failure")
 	_current["end_us"] = Time.get_ticks_usec()
 	_current["error"] = RsWire.err("resource-unavailable", detail)
 	error = _current["error"]
@@ -227,6 +229,7 @@ func _fail(detail: String) -> void:
 ## Starts the current fetch: on the open connection if it is still connected, else a new one.
 func _issue() -> void:
 	_current["start_us"] = Time.get_ticks_usec()
+	_http_poll_error = OK
 	_deadline_msec = Time.get_ticks_msec() + timeout_ms
 	_last_poll_msec = Time.get_ticks_msec()
 	if web_fetch:
@@ -316,7 +319,7 @@ func _poll_once() -> bool:
 	if web_fetch:
 		# The GET completes in its promise callback (_on_web_done), between frames.
 		return done()
-	_client.poll()
+	_http_poll_error = _client.poll()
 	var status: HTTPClient.Status = _client.get_status()
 	match _phase:
 		"connecting":
@@ -338,6 +341,8 @@ func _poll_once() -> bool:
 
 func _headers_ready() -> void:
 	_current["status"] = _client.get_response_code()
+	_current["body_length"] = _client.get_response_body_length()
+	_current["chunked"] = _client.is_response_chunked()
 	var all: Dictionary = _client.get_response_headers_as_dictionary()
 	# Header names are case-insensitive: the web's HTTPClient (fetch()) reports them lowercased
 	# (G7l), so each kept header is found by name in any case and recorded under KEPT_HEADERS'
@@ -353,6 +358,20 @@ func _headers_ready() -> void:
 		elif by_lower.has(name.to_lower()):
 			kept[name] = by_lower[name.to_lower()]
 	_current["headers"] = kept
+	_trace("headers")
+
+
+## Opt-in framing diagnostics; never include request headers or credentials.
+func _trace(stage: String) -> void:
+	if RsConfig.get_env("RS_RECEIVER_FETCH_TRACE") != "1" or _current.is_empty():
+		return
+	var headers: Dictionary = _current.get("headers", {})
+	print("[receiver-fetch] %s code=%s length=%s transfer=%s encoding=%s connection=%s bytes=%d status=%d poll_error=%s elapsed_ms=%.3f" % [
+		stage, str(_current.get("status")), str(headers.get("Content-Length", "absent")),
+		str(headers.get("Transfer-Encoding", "absent")), str(headers.get("Content-Encoding", "identity")),
+		str(headers.get("Connection", "absent")), _current_size(), _client.get_status() if _client != null else -1,
+		error_string(_http_poll_error),
+		(Time.get_ticks_usec() - RsWire.as_int(_current.get("start_us", 0))) / 1000.0])
 
 
 func _read_body(status: HTTPClient.Status) -> void:
@@ -362,13 +381,24 @@ func _read_body(status: HTTPClient.Status) -> void:
 			var data: PackedByteArray = _current["data"]
 			data.append_array(chunk)
 			_current["data"] = data
-		return
+		if _client.get_status() != HTTPClient.STATUS_BODY:
+			_trace("body-read-ended")
+		# Consume the framing result before poll() can replace CONNECTED with a socket error
+		# when a Connection: close peer has already sent FIN after the complete response.
+		status = _client.get_status()
+		if status == HTTPClient.STATUS_BODY:
+			return
 	if status != HTTPClient.STATUS_CONNECTED and status != HTTPClient.STATUS_DISCONNECTED:
 		_fail("GET %s%s: connection lost while reading the body (HTTPClient status %d)" % [path_prefix, _current["hash"], status])
 		return
-	# The response is complete (a server that closes after it leaves STATUS_DISCONNECTED; the next
-	# fetch then connects again).
 	var data: PackedByteArray = _current["data"]
+	var body_length: int = _current["body_length"]
+	var chunked: bool = _current["chunked"]
+	# EOF completes only an unframed body. A declared length or chunked terminator must finish
+	# before the socket closes; otherwise a truncated payload must never enter the cache.
+	if (body_length >= 0 and data.size() != body_length) or (chunked and status == HTTPClient.STATUS_DISCONNECTED):
+		_fail("GET %s%s: truncated response body (%d bytes, Content-Length %d, chunked %s)" % [path_prefix, _current["hash"], data.size(), body_length, chunked])
+		return
 	_current["bytes"] = data.size()
 	_current["wire_bytes"] = data.size()
 	_current["end_us"] = Time.get_ticks_usec()
@@ -378,6 +408,11 @@ func _read_body(status: HTTPClient.Status) -> void:
 		return
 	if not RsConfig.is_web() and not _decode_content_encoding():
 		return
+	var headers: Dictionary = _current["headers"]
+	for directive: String in str(headers.get("Connection", "")).split(","):
+		if directive.strip_edges().to_lower() == "close":
+			_client.close()
+			break
 	results.append(_current)
 	_current = {}
 	_next()

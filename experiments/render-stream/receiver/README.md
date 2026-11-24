@@ -41,6 +41,8 @@ mise exec -- godot --headless --path experiments/render-stream/receiver --import
 experiments/render-stream/scripts/build-rs-core-ext.sh
 # Self-test (prints "[receiver-selftest] ok (<n> checks)", exits 0):
 mise exec -- godot --headless --path experiments/render-stream/receiver --script res://tests/receiver_selftest.gd
+# HTTP response framing, with a local relay-shaped stub (no capture host):
+mise exec -- godot --headless --path experiments/render-stream/receiver --script res://tests/fetcher_close_selftest.gd
 ```
 
 Every native launch loads `ext/rs_core.gdextension`. Without the adapter build every run fails with
@@ -134,6 +136,7 @@ reconnect writes `received-2.rs2`, a second `streams[]` entry and `shots/stream-
 | `RS_RECEIVER_LOG`                                  | `full` (default) or `summary` (drops the per-transaction arrays from `applied.json`).                                                                                                                       |
 | `RS_RECEIVER_PERF_OUT`, `RS_RECEIVER_PERF_SAMPLES` | A `perf.json` path (off when unset); `1` adds per-transaction timings (file mode).                                                                                                                          |
 | `RS_RECEIVER_RSS_EVERY`                            | File mode: one memory line every N applied transactions.                                                                                                                                                    |
+| `RS_RECEIVER_FETCH_TRACE`                          | `1`: opt-in native HTTP response framing diagnostics (code, length, transfer/content encoding, bytes, status, poll error, elapsed milliseconds); request headers and credentials are omitted.               |
 | `RS_RECEIVER_TRANSCODE_LOG`                        | `1`: hash each KTX2 transcode's uploaded blocks into the report.                                                                                                                                            |
 | `RS_RECEIVER_BUILD_SHA256`                         | Recorded in `applied.json`'s `receiver` block.                                                                                                                                                              |
 | `RS_RECEIVER_SABOTAGE`                             | Test-only faults (`reupload`, `ignore-cache`, `ignore-clip`, `ignore-material`, `stale-texture`, `ignore-presentation`, …; the full list is in `receiver.gd`). Each exists only to make a named check fail. |
