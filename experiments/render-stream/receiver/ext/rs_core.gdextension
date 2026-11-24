@@ -13,4 +13,5 @@ reloadable = false
 
 [libraries]
 linux.x86_64 = "build/librs_core_ext.so"
+android.arm64 = "build/android/arm64/librs_core_ext.so"
 web.wasm32 = "build/web/librs_core_ext.wasm"
