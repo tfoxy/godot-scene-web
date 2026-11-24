@@ -202,8 +202,12 @@ cmd_run() {
     [[ "$activity" == "$pkg/"* ]] || die "could not resolve the launcher activity of $pkg (is it installed?)"
   fi
 
+  # `adb shell` joins its arguments and the device shell re-splits them, so the format string
+  # must be quoted for the device side; logcat -T wants exactly this "MM-DD hh:mm:ss.mmm".
   local since
-  since="$(adbc shell date +%m-%d\ %H:%M:%S.000 | tr -d '\r')"
+  since="$(adbc shell "date '+%m-%d %H:%M:%S.000'" | tr -d '\r')"
+  [[ "$since" =~ ^[0-9]{2}-[0-9]{2}\ [0-9]{2}:[0-9]{2}:[0-9]{2}\.000$ ]] \
+    || die "unexpected device time '$since'; cannot bound logcat to this leg"
   adbc shell am start -W -n "$activity" >/dev/null
   log "launched $activity"
   local t0=$SECONDS pid="" done_shots="" elapsed matched=0
@@ -217,8 +221,9 @@ cmd_run() {
         done_shots+=" ${BASH_REMATCH[2]}"
       fi
     done
-    if [[ -n "$until_re" && -n "$pid" ]] \
-       && adbc logcat -d --pid="$pid" -T "$since" 2>/dev/null | grep -Eq -- "$until_re"; then
+    # Matched against everything since launch, not just the app's pid: an app that dies before
+    # the first poll has no pid to filter by, and the line that explains why may be the match.
+    if [[ -n "$until_re" ]] && adbc logcat -d -T "$since" 2>&1 | grep -Eq -- "$until_re"; then
       matched=1; log "matched --until-log after ${elapsed}s"; break
     fi
     (( elapsed < seconds )) || break
@@ -229,9 +234,9 @@ cmd_run() {
     [[ "$s" =~ ^([0-9]+):(.+)$ ]]
     [[ " $done_shots " == *" ${BASH_REMATCH[2]} "* ]] || screencap_to "$out/${BASH_REMATCH[2]}" || true
   done
-  adbc logcat -d -T "$since" >"$out/logcat.txt" 2>/dev/null || true
+  adbc logcat -d -b all -v threadtime -T "$since" >"$out/logcat.txt" 2>&1 || true
   if [[ -n "$pid" ]]; then
-    adbc logcat -d --pid="$pid" -T "$since" >"$out/logcat-app.txt" 2>/dev/null || true
+    adbc logcat -d -v threadtime --pid="$pid" -T "$since" >"$out/logcat-app.txt" 2>&1 || true
   else
     log "the app had no pid during the leg (crashed or never started); see logcat.txt"
   fi

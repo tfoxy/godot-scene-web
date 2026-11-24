@@ -19,12 +19,14 @@ cat >"$WORK/adb" <<'FAKE'
 echo "$*" >>"$FAKE_ADB_CALLS"
 case "$*" in
   get-state) echo device ;;
-  "shell date"*) echo "11-24 10:00:00.000" ;;
+  # Like the real device shell: only a format quoted for the device side survives re-splitting.
+  "shell date '+%m-%d %H:%M:%S.000'") echo "11-24 10:00:00.000" ;;
+  "shell date"*) echo "11-24" ;;
   "shell cmd package resolve-activity"*) echo "priority=0"; echo "dev.gsw.test/com.godot.game.GodotApp" ;;
   "shell pidof"*) echo 4242 ;;
   "exec-out screencap -p") [ -n "${FAKE_ADB_SCREENCAP_FAIL:-}" ] && exit 1; printf '\x89PNGfake' ;;
   logcat*--pid*) echo "I godot: digest=abc123" ;;
-  logcat*) echo "I ActivityManager: start" ;;
+  logcat*) echo "I ActivityManager: start"; echo "I godot: digest=abc123" ;;
 esac
 exit 0
 FAKE
@@ -68,6 +70,7 @@ if "$LEG" run --pkg dev.gsw.test --apk "$APK" --clear-data --reverse tcp:8765 --
               "shell am force-stop dev.gsw.test" "reverse --remove tcp:8765" "reverse --remove tcp:13337"; do
     grep -qxF -- "$want" "$CALLS" || bad "run: missing adb call '$want'"
   done
+  grep -qF -- "-T 11-24 10:00:00.000" "$CALLS" || bad "run: logcat not bounded by the launch time"
   for f in first.png late.png logcat.txt logcat-app.txt; do
     [ -s "$REPO/$OUT_REL/$f" ] || bad "run: missing $f"
   done
