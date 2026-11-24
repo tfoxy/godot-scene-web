@@ -158,6 +158,11 @@ func set_digest_deferred(on: bool) -> void:
 	_core.call("set_digest_deferred", on)
 
 
+## Counts replace unread upload evidence arrays in summary mode.
+func set_summary_uploads(on: bool) -> void:
+	_core.call("set_summary_uploads", on)
+
+
 ## The next session's evidence: 0 inline, 1 deferred, 2 never (validation stays enabled).
 func set_digest_policy(policy: int) -> bool:
 	return _core.call("set_digest_policy", policy)

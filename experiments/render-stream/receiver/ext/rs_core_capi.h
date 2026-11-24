@@ -34,6 +34,9 @@ void rsc_set_gl_compatibility(RsCore *h, int32_t on);
 // for a malformed hash.
 int32_t rsc_refuse_variant(RsCore *h, const uint8_t *hash, size_t hlen);
 void rsc_sha256_hex(const uint8_t *data, size_t len, uint8_t *out);
+// Apply stats: uploads/mesh_uploads become row counts; upload_count excludes placeholders.
+// Off by default; the RenderingServer operation stream is identical in either mode.
+void rsc_set_summary_uploads(RsCore *h, int32_t on);
 // G7o2 (D31): the next session defers the record digest; rsc_record_digest fills it later
 // (text: the record at `offset`'s sha256 hex; 1, or 0 with the error in text).
 void rsc_set_digest_deferred(RsCore *h, int32_t on);

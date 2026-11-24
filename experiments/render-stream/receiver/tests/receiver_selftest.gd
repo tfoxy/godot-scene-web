@@ -49,6 +49,7 @@ func _run_checks() -> void:
 	_check_cache_budget()
 	_check_native_queries()
 	_check_digest_policies()
+	_check_summary_uploads()
 	_check_protocol_helpers()
 	_check_json_descriptor()
 	_check_view_tapped()
@@ -792,3 +793,78 @@ func _check_digest_policies() -> void:
 	OS.set_environment("RS_RECEIVER_LOG", old_log)
 	OS.set_environment("RS_RECEIVER_DIGEST", old_digest)
 	receiver.free()
+
+
+## The receiver selects counts at creation; the native Variant tree preserves totals in both modes.
+func _check_summary_uploads() -> void:
+	var data: PackedByteArray = FileAccess.get_file_as_bytes("res://../protocol/golden-11/inline.rs11")
+	var records: Array[Dictionary] = RsWire.split_records(data, 11)["records"]
+	var full_stats: Array[Dictionary] = []
+	var full_totals: Dictionary = {}
+	var texture_rows: int = 0
+	var mesh_rows: int = 0
+	for mode: String in ["full", "summary"]:
+		var view := InputView.new()
+		root.add_child(view)
+		view.set("_log_mode", mode)
+		view.set("_wire_version", 11)
+		view._new_applier()
+		var applier: RsRustApplier = view.get("_applier")
+		var session: Dictionary = applier.accept_session(data, RsWire.as_int(records[0]["offset"]), 11)
+		_checked += 1
+		if session["kind"] != "session":
+			_fail("%s upload test session rejected" % mode)
+			view.free()
+			return
+		applier.begin_session()
+		var transaction: int = 0
+		for i: int in range(1, records.size()):
+			var accepted: Dictionary = applier.accept(data, RsWire.as_int(records[i]["offset"]))
+			_checked += 1
+			var errors: PackedStringArray = accepted["errors"]
+			if not errors.is_empty():
+				_fail("%s upload test record %d rejected: %s" % [mode, i, errors])
+				break
+			if accepted["kind"] == "resource":
+				var record: Dictionary = accepted["record"]
+				if not view._receive_resource(record):
+					_fail("%s upload test resource rejected" % mode)
+				continue
+			if accepted["kind"] != "transaction":
+				continue
+			var applied: Dictionary = view._fetch_and_apply(1, applier.last_seq)
+			_checked += 1
+			if not applied["ok"]:
+				_fail("%s upload test apply failed" % mode)
+				break
+			var stats: Dictionary = applied["stats"]
+			if mode == "full":
+				if not stats["uploads"] is Array or not stats["mesh_uploads"] is Array:
+					_fail("full upload evidence must contain row arrays")
+					break
+				var uploads: Array = stats["uploads"]
+				var meshes: Array = stats["mesh_uploads"]
+				texture_rows += uploads.size()
+				mesh_rows += meshes.size()
+				var count: int = 0
+				for upload: Dictionary in uploads:
+					if upload["op"] != "placeholder":
+						count += 1
+				stats["uploads"] = uploads.size()
+				stats["mesh_uploads"] = meshes.size()
+				stats["upload_count"] = count
+				full_stats.append(stats)
+			elif transaction >= full_stats.size() or stats != full_stats[transaction]:
+				_fail("summary apply %d must replace only upload rows with counts" % transaction)
+			transaction += 1
+		var totals: Dictionary = view.get("_summary")
+		_checked += 1
+		if mode == "full":
+			full_totals = totals.duplicate()
+		elif totals != full_totals or transaction != full_stats.size():
+			_fail("summary upload totals must equal full-mode totals")
+		applier.dispose()
+		view.free()
+	_checked += 1
+	if texture_rows == 0 or mesh_rows == 0:
+		_fail("upload count fixture must exercise texture and mesh uploads")

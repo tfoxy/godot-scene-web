@@ -1206,16 +1206,19 @@ func _fetch_and_apply(stream_index: int, seq: int, prefetched: Dictionary = {}) 
 		transcode["stream"] = stream_index
 		transcode["seq"] = seq
 		_transcodes.append(transcode)
-	var uploads: Array = stats["uploads"]
-	for value: Variant in uploads:
-		var upload: Dictionary = value
-		upload["stream"] = stream_index
-		upload["seq"] = seq
-		if _log_mode != "summary":
+	if _log_mode == "summary":
+		_summary["uploads"] = RsWire.as_int(_summary["uploads"]) + RsWire.as_int(stats["upload_count"])
+		_summary["upload_bytes"] = RsWire.as_int(_summary["upload_bytes"]) + RsWire.as_int(resources["upload_bytes"])
+	else:
+		var uploads: Array = stats["uploads"]
+		for value: Variant in uploads:
+			var upload: Dictionary = value
+			upload["stream"] = stream_index
+			upload["seq"] = seq
 			_uploads.append(upload)
-		if upload["op"] != "placeholder":
-			_summary["uploads"] = RsWire.as_int(_summary["uploads"]) + 1
-			_summary["upload_bytes"] = RsWire.as_int(_summary["upload_bytes"]) + RsWire.as_int(upload["data_bytes"])
+			if upload["op"] != "placeholder":
+				_summary["uploads"] = RsWire.as_int(_summary["uploads"]) + 1
+				_summary["upload_bytes"] = RsWire.as_int(_summary["upload_bytes"]) + RsWire.as_int(upload["data_bytes"])
 	return {"ok": true, "stats": stats}
 
 
@@ -3041,6 +3044,7 @@ func _new_applier() -> void:
 	var canvas: RID = get_viewport().find_world_2d().canvas
 	_applier = RsRustApplier.new(viewport, canvas)
 	_applier.set_digest_policy(2 if _digest_none else 0)
+	_applier.set_summary_uploads(_log_mode == "summary")
 	_apply_delivery()
 	# G7o3 (D31): payloads are verified and decoded by the core as they arrive (the cache stages
 	# them), not in the frame; the verify-in-frame sabotage keeps the pre-G7o3 path.

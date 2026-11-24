@@ -196,6 +196,13 @@ pub extern "C" fn rsc_set_digest_deferred(h: *mut RsCore, on: i32) {
     });
 }
 
+/// Replace apply upload evidence arrays with counts. Rendering operations are unchanged.
+/// `uploads` and `mesh_uploads` count all rows; `upload_count` excludes texture placeholders.
+#[no_mangle]
+pub extern "C" fn rsc_set_summary_uploads(h: *mut RsCore, on: i32) {
+    guard(h, (), |c| c.planner.summary_uploads = on != 0);
+}
+
 /// Select the next session's digest policy (0 inline, 1 deferred, 2 never).
 /// Returns 1 on success, 0 for an invalid policy, leaving the selection unchanged.
 #[no_mangle]

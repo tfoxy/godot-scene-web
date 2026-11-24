@@ -81,6 +81,18 @@ fn replay_data_policy(
     sabotage: &str,
     policy: i32,
 ) -> Vec<(Vec<u32>, Vec<u8>)> {
+    replay_data_options(path, data, version, full_scan, sabotage, policy, false).0
+}
+
+fn replay_data_options(
+    path: &std::path::Path,
+    data: &[u8],
+    version: u8,
+    full_scan: bool,
+    sabotage: &str,
+    policy: i32,
+    summary: bool,
+) -> (Vec<(Vec<u32>, Vec<u8>)>, Vec<Vec<u8>>) {
     let name = path.display().to_string();
     let data = data.to_vec();
     // A golden directory's own payloads when it has them (golden-9, golden-10), else golden-6's.
@@ -104,10 +116,12 @@ fn replay_data_policy(
         payloads()
     };
     let mut core = Core::new();
+    core.planner.summary_uploads = summary;
     assert!(core.set_digest_policy(policy));
     core.planner.full_scan = full_scan;
     core.set_sabotage(sabotage);
     let spans = wire::split_records(&data, version).unwrap();
+    let mut stats = Vec::new();
     let mut batches = Vec::new();
     for (i, s) in spans.iter().enumerate() {
         if i == 0 {
@@ -144,6 +158,7 @@ fn replay_data_policy(
         core.apply()
             .unwrap_or_else(|e| panic!("{name}: apply after record {i}: {e}"));
         batches.push((core.ops.words.clone(), core.ops.arena.clone()));
+        stats.push(core.vt.out.clone());
         STAT_TOTALS.with(|t| {
             if let Some(t) = t.borrow_mut().as_mut() {
                 t.0 += stat_int(&core.vt.out, "canvas_group_sets");
@@ -153,7 +168,7 @@ fn replay_data_policy(
     }
     core.dispose();
     batches.push((core.ops.words.clone(), core.ops.arena.clone()));
-    batches
+    (batches, stats)
 }
 
 thread_local! {
@@ -1402,4 +1417,86 @@ fn never_digest_preserves_golden_16_to_19_draw_ops() {
         }
     }
     assert!(recordings > 0);
+}
+
+/// Decode the stats tree independently, including container lengths (the shim reads these).
+fn stats_json(input: &mut &[u8]) -> serde_json::Value {
+    fn take<'a>(input: &mut &'a [u8], n: usize) -> &'a [u8] {
+        let (head, tail) = input.split_at(n);
+        *input = tail;
+        head
+    }
+    fn len(input: &mut &[u8]) -> usize {
+        u32::from_le_bytes(take(input, 4).try_into().unwrap()) as usize
+    }
+    fn string(input: &mut &[u8]) -> String {
+        let n = len(input);
+        std::str::from_utf8(take(input, n)).unwrap().to_owned()
+    }
+    match take(input, 1)[0] {
+        0 => serde_json::Value::Null,
+        1 => serde_json::json!(take(input, 1)[0] != 0),
+        2 => serde_json::json!(i64::from_le_bytes(take(input, 8).try_into().unwrap())),
+        3 => serde_json::json!(f64::from_le_bytes(take(input, 8).try_into().unwrap())),
+        4 => serde_json::json!(string(input)),
+        5 => {
+            let n = len(input);
+            serde_json::Value::Array((0..n).map(|_| stats_json(input)).collect())
+        }
+        6 => {
+            let n = len(input);
+            let mut out = serde_json::Map::new();
+            for _ in 0..n {
+                out.insert(string(input), stats_json(input));
+            }
+            serde_json::Value::Object(out)
+        }
+        tag => panic!("unexpected stats tag {tag}"),
+    }
+}
+
+#[test]
+fn summary_uploads_count_rows_without_changing_draw_ops_or_totals() {
+    let mut paths = vec![
+        (golden().join("inline.rs6"), 6),
+        (golden().join("../golden-11/inline.rs11"), 11),
+    ];
+    for version in 16..=19 {
+        for entry in std::fs::read_dir(golden().join(format!("../golden-{version}"))).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().and_then(|x| x.to_str()) == Some(&format!("rs{version}"))
+                && !path.file_name().unwrap().to_str().unwrap().starts_with("corrupt")
+            {
+                paths.push((path, version));
+            }
+        }
+    }
+    let mut mesh_rows = 0;
+    let mut texture_rows = 0;
+    for (path, version) in paths {
+        let data = std::fs::read(&path).unwrap();
+        let (full_ops, full_stats) = replay_data_options(&path, &data, version, false, "", 0, false);
+        let (summary_ops, summary_stats) = replay_data_options(&path, &data, version, false, "", 0, true);
+        assert_eq!(full_ops, summary_ops, "{}", path.display());
+        assert_eq!(full_stats.len(), summary_stats.len());
+        for (full, summary) in full_stats.iter().zip(&summary_stats) {
+            let mut full_slice = full.as_slice();
+            let mut full = stats_json(&mut full_slice);
+            let mut summary_slice = summary.as_slice();
+            let summary = stats_json(&mut summary_slice);
+            assert!(full_slice.is_empty() && summary_slice.is_empty());
+            let uploads = full["uploads"].as_array().unwrap();
+            let count = uploads.iter().filter(|u| u["op"] != "placeholder").count();
+            let bytes: i64 = uploads.iter().map(|u| u["data_bytes"].as_i64().unwrap()).sum();
+            assert_eq!(full["resources"]["upload_bytes"], bytes);
+            let meshes = full["mesh_uploads"].as_array().unwrap().len();
+            mesh_rows += meshes;
+            texture_rows += uploads.len();
+            full["uploads"] = serde_json::json!(uploads.len());
+            full["mesh_uploads"] = serde_json::json!(meshes);
+            full["upload_count"] = serde_json::json!(count);
+            assert_eq!(full, summary, "{}: only rows become counts", path.display());
+        }
+    }
+    assert!(mesh_rows > 0 && texture_rows > 0);
 }

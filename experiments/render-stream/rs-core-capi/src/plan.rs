@@ -772,6 +772,28 @@ struct MeshUpload {
     bytes: i64,
 }
 
+/// Evidence rows are optional; counting an upload never constructs its arrays in summary mode.
+struct MeshUploadRows {
+    count: usize,
+    rows: Option<Vec<MeshUpload>>,
+}
+
+impl MeshUploadRows {
+    fn new(summary: bool) -> Self {
+        Self {
+            count: 0,
+            rows: (!summary).then(Vec::new),
+        }
+    }
+
+    fn push(&mut self, row: impl FnOnce() -> MeshUpload) {
+        self.count += 1;
+        if let Some(rows) = &mut self.rows {
+            rows.push(row());
+        }
+    }
+}
+
 struct UnsupportedCommand {
     item: Id,
     name: String,
@@ -792,6 +814,8 @@ pub struct Planner {
     pub sab: Sabotage,
     /// Turns every delta shortcut off (rs_applier.gd's O(state) walk), for the equivalence tests.
     pub full_scan: bool,
+    /// Counts replace upload evidence arrays in apply results; drawing is unchanged.
+    pub summary_uploads: bool,
     /// MRA sabotage `mra-skip-changed` (`rs-core-capi-check recordings`): per apply, the lowest-id
     /// resident material an applied transaction upserted is dropped from the material walk.
     pub mra_skip_changed: bool,
@@ -1545,7 +1569,7 @@ impl Planner {
         let ops_before = ops.rs_calls;
         let mut c = Counters::default();
         let mut uploads: Vec<Upload> = Vec::new();
-        let mut mesh_uploads: Vec<MeshUpload> = Vec::new();
+        let mut mesh_uploads = MeshUploadRows::new(self.summary_uploads);
         let mut unsupported: Vec<UnsupportedCommand> = Vec::new();
         let mut skipped_shaders: Vec<SkippedShader> = Vec::new();
         let v5 = self.version >= 5;
@@ -2260,6 +2284,7 @@ impl Planner {
             &uploads,
             &mesh_uploads,
             &skipped_shaders,
+            self.summary_uploads,
         );
         Ok(())
     }
@@ -2315,7 +2340,7 @@ impl Planner {
         payloads: &Payloads,
         ops: &mut OpBuf,
         c: &mut Counters,
-        uploads: &mut Vec<MeshUpload>,
+        uploads: &mut MeshUploadRows,
         touched: &Touched,
         cands: &[Id],
     ) -> Result<(), String> {
@@ -2344,7 +2369,7 @@ impl Planner {
             ops.rid(RidRef::Mesh(m.handle));
             self.freed_by_apply += 1;
             c.meshes_freed += 1;
-            uploads.push(MeshUpload {
+            uploads.push(|| MeshUpload {
                 id,
                 op: "free",
                 surfaces: vec![],
@@ -2429,7 +2454,9 @@ impl Planner {
                     for b in &s.bufs {
                         ops.bytes(b);
                     }
-                    added.push(k as i64);
+                    if uploads.rows.is_some() {
+                        added.push(k as i64);
+                    }
                     built += s.data_bytes();
                 }
                 let m = self.meshes.get_mut(&id).unwrap();
@@ -2439,7 +2466,7 @@ impl Planner {
                 m.serials.clear();
                 m.index_bytes.clear();
                 c.mesh_upload_bytes += built;
-                uploads.push(MeshUpload {
+                uploads.push(|| MeshUpload {
                     id,
                     op: op_name,
                     surfaces: added,
@@ -2453,7 +2480,7 @@ impl Planner {
                     ops.rid(RidRef::Mesh(h));
                     ops.fs(&custom_aabb);
                     if op_name == "rebuild" {
-                        uploads.push(MeshUpload {
+                        uploads.push(|| MeshUpload {
                             id,
                             op: "custom_aabb",
                             surfaces: vec![],
@@ -2492,14 +2519,16 @@ impl Planner {
                     ops.u(k as u32);
                     ops.bytes(new);
                     c.surface_updates += 1;
-                    changed.push(*name);
+                    if uploads.rows.is_some() {
+                        changed.push(*name);
+                    }
                     surface_bytes += new.len() as i64;
                 }
                 let m = self.meshes.get_mut(&id).unwrap();
                 m.hashes[k] = *wh;
                 m.surfaces[k] = decoded[k].clone();
                 c.mesh_upload_bytes += surface_bytes;
-                uploads.push(MeshUpload {
+                uploads.push(|| MeshUpload {
                     id,
                     op: "update",
                     surfaces: vec![k as i64],
@@ -2513,7 +2542,7 @@ impl Planner {
                 ops.op(Op::MeshSetCustomAabb, 1);
                 ops.rid(RidRef::Mesh(h));
                 ops.fs(&custom_aabb);
-                uploads.push(MeshUpload {
+                uploads.push(|| MeshUpload {
                     id,
                     op: "custom_aabb",
                     surfaces: vec![],
@@ -2543,7 +2572,7 @@ impl Planner {
         payloads: &Payloads,
         ops: &mut OpBuf,
         c: &mut Counters,
-        uploads: &mut Vec<MeshUpload>,
+        uploads: &mut MeshUploadRows,
     ) {
         let n = e.surfaces.len();
         let Some(dm) = payloads.dynamic.get(id) else {
@@ -2617,7 +2646,9 @@ impl Planner {
                 for b in &g.buffers {
                     ops.bytes(b);
                 }
-                added.push(k as i64);
+                if uploads.rows.is_some() {
+                    added.push(k as i64);
+                }
                 built += g.data_bytes() as i64;
             }
             let m = self.meshes.get_mut(&id).unwrap();
@@ -2627,7 +2658,7 @@ impl Planner {
             m.serials = dm.serials[..n].to_vec();
             m.index_bytes = geos.iter().map(|g| g.buffers[3].clone()).collect();
             c.mesh_upload_bytes += built;
-            uploads.push(MeshUpload {
+            uploads.push(|| MeshUpload {
                 id,
                 op: op_name,
                 surfaces: added,
@@ -2641,7 +2672,7 @@ impl Planner {
                 ops.rid(RidRef::Mesh(h));
                 ops.fs(&custom_aabb);
                 if op_name == "rebuild" {
-                    uploads.push(MeshUpload {
+                    uploads.push(|| MeshUpload {
                         id,
                         op: "custom_aabb",
                         surfaces: vec![],
@@ -2675,11 +2706,13 @@ impl Planner {
                 ops.u(k as u32);
                 ops.bytes(buf);
                 c.surface_updates += 1;
-                changed.push(*name);
+                if uploads.rows.is_some() {
+                    changed.push(*name);
+                }
                 surface_bytes += buf.len() as i64;
             }
             c.mesh_upload_bytes += surface_bytes;
-            uploads.push(MeshUpload {
+            uploads.push(|| MeshUpload {
                 id,
                 op: "update",
                 surfaces: vec![k as i64],
@@ -2693,7 +2726,7 @@ impl Planner {
             ops.op(Op::MeshSetCustomAabb, 1);
             ops.rid(RidRef::Mesh(h));
             ops.fs(&custom_aabb);
-            uploads.push(MeshUpload {
+            uploads.push(|| MeshUpload {
                 id,
                 op: "custom_aabb",
                 surfaces: vec![],
@@ -4507,8 +4540,9 @@ fn write_stats(
     rs_calls: i64,
     unsupported: &[UnsupportedCommand],
     uploads: &[Upload],
-    mesh_uploads: &[MeshUpload],
+    mesh_uploads: &MeshUploadRows,
     skipped: &[SkippedShader],
+    summary_uploads: bool,
 ) {
     // PM1: `multimesh_commands_undrawn` is a key only when non-zero; PM2: so is
     // `multimesh_resources` (only when one of its counters is).
@@ -4558,7 +4592,8 @@ fn write_stats(
         18 + (c.multimesh_commands_undrawn > 0) as usize
             + mm_any as usize
             + (c.particles_commands_undrawn > 0) as usize
-            + pt_any as usize,
+            + pt_any as usize
+            + summary_uploads as usize,
     );
     v.key("created");
     v.int(c.created);
@@ -4594,20 +4629,26 @@ fn write_stats(
         ],
     );
     v.key("uploads");
-    v.array(uploads.len());
-    for u in uploads {
-        v.dict(if u.encoding.is_some() { 5 } else { 4 });
-        v.key("id");
-        v.int(u.id as i64);
-        v.key("hash");
-        v.opt_str(u.hash.map(|h| h.to_hex()).as_deref());
-        v.key("op");
-        v.str(u.op);
-        v.key("data_bytes");
-        v.int(u.data_bytes);
-        if let Some(e) = u.encoding {
-            v.key("encoding");
-            v.str(e);
+    if summary_uploads {
+        v.int(uploads.len() as i64);
+        v.key("upload_count");
+        v.int(uploads.iter().filter(|u| u.op != "placeholder").count() as i64);
+    } else {
+        v.array(uploads.len());
+        for u in uploads {
+            v.dict(if u.encoding.is_some() { 5 } else { 4 });
+            v.key("id");
+            v.int(u.id as i64);
+            v.key("hash");
+            v.opt_str(u.hash.map(|h| h.to_hex()).as_deref());
+            v.key("op");
+            v.str(u.op);
+            v.key("data_bytes");
+            v.int(u.data_bytes);
+            if let Some(e) = u.encoding {
+                v.key("encoding");
+                v.str(e);
+            }
         }
     }
     v.key("item_calls");
@@ -4653,25 +4694,30 @@ fn write_stats(
     }
     int_dict(v, &mesh_resources);
     v.key("mesh_uploads");
-    v.array(mesh_uploads.len());
-    for u in mesh_uploads {
-        v.dict(5);
-        v.key("id");
-        v.int(u.id as i64);
-        v.key("op");
-        v.str(u.op);
-        v.key("surfaces");
-        v.array(u.surfaces.len());
-        for s in &u.surfaces {
-            v.int(*s);
+    if summary_uploads {
+        v.int(mesh_uploads.count as i64);
+    } else {
+        let mesh_uploads = mesh_uploads.rows.as_deref().unwrap_or(&[]);
+        v.array(mesh_uploads.len());
+        for u in mesh_uploads {
+            v.dict(5);
+            v.key("id");
+            v.int(u.id as i64);
+            v.key("op");
+            v.str(u.op);
+            v.key("surfaces");
+            v.array(u.surfaces.len());
+            for s in &u.surfaces {
+                v.int(*s);
+            }
+            v.key("buffers");
+            v.array(u.buffers.len());
+            for b in &u.buffers {
+                v.str(b);
+            }
+            v.key("bytes");
+            v.int(u.bytes);
         }
-        v.key("buffers");
-        v.array(u.buffers.len());
-        for b in &u.buffers {
-            v.str(b);
-        }
-        v.key("bytes");
-        v.int(u.bytes);
     }
     v.key("material_resources");
     int_dict(
