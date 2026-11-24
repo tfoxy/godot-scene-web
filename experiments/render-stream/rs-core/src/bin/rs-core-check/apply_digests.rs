@@ -81,7 +81,7 @@ fn output_digest_mode(a: &Applier, undo_merge: bool, legacy_groups: bool, loose:
     }
     h.update(b"root");
     add(&mut h, a, undo_merge, legacy_groups, loose);
-    format!("{:x}", h.finalize())
+    render_stream_core::wire::hex(&h.finalize())
 }
 
 #[derive(Clone, Copy, Default)]

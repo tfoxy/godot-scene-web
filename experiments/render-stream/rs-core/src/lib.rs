@@ -8,6 +8,12 @@
 //! crate's cross-check: `rs-core-check goldens` and `scripts/test/self-test-rs-core.ts` hold the two
 //! equal (Q14d).
 
+#[cfg(all(
+    feature = "soft-sha",
+    not(any(sha2_backend = "soft", sha2_256_backend = "soft"))
+))]
+compile_error!("soft-sha requires RUSTFLAGS='--cfg sha2_backend=\"soft\"' with sha2 0.11");
+
 pub mod apply;
 pub mod state;
 

@@ -19,7 +19,7 @@ required-features = ["bench-instr"]
 
 [dependencies]
 gsw-canvas-draw-list = { path = "../../../packages/canvas/rust-draw-list" }
-sha2 = { version = "0.10", default-features = false }
+sha2 = { version = "0.11", default-features = false }
 serde_json = { version = "1", features = ["preserve_order"] }
 # W11t (render-stream-11.md "As built (W11t)"): the live transport's zstd decoder, pure Rust (no C
 # toolchain for wasm32). Exact pin; no default features, so no checksum crate (coding.rs computes
@@ -27,8 +27,10 @@ serde_json = { version = "1", features = ["preserve_order"] }
 ruzstd = { version = "=0.9.1", default-features = false, features = ["std"] }
 
 [features]
-# The portable SHA-256 (what wasm32 gets anyway): a phone-like upper bound for native runs.
-soft-sha = ["sha2/force-soft"]
+# Portable SHA-256 benchmark builds. sha2 0.11 selects its backend via cfg, not a feature:
+# RUSTFLAGS='--cfg sha2_backend="soft"' cargo test --features soft-sha
+# Keep the feature as a checked marker so old invocations cannot silently use hardware SHA.
+soft-sha = []
 
 # R4: the instruction-count bench binary (scripts/bench-instr.sh); no code, only gates the [[bin]].
 bench-instr = []
@@ -39,3 +41,6 @@ lto = true
 codegen-units = 1
 panic = "abort"
 debug = 1
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(sha2_backend, values("soft"))', 'cfg(sha2_256_backend, values("soft"))'] }
