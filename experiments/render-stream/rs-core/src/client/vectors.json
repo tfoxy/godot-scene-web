@@ -1,0 +1,3688 @@
+[
+  {
+    "name": "descriptor-json-float-numbers",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"/rs\",\"resourceBase\":\"\",\"token\":null,\"protocol\":19.0,\"presentation\":[640.0,360.0]},\"origin\":\"http://127.0.0.1:5190\"}",
+    "output": "{\"url\":\"ws://127.0.0.1:5190/rs\",\"resourceBase\":\"http://127.0.0.1:5190\",\"token\":null,\"protocol\":19,\"presentation\":[640,360]}"
+  },
+  {
+    "name": "hello-json-float-numbers",
+    "op": "client_hello",
+    "input": "{\"protocol\":19.0,\"creditWindow\":2.0,\"token\":null,\"backing\":[640,360],\"css\":[640,360],\"dprMilli\":1000,\"gpuFormats\":\"none\"}",
+    "output": "{\"type\":\"hello\",\"protocol\":\"render-stream/19\",\"receiver\":\"gsw-render-stream-client\",\"receiver_kind\":\"gsw-canvas\",\"credit_stage\":\"submitted\",\"credit_window\":2,\"inbound_buffer_bytes\":16777216,\"token\":null,\"manifest_sha256\":null,\"presentation_backing_w\":640,\"presentation_backing_h\":360,\"presentation_css_w\":640,\"presentation_css_h\":360,\"dpr_milli\":1000,\"texture_encodings\":\"decoded\",\"gpu_formats\":\"none\",\"live_coding\":\"zstd-base,zstd\"}"
+  },
+  {
+    "name": "hello-16-none",
+    "op": "client_hello",
+    "input": "{\"protocol\":16,\"creditWindow\":2,\"token\":null,\"backing\":[640,360],\"css\":[640,360],\"dprMilli\":1000,\"gpuFormats\":\"none\"}",
+    "output": "{\"type\":\"hello\",\"protocol\":\"render-stream/16\",\"receiver\":\"gsw-render-stream-client\",\"receiver_kind\":\"gsw-canvas\",\"credit_stage\":\"submitted\",\"credit_window\":2,\"inbound_buffer_bytes\":16777216,\"token\":null,\"manifest_sha256\":null,\"presentation_backing_w\":640,\"presentation_backing_h\":360,\"presentation_css_w\":640,\"presentation_css_h\":360,\"dpr_milli\":1000,\"texture_encodings\":\"decoded\",\"gpu_formats\":\"none\",\"live_coding\":\"zstd-base,zstd\"}"
+  },
+  {
+    "name": "hello-16-s3tc,bptc,rgtc",
+    "op": "client_hello",
+    "input": "{\"protocol\":16,\"creditWindow\":2,\"token\":null,\"backing\":[640,360],\"css\":[640,360],\"dprMilli\":1000,\"gpuFormats\":\"s3tc,bptc,rgtc\"}",
+    "output": "{\"type\":\"hello\",\"protocol\":\"render-stream/16\",\"receiver\":\"gsw-render-stream-client\",\"receiver_kind\":\"gsw-canvas\",\"credit_stage\":\"submitted\",\"credit_window\":2,\"inbound_buffer_bytes\":16777216,\"token\":null,\"manifest_sha256\":null,\"presentation_backing_w\":640,\"presentation_backing_h\":360,\"presentation_css_w\":640,\"presentation_css_h\":360,\"dpr_milli\":1000,\"texture_encodings\":\"block,decoded\",\"gpu_formats\":\"s3tc,bptc,rgtc\",\"live_coding\":\"zstd-base,zstd\"}"
+  },
+  {
+    "name": "hello-16-",
+    "op": "client_hello",
+    "input": "{\"protocol\":16,\"creditWindow\":2,\"token\":null,\"backing\":[640,360],\"css\":[640,360],\"dprMilli\":1000,\"gpuFormats\":\"\"}",
+    "output": "{\"type\":\"hello\",\"protocol\":\"render-stream/16\",\"receiver\":\"gsw-render-stream-client\",\"receiver_kind\":\"gsw-canvas\",\"credit_stage\":\"submitted\",\"credit_window\":2,\"inbound_buffer_bytes\":16777216,\"token\":null,\"manifest_sha256\":null,\"presentation_backing_w\":640,\"presentation_backing_h\":360,\"presentation_css_w\":640,\"presentation_css_h\":360,\"dpr_milli\":1000,\"texture_encodings\":\"decoded\",\"gpu_formats\":\"\",\"live_coding\":\"zstd-base,zstd\"}"
+  },
+  {
+    "name": "hello-meta-16",
+    "op": "client_hello",
+    "input": "{\"protocol\":16,\"creditWindow\":2,\"token\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"backing\":[1920,1080],\"css\":[960,540],\"dprMilli\":2000,\"gpuFormats\":\"none\",\"creditStage\":\"applied\",\"itemMeta\":{\"fields\":[\"instance_id\",\"mouse_filter\"],\"groups\":[\"cards\"],\"meta_keys\":[\"key\"]},\"clientTweens\":false}",
+    "output": "{\"type\":\"hello\",\"protocol\":\"render-stream/16\",\"receiver\":\"gsw-render-stream-client\",\"receiver_kind\":\"gsw-canvas\",\"credit_stage\":\"applied\",\"credit_window\":2,\"inbound_buffer_bytes\":16777216,\"token\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"manifest_sha256\":null,\"presentation_backing_w\":1920,\"presentation_backing_h\":1080,\"presentation_css_w\":960,\"presentation_css_h\":540,\"dpr_milli\":2000,\"texture_encodings\":\"decoded\",\"gpu_formats\":\"none\",\"live_coding\":\"zstd-base,zstd\",\"item_meta\":{\"fields\":[\"instance_id\",\"mouse_filter\"],\"groups\":[\"cards\"],\"meta_keys\":[\"key\"]}}"
+  },
+  {
+    "name": "protocol-16",
+    "op": "subprotocol",
+    "input": "16",
+    "output": "render-stream.16"
+  },
+  {
+    "name": "window-16-0",
+    "op": "client_hello",
+    "input": "{\"protocol\":16,\"creditWindow\":0,\"token\":null,\"backing\":[640,360],\"css\":[640,360],\"dprMilli\":1000,\"gpuFormats\":\"none\"}",
+    "error": "render-stream client: creditWindow must be in 1..2"
+  },
+  {
+    "name": "window-16-3",
+    "op": "client_hello",
+    "input": "{\"protocol\":16,\"creditWindow\":3,\"token\":null,\"backing\":[640,360],\"css\":[640,360],\"dprMilli\":1000,\"gpuFormats\":\"none\"}",
+    "error": "render-stream client: creditWindow must be in 1..2"
+  },
+  {
+    "name": "window-16-8",
+    "op": "client_hello",
+    "input": "{\"protocol\":16,\"creditWindow\":8,\"token\":null,\"backing\":[640,360],\"css\":[640,360],\"dprMilli\":1000,\"gpuFormats\":\"none\"}",
+    "error": "render-stream client: creditWindow must be in 1..2"
+  },
+  {
+    "name": "window-16-9",
+    "op": "client_hello",
+    "input": "{\"protocol\":16,\"creditWindow\":9,\"token\":null,\"backing\":[640,360],\"css\":[640,360],\"dprMilli\":1000,\"gpuFormats\":\"none\"}",
+    "error": "render-stream client: creditWindow must be in 1..2"
+  },
+  {
+    "name": "window-16-1.5",
+    "op": "client_hello",
+    "input": "{\"protocol\":16,\"creditWindow\":1.5,\"token\":null,\"backing\":[640,360],\"css\":[640,360],\"dprMilli\":1000,\"gpuFormats\":\"none\"}",
+    "error": "render-stream client: creditWindow must be in 1..2"
+  },
+  {
+    "name": "hello-17-none",
+    "op": "client_hello",
+    "input": "{\"protocol\":17,\"creditWindow\":2,\"token\":null,\"backing\":[640,360],\"css\":[640,360],\"dprMilli\":1000,\"gpuFormats\":\"none\"}",
+    "output": "{\"type\":\"hello\",\"protocol\":\"render-stream/17\",\"receiver\":\"gsw-render-stream-client\",\"receiver_kind\":\"gsw-canvas\",\"credit_stage\":\"submitted\",\"credit_window\":2,\"inbound_buffer_bytes\":16777216,\"token\":null,\"manifest_sha256\":null,\"presentation_backing_w\":640,\"presentation_backing_h\":360,\"presentation_css_w\":640,\"presentation_css_h\":360,\"dpr_milli\":1000,\"texture_encodings\":\"decoded\",\"gpu_formats\":\"none\",\"live_coding\":\"zstd-base,zstd\"}"
+  },
+  {
+    "name": "hello-17-s3tc,bptc,rgtc",
+    "op": "client_hello",
+    "input": "{\"protocol\":17,\"creditWindow\":2,\"token\":null,\"backing\":[640,360],\"css\":[640,360],\"dprMilli\":1000,\"gpuFormats\":\"s3tc,bptc,rgtc\"}",
+    "output": "{\"type\":\"hello\",\"protocol\":\"render-stream/17\",\"receiver\":\"gsw-render-stream-client\",\"receiver_kind\":\"gsw-canvas\",\"credit_stage\":\"submitted\",\"credit_window\":2,\"inbound_buffer_bytes\":16777216,\"token\":null,\"manifest_sha256\":null,\"presentation_backing_w\":640,\"presentation_backing_h\":360,\"presentation_css_w\":640,\"presentation_css_h\":360,\"dpr_milli\":1000,\"texture_encodings\":\"block,decoded\",\"gpu_formats\":\"s3tc,bptc,rgtc\",\"live_coding\":\"zstd-base,zstd\"}"
+  },
+  {
+    "name": "hello-17-",
+    "op": "client_hello",
+    "input": "{\"protocol\":17,\"creditWindow\":2,\"token\":null,\"backing\":[640,360],\"css\":[640,360],\"dprMilli\":1000,\"gpuFormats\":\"\"}",
+    "output": "{\"type\":\"hello\",\"protocol\":\"render-stream/17\",\"receiver\":\"gsw-render-stream-client\",\"receiver_kind\":\"gsw-canvas\",\"credit_stage\":\"submitted\",\"credit_window\":2,\"inbound_buffer_bytes\":16777216,\"token\":null,\"manifest_sha256\":null,\"presentation_backing_w\":640,\"presentation_backing_h\":360,\"presentation_css_w\":640,\"presentation_css_h\":360,\"dpr_milli\":1000,\"texture_encodings\":\"decoded\",\"gpu_formats\":\"\",\"live_coding\":\"zstd-base,zstd\"}"
+  },
+  {
+    "name": "hello-meta-17",
+    "op": "client_hello",
+    "input": "{\"protocol\":17,\"creditWindow\":2,\"token\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"backing\":[1920,1080],\"css\":[960,540],\"dprMilli\":2000,\"gpuFormats\":\"none\",\"creditStage\":\"applied\",\"itemMeta\":{\"fields\":[\"instance_id\",\"mouse_filter\"],\"groups\":[\"cards\"],\"meta_keys\":[\"key\"]},\"clientTweens\":true}",
+    "output": "{\"type\":\"hello\",\"protocol\":\"render-stream/17\",\"receiver\":\"gsw-render-stream-client\",\"receiver_kind\":\"gsw-canvas\",\"credit_stage\":\"applied\",\"credit_window\":2,\"inbound_buffer_bytes\":16777216,\"token\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"manifest_sha256\":null,\"presentation_backing_w\":1920,\"presentation_backing_h\":1080,\"presentation_css_w\":960,\"presentation_css_h\":540,\"dpr_milli\":2000,\"texture_encodings\":\"decoded\",\"gpu_formats\":\"none\",\"live_coding\":\"zstd-base,zstd\",\"item_meta\":{\"fields\":[\"instance_id\",\"mouse_filter\"],\"groups\":[\"cards\"],\"meta_keys\":[\"key\"]},\"client_tweens\":true}"
+  },
+  {
+    "name": "protocol-17",
+    "op": "subprotocol",
+    "input": "17",
+    "output": "render-stream.17"
+  },
+  {
+    "name": "window-17-0",
+    "op": "client_hello",
+    "input": "{\"protocol\":17,\"creditWindow\":0,\"token\":null,\"backing\":[640,360],\"css\":[640,360],\"dprMilli\":1000,\"gpuFormats\":\"none\"}",
+    "error": "render-stream client: creditWindow must be in 1..2"
+  },
+  {
+    "name": "window-17-3",
+    "op": "client_hello",
+    "input": "{\"protocol\":17,\"creditWindow\":3,\"token\":null,\"backing\":[640,360],\"css\":[640,360],\"dprMilli\":1000,\"gpuFormats\":\"none\"}",
+    "error": "render-stream client: creditWindow must be in 1..2"
+  },
+  {
+    "name": "window-17-8",
+    "op": "client_hello",
+    "input": "{\"protocol\":17,\"creditWindow\":8,\"token\":null,\"backing\":[640,360],\"css\":[640,360],\"dprMilli\":1000,\"gpuFormats\":\"none\"}",
+    "error": "render-stream client: creditWindow must be in 1..2"
+  },
+  {
+    "name": "window-17-9",
+    "op": "client_hello",
+    "input": "{\"protocol\":17,\"creditWindow\":9,\"token\":null,\"backing\":[640,360],\"css\":[640,360],\"dprMilli\":1000,\"gpuFormats\":\"none\"}",
+    "error": "render-stream client: creditWindow must be in 1..2"
+  },
+  {
+    "name": "window-17-1.5",
+    "op": "client_hello",
+    "input": "{\"protocol\":17,\"creditWindow\":1.5,\"token\":null,\"backing\":[640,360],\"css\":[640,360],\"dprMilli\":1000,\"gpuFormats\":\"none\"}",
+    "error": "render-stream client: creditWindow must be in 1..2"
+  },
+  {
+    "name": "hello-18-none",
+    "op": "client_hello",
+    "input": "{\"protocol\":18,\"creditWindow\":2,\"token\":null,\"backing\":[640,360],\"css\":[640,360],\"dprMilli\":1000,\"gpuFormats\":\"none\"}",
+    "output": "{\"type\":\"hello\",\"protocol\":\"render-stream/18\",\"receiver\":\"gsw-render-stream-client\",\"receiver_kind\":\"gsw-canvas\",\"credit_stage\":\"submitted\",\"credit_window\":2,\"inbound_buffer_bytes\":16777216,\"token\":null,\"manifest_sha256\":null,\"presentation_backing_w\":640,\"presentation_backing_h\":360,\"presentation_css_w\":640,\"presentation_css_h\":360,\"dpr_milli\":1000,\"texture_encodings\":\"decoded\",\"gpu_formats\":\"none\",\"live_coding\":\"zstd-base,zstd\"}"
+  },
+  {
+    "name": "hello-18-s3tc,bptc,rgtc",
+    "op": "client_hello",
+    "input": "{\"protocol\":18,\"creditWindow\":2,\"token\":null,\"backing\":[640,360],\"css\":[640,360],\"dprMilli\":1000,\"gpuFormats\":\"s3tc,bptc,rgtc\"}",
+    "output": "{\"type\":\"hello\",\"protocol\":\"render-stream/18\",\"receiver\":\"gsw-render-stream-client\",\"receiver_kind\":\"gsw-canvas\",\"credit_stage\":\"submitted\",\"credit_window\":2,\"inbound_buffer_bytes\":16777216,\"token\":null,\"manifest_sha256\":null,\"presentation_backing_w\":640,\"presentation_backing_h\":360,\"presentation_css_w\":640,\"presentation_css_h\":360,\"dpr_milli\":1000,\"texture_encodings\":\"block,decoded\",\"gpu_formats\":\"s3tc,bptc,rgtc\",\"live_coding\":\"zstd-base,zstd\"}"
+  },
+  {
+    "name": "hello-18-",
+    "op": "client_hello",
+    "input": "{\"protocol\":18,\"creditWindow\":2,\"token\":null,\"backing\":[640,360],\"css\":[640,360],\"dprMilli\":1000,\"gpuFormats\":\"\"}",
+    "output": "{\"type\":\"hello\",\"protocol\":\"render-stream/18\",\"receiver\":\"gsw-render-stream-client\",\"receiver_kind\":\"gsw-canvas\",\"credit_stage\":\"submitted\",\"credit_window\":2,\"inbound_buffer_bytes\":16777216,\"token\":null,\"manifest_sha256\":null,\"presentation_backing_w\":640,\"presentation_backing_h\":360,\"presentation_css_w\":640,\"presentation_css_h\":360,\"dpr_milli\":1000,\"texture_encodings\":\"decoded\",\"gpu_formats\":\"\",\"live_coding\":\"zstd-base,zstd\"}"
+  },
+  {
+    "name": "hello-meta-18",
+    "op": "client_hello",
+    "input": "{\"protocol\":18,\"creditWindow\":2,\"token\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"backing\":[1920,1080],\"css\":[960,540],\"dprMilli\":2000,\"gpuFormats\":\"none\",\"creditStage\":\"applied\",\"itemMeta\":{\"fields\":[\"instance_id\",\"mouse_filter\"],\"groups\":[\"cards\"],\"meta_keys\":[\"key\"]},\"clientTweens\":true}",
+    "output": "{\"type\":\"hello\",\"protocol\":\"render-stream/18\",\"receiver\":\"gsw-render-stream-client\",\"receiver_kind\":\"gsw-canvas\",\"credit_stage\":\"applied\",\"credit_window\":2,\"inbound_buffer_bytes\":16777216,\"token\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"manifest_sha256\":null,\"presentation_backing_w\":1920,\"presentation_backing_h\":1080,\"presentation_css_w\":960,\"presentation_css_h\":540,\"dpr_milli\":2000,\"texture_encodings\":\"decoded\",\"gpu_formats\":\"none\",\"live_coding\":\"zstd-base,zstd\",\"item_meta\":{\"fields\":[\"instance_id\",\"mouse_filter\"],\"groups\":[\"cards\"],\"meta_keys\":[\"key\"]},\"client_tweens\":true}"
+  },
+  {
+    "name": "protocol-18",
+    "op": "subprotocol",
+    "input": "18",
+    "output": "render-stream.18"
+  },
+  {
+    "name": "window-18-0",
+    "op": "client_hello",
+    "input": "{\"protocol\":18,\"creditWindow\":0,\"token\":null,\"backing\":[640,360],\"css\":[640,360],\"dprMilli\":1000,\"gpuFormats\":\"none\"}",
+    "error": "render-stream client: creditWindow must be in 1..8"
+  },
+  {
+    "name": "window-18-3",
+    "op": "client_hello",
+    "input": "{\"protocol\":18,\"creditWindow\":3,\"token\":null,\"backing\":[640,360],\"css\":[640,360],\"dprMilli\":1000,\"gpuFormats\":\"none\"}",
+    "output": "{\"type\":\"hello\",\"protocol\":\"render-stream/18\",\"receiver\":\"gsw-render-stream-client\",\"receiver_kind\":\"gsw-canvas\",\"credit_stage\":\"submitted\",\"credit_window\":3,\"inbound_buffer_bytes\":16777216,\"token\":null,\"manifest_sha256\":null,\"presentation_backing_w\":640,\"presentation_backing_h\":360,\"presentation_css_w\":640,\"presentation_css_h\":360,\"dpr_milli\":1000,\"texture_encodings\":\"decoded\",\"gpu_formats\":\"none\",\"live_coding\":\"zstd-base,zstd\"}"
+  },
+  {
+    "name": "window-18-8",
+    "op": "client_hello",
+    "input": "{\"protocol\":18,\"creditWindow\":8,\"token\":null,\"backing\":[640,360],\"css\":[640,360],\"dprMilli\":1000,\"gpuFormats\":\"none\"}",
+    "output": "{\"type\":\"hello\",\"protocol\":\"render-stream/18\",\"receiver\":\"gsw-render-stream-client\",\"receiver_kind\":\"gsw-canvas\",\"credit_stage\":\"submitted\",\"credit_window\":8,\"inbound_buffer_bytes\":16777216,\"token\":null,\"manifest_sha256\":null,\"presentation_backing_w\":640,\"presentation_backing_h\":360,\"presentation_css_w\":640,\"presentation_css_h\":360,\"dpr_milli\":1000,\"texture_encodings\":\"decoded\",\"gpu_formats\":\"none\",\"live_coding\":\"zstd-base,zstd\"}"
+  },
+  {
+    "name": "window-18-9",
+    "op": "client_hello",
+    "input": "{\"protocol\":18,\"creditWindow\":9,\"token\":null,\"backing\":[640,360],\"css\":[640,360],\"dprMilli\":1000,\"gpuFormats\":\"none\"}",
+    "error": "render-stream client: creditWindow must be in 1..8"
+  },
+  {
+    "name": "window-18-1.5",
+    "op": "client_hello",
+    "input": "{\"protocol\":18,\"creditWindow\":1.5,\"token\":null,\"backing\":[640,360],\"css\":[640,360],\"dprMilli\":1000,\"gpuFormats\":\"none\"}",
+    "error": "render-stream client: creditWindow must be in 1..8"
+  },
+  {
+    "name": "hello-19-none",
+    "op": "client_hello",
+    "input": "{\"protocol\":19,\"creditWindow\":2,\"token\":null,\"backing\":[640,360],\"css\":[640,360],\"dprMilli\":1000,\"gpuFormats\":\"none\"}",
+    "output": "{\"type\":\"hello\",\"protocol\":\"render-stream/19\",\"receiver\":\"gsw-render-stream-client\",\"receiver_kind\":\"gsw-canvas\",\"credit_stage\":\"submitted\",\"credit_window\":2,\"inbound_buffer_bytes\":16777216,\"token\":null,\"manifest_sha256\":null,\"presentation_backing_w\":640,\"presentation_backing_h\":360,\"presentation_css_w\":640,\"presentation_css_h\":360,\"dpr_milli\":1000,\"texture_encodings\":\"decoded\",\"gpu_formats\":\"none\",\"live_coding\":\"zstd-base,zstd\"}"
+  },
+  {
+    "name": "hello-19-s3tc,bptc,rgtc",
+    "op": "client_hello",
+    "input": "{\"protocol\":19,\"creditWindow\":2,\"token\":null,\"backing\":[640,360],\"css\":[640,360],\"dprMilli\":1000,\"gpuFormats\":\"s3tc,bptc,rgtc\"}",
+    "output": "{\"type\":\"hello\",\"protocol\":\"render-stream/19\",\"receiver\":\"gsw-render-stream-client\",\"receiver_kind\":\"gsw-canvas\",\"credit_stage\":\"submitted\",\"credit_window\":2,\"inbound_buffer_bytes\":16777216,\"token\":null,\"manifest_sha256\":null,\"presentation_backing_w\":640,\"presentation_backing_h\":360,\"presentation_css_w\":640,\"presentation_css_h\":360,\"dpr_milli\":1000,\"texture_encodings\":\"block,decoded\",\"gpu_formats\":\"s3tc,bptc,rgtc\",\"live_coding\":\"zstd-base,zstd\"}"
+  },
+  {
+    "name": "hello-19-",
+    "op": "client_hello",
+    "input": "{\"protocol\":19,\"creditWindow\":2,\"token\":null,\"backing\":[640,360],\"css\":[640,360],\"dprMilli\":1000,\"gpuFormats\":\"\"}",
+    "output": "{\"type\":\"hello\",\"protocol\":\"render-stream/19\",\"receiver\":\"gsw-render-stream-client\",\"receiver_kind\":\"gsw-canvas\",\"credit_stage\":\"submitted\",\"credit_window\":2,\"inbound_buffer_bytes\":16777216,\"token\":null,\"manifest_sha256\":null,\"presentation_backing_w\":640,\"presentation_backing_h\":360,\"presentation_css_w\":640,\"presentation_css_h\":360,\"dpr_milli\":1000,\"texture_encodings\":\"decoded\",\"gpu_formats\":\"\",\"live_coding\":\"zstd-base,zstd\"}"
+  },
+  {
+    "name": "hello-meta-19",
+    "op": "client_hello",
+    "input": "{\"protocol\":19,\"creditWindow\":2,\"token\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"backing\":[1920,1080],\"css\":[960,540],\"dprMilli\":2000,\"gpuFormats\":\"none\",\"creditStage\":\"applied\",\"itemMeta\":{\"fields\":[\"instance_id\",\"mouse_filter\"],\"groups\":[\"cards\"],\"meta_keys\":[\"key\"]},\"clientTweens\":true}",
+    "output": "{\"type\":\"hello\",\"protocol\":\"render-stream/19\",\"receiver\":\"gsw-render-stream-client\",\"receiver_kind\":\"gsw-canvas\",\"credit_stage\":\"applied\",\"credit_window\":2,\"inbound_buffer_bytes\":16777216,\"token\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"manifest_sha256\":null,\"presentation_backing_w\":1920,\"presentation_backing_h\":1080,\"presentation_css_w\":960,\"presentation_css_h\":540,\"dpr_milli\":2000,\"texture_encodings\":\"decoded\",\"gpu_formats\":\"none\",\"live_coding\":\"zstd-base,zstd\",\"item_meta\":{\"fields\":[\"instance_id\",\"mouse_filter\"],\"groups\":[\"cards\"],\"meta_keys\":[\"key\"]},\"client_tweens\":true}"
+  },
+  {
+    "name": "protocol-19",
+    "op": "subprotocol",
+    "input": "19",
+    "output": "render-stream.19"
+  },
+  {
+    "name": "window-19-0",
+    "op": "client_hello",
+    "input": "{\"protocol\":19,\"creditWindow\":0,\"token\":null,\"backing\":[640,360],\"css\":[640,360],\"dprMilli\":1000,\"gpuFormats\":\"none\"}",
+    "error": "render-stream client: creditWindow must be in 1..8"
+  },
+  {
+    "name": "window-19-3",
+    "op": "client_hello",
+    "input": "{\"protocol\":19,\"creditWindow\":3,\"token\":null,\"backing\":[640,360],\"css\":[640,360],\"dprMilli\":1000,\"gpuFormats\":\"none\"}",
+    "output": "{\"type\":\"hello\",\"protocol\":\"render-stream/19\",\"receiver\":\"gsw-render-stream-client\",\"receiver_kind\":\"gsw-canvas\",\"credit_stage\":\"submitted\",\"credit_window\":3,\"inbound_buffer_bytes\":16777216,\"token\":null,\"manifest_sha256\":null,\"presentation_backing_w\":640,\"presentation_backing_h\":360,\"presentation_css_w\":640,\"presentation_css_h\":360,\"dpr_milli\":1000,\"texture_encodings\":\"decoded\",\"gpu_formats\":\"none\",\"live_coding\":\"zstd-base,zstd\"}"
+  },
+  {
+    "name": "window-19-8",
+    "op": "client_hello",
+    "input": "{\"protocol\":19,\"creditWindow\":8,\"token\":null,\"backing\":[640,360],\"css\":[640,360],\"dprMilli\":1000,\"gpuFormats\":\"none\"}",
+    "output": "{\"type\":\"hello\",\"protocol\":\"render-stream/19\",\"receiver\":\"gsw-render-stream-client\",\"receiver_kind\":\"gsw-canvas\",\"credit_stage\":\"submitted\",\"credit_window\":8,\"inbound_buffer_bytes\":16777216,\"token\":null,\"manifest_sha256\":null,\"presentation_backing_w\":640,\"presentation_backing_h\":360,\"presentation_css_w\":640,\"presentation_css_h\":360,\"dpr_milli\":1000,\"texture_encodings\":\"decoded\",\"gpu_formats\":\"none\",\"live_coding\":\"zstd-base,zstd\"}"
+  },
+  {
+    "name": "window-19-9",
+    "op": "client_hello",
+    "input": "{\"protocol\":19,\"creditWindow\":9,\"token\":null,\"backing\":[640,360],\"css\":[640,360],\"dprMilli\":1000,\"gpuFormats\":\"none\"}",
+    "error": "render-stream client: creditWindow must be in 1..8"
+  },
+  {
+    "name": "window-19-1.5",
+    "op": "client_hello",
+    "input": "{\"protocol\":19,\"creditWindow\":1.5,\"token\":null,\"backing\":[640,360],\"css\":[640,360],\"dprMilli\":1000,\"gpuFormats\":\"none\"}",
+    "error": "render-stream client: creditWindow must be in 1..8"
+  },
+  {
+    "name": "tweens-before17",
+    "op": "client_hello",
+    "input": "{\"protocol\":16,\"creditWindow\":2,\"token\":null,\"backing\":[640,360],\"css\":[640,360],\"dprMilli\":1000,\"gpuFormats\":\"none\",\"clientTweens\":true}",
+    "error": "render-stream client: clientTweens needs protocol 17 or later"
+  },
+  {
+    "name": "descriptor-absolute",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"ws://127.0.0.1:13831/render-stream\",\"resourceBase\":\"http://127.0.0.1:13831\",\"token\":null,\"protocol\":19},\"origin\":\"https://h/\"}",
+    "output": "{\"url\":\"ws://127.0.0.1:13831/render-stream\",\"resourceBase\":\"http://127.0.0.1:13831\",\"token\":null,\"protocol\":19}"
+  },
+  {
+    "name": "descriptor-relative",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"/render-stream\",\"resourceBase\":\"\",\"token\":null,\"protocol\":19},\"origin\":\"http://127.0.0.1:5190\"}",
+    "output": "{\"url\":\"ws://127.0.0.1:5190/render-stream\",\"resourceBase\":\"http://127.0.0.1:5190\",\"token\":null,\"protocol\":19}"
+  },
+  {
+    "name": "descriptor-secure",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"/rs\",\"resourceBase\":\"/assets\",\"token\":null,\"protocol\":19,\"presentation\":[1920,1080]},\"origin\":\"https://h.example\"}",
+    "output": "{\"url\":\"wss://h.example/rs\",\"resourceBase\":\"https://h.example/assets\",\"token\":null,\"protocol\":19,\"presentation\":[1920,1080]}"
+  },
+  {
+    "name": "descriptor-relative-path",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"../rs\",\"resourceBase\":\"../resources\",\"token\":null,\"protocol\":19},\"origin\":\"https://h\"}",
+    "error": "render-stream endpoint: url: dot-segment",
+    "category": "strict"
+  },
+  {
+    "name": "descriptor-ipv6",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"ws://[::1]:80/rs\",\"resourceBase\":\"http://[::1]:80\",\"token\":null,\"protocol\":19},\"origin\":\"https://h/\"}",
+    "output": "{\"url\":\"ws://[::1]/rs\",\"resourceBase\":\"http://[::1]\",\"token\":null,\"protocol\":19}"
+  },
+  {
+    "name": "descriptor-wt",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"ws://127.0.0.1:13831/render-stream\",\"resourceBase\":\"http://127.0.0.1:13831\",\"token\":null,\"protocol\":19,\"webTransport\":{\"url\":\"https://h/rs\",\"certificateHashes\":[\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"]}},\"origin\":\"https://h/\"}",
+    "output": "{\"url\":\"ws://127.0.0.1:13831/render-stream\",\"resourceBase\":\"http://127.0.0.1:13831\",\"token\":null,\"protocol\":19,\"webTransport\":{\"url\":\"https://h/rs\",\"certificateHashes\":[\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"]}}"
+  },
+  {
+    "name": "invalid-null",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":null,\"origin\":\"https://h/\"}",
+    "error": "render-stream endpoint: not an object"
+  },
+  {
+    "name": "invalid-array",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":[],\"origin\":\"https://h/\"}",
+    "error": "render-stream endpoint: not an object"
+  },
+  {
+    "name": "invalid-unknown",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"ws://127.0.0.1:13831/render-stream\",\"resourceBase\":\"http://127.0.0.1:13831\",\"token\":null,\"protocol\":19,\"extra\":1},\"origin\":\"https://h/\"}",
+    "error": "render-stream endpoint: unknown key \"extra\""
+  },
+  {
+    "name": "invalid-empty",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\" \",\"resourceBase\":\"http://127.0.0.1:13831\",\"token\":null,\"protocol\":19},\"origin\":\"https://h/\"}",
+    "error": "render-stream endpoint: url must be a non-empty string"
+  },
+  {
+    "name": "invalid-scheme",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"ftp://x/render-stream\",\"resourceBase\":\"http://127.0.0.1:13831\",\"token\":null,\"protocol\":19},\"origin\":\"https://h/\"}",
+    "error": "render-stream endpoint: url: unsupported-scheme",
+    "category": "strict"
+  },
+  {
+    "name": "invalid-trailing",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"ws://127.0.0.1:13831/render-stream\",\"resourceBase\":\"http://h/\",\"token\":null,\"protocol\":19},\"origin\":\"https://h/\"}",
+    "error": "render-stream endpoint: resourceBase must not end with a slash"
+  },
+  {
+    "name": "invalid-token",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"ws://127.0.0.1:13831/render-stream\",\"resourceBase\":\"http://127.0.0.1:13831\",\"token\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"protocol\":19},\"origin\":\"https://h/\"}",
+    "error": "render-stream endpoint: token must be 64 lowercase hex or null"
+  },
+  {
+    "name": "invalid-short-token",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"ws://127.0.0.1:13831/render-stream\",\"resourceBase\":\"http://127.0.0.1:13831\",\"token\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"protocol\":19},\"origin\":\"https://h/\"}",
+    "error": "render-stream endpoint: token must be 64 lowercase hex or null"
+  },
+  {
+    "name": "invalid-protocol10",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"ws://127.0.0.1:13831/render-stream\",\"resourceBase\":\"http://127.0.0.1:13831\",\"token\":null,\"protocol\":10},\"origin\":\"https://h/\"}",
+    "error": "render-stream endpoint: protocol must be 11, 12, 13, 14, 15, 16, 17, 18 or 19 (got 10)"
+  },
+  {
+    "name": "invalid-protocol20",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"ws://127.0.0.1:13831/render-stream\",\"resourceBase\":\"http://127.0.0.1:13831\",\"token\":null,\"protocol\":20},\"origin\":\"https://h/\"}",
+    "error": "render-stream endpoint: protocol must be 11, 12, 13, 14, 15, 16, 17, 18 or 19 (got 20)"
+  },
+  {
+    "name": "invalid-protocol-string",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"ws://127.0.0.1:13831/render-stream\",\"resourceBase\":\"http://127.0.0.1:13831\",\"token\":null,\"protocol\":\"12\"},\"origin\":\"https://h/\"}",
+    "error": "render-stream endpoint: protocol must be 11, 12, 13, 14, 15, 16, 17, 18 or 19 (got \"12\")"
+  },
+  {
+    "name": "invalid-presentation0",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"ws://127.0.0.1:13831/render-stream\",\"resourceBase\":\"http://127.0.0.1:13831\",\"token\":null,\"protocol\":19,\"presentation\":[0,1]},\"origin\":\"https://h/\"}",
+    "error": "render-stream endpoint: presentation must be [width, height], integers in 1..16384"
+  },
+  {
+    "name": "invalid-presentation-shape",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"ws://127.0.0.1:13831/render-stream\",\"resourceBase\":\"http://127.0.0.1:13831\",\"token\":null,\"protocol\":19,\"presentation\":[1]},\"origin\":\"https://h/\"}",
+    "error": "render-stream endpoint: presentation must be [width, height], integers in 1..16384"
+  },
+  {
+    "name": "invalid-wt-null",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"ws://127.0.0.1:13831/render-stream\",\"resourceBase\":\"http://127.0.0.1:13831\",\"token\":null,\"protocol\":19,\"webTransport\":null},\"origin\":\"https://h/\"}",
+    "error": "render-stream endpoint: webTransport must be an object"
+  },
+  {
+    "name": "invalid-wt-url",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"ws://127.0.0.1:13831/render-stream\",\"resourceBase\":\"http://127.0.0.1:13831\",\"token\":null,\"protocol\":19,\"webTransport\":{\"url\":\"/rs\"}},\"origin\":\"https://h/\"}",
+    "error": "render-stream endpoint: webTransport.url must be an absolute https URL with a host"
+  },
+  {
+    "name": "invalid-wt-hashes",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"ws://127.0.0.1:13831/render-stream\",\"resourceBase\":\"http://127.0.0.1:13831\",\"token\":null,\"protocol\":19,\"webTransport\":{\"url\":\"https://h/rs\",\"certificateHashes\":[]}},\"origin\":\"https://h/\"}",
+    "error": "render-stream endpoint: webTransport.certificateHashes must be 1..4 SHA-256 digests, 64 lowercase hex each"
+  },
+  {
+    "name": "ack-63",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":0,\"stage\":\"received\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":0,\"stage\":\"received\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-64",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":0,\"stage\":\"received\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":0,\"stage\":\"received\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-65",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":0,\"stage\":\"received\",\"t_us\":16667}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":0,\"stage\":\"received\",\"t_us\":16667}"
+  },
+  {
+    "name": "ack-66",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":0,\"stage\":\"received\",\"t_us\":-3200}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":0,\"stage\":\"received\",\"t_us\":-3200}"
+  },
+  {
+    "name": "ack-67",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":0,\"stage\":\"received\",\"t_us\":1e+21}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":0,\"stage\":\"received\",\"t_us\":1e+21}"
+  },
+  {
+    "name": "ack-68",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":0,\"stage\":\"received\",\"t_us\":null}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":0,\"stage\":\"received\",\"t_us\":null}"
+  },
+  {
+    "name": "ack-69",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":0,\"stage\":\"applied\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":0,\"stage\":\"applied\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-70",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":0,\"stage\":\"applied\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":0,\"stage\":\"applied\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-71",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":0,\"stage\":\"applied\",\"t_us\":16667}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":0,\"stage\":\"applied\",\"t_us\":16667}"
+  },
+  {
+    "name": "ack-72",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":0,\"stage\":\"applied\",\"t_us\":-3200}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":0,\"stage\":\"applied\",\"t_us\":-3200}"
+  },
+  {
+    "name": "ack-73",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":0,\"stage\":\"applied\",\"t_us\":1e+21}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":0,\"stage\":\"applied\",\"t_us\":1e+21}"
+  },
+  {
+    "name": "ack-74",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":0,\"stage\":\"applied\",\"t_us\":null}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":0,\"stage\":\"applied\",\"t_us\":null}"
+  },
+  {
+    "name": "ack-75",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":0,\"stage\":\"submitted\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":0,\"stage\":\"submitted\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-76",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":0,\"stage\":\"submitted\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":0,\"stage\":\"submitted\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-77",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":0,\"stage\":\"submitted\",\"t_us\":16667}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":0,\"stage\":\"submitted\",\"t_us\":16667}"
+  },
+  {
+    "name": "ack-78",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":0,\"stage\":\"submitted\",\"t_us\":-3200}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":0,\"stage\":\"submitted\",\"t_us\":-3200}"
+  },
+  {
+    "name": "ack-79",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":0,\"stage\":\"submitted\",\"t_us\":1e+21}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":0,\"stage\":\"submitted\",\"t_us\":1e+21}"
+  },
+  {
+    "name": "ack-80",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":0,\"stage\":\"submitted\",\"t_us\":null}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":0,\"stage\":\"submitted\",\"t_us\":null}"
+  },
+  {
+    "name": "ack-81",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":1,\"stage\":\"received\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":1,\"stage\":\"received\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-82",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":1,\"stage\":\"received\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":1,\"stage\":\"received\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-83",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":1,\"stage\":\"received\",\"t_us\":16667}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":1,\"stage\":\"received\",\"t_us\":16667}"
+  },
+  {
+    "name": "ack-84",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":1,\"stage\":\"received\",\"t_us\":-3200}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":1,\"stage\":\"received\",\"t_us\":-3200}"
+  },
+  {
+    "name": "ack-85",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":1,\"stage\":\"received\",\"t_us\":1e+21}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":1,\"stage\":\"received\",\"t_us\":1e+21}"
+  },
+  {
+    "name": "ack-86",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":1,\"stage\":\"received\",\"t_us\":null}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":1,\"stage\":\"received\",\"t_us\":null}"
+  },
+  {
+    "name": "ack-87",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":1,\"stage\":\"applied\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":1,\"stage\":\"applied\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-88",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":1,\"stage\":\"applied\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":1,\"stage\":\"applied\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-89",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":1,\"stage\":\"applied\",\"t_us\":16667}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":1,\"stage\":\"applied\",\"t_us\":16667}"
+  },
+  {
+    "name": "ack-90",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":1,\"stage\":\"applied\",\"t_us\":-3200}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":1,\"stage\":\"applied\",\"t_us\":-3200}"
+  },
+  {
+    "name": "ack-91",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":1,\"stage\":\"applied\",\"t_us\":1e+21}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":1,\"stage\":\"applied\",\"t_us\":1e+21}"
+  },
+  {
+    "name": "ack-92",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":1,\"stage\":\"applied\",\"t_us\":null}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":1,\"stage\":\"applied\",\"t_us\":null}"
+  },
+  {
+    "name": "ack-93",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":1,\"stage\":\"submitted\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":1,\"stage\":\"submitted\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-94",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":1,\"stage\":\"submitted\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":1,\"stage\":\"submitted\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-95",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":1,\"stage\":\"submitted\",\"t_us\":16667}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":1,\"stage\":\"submitted\",\"t_us\":16667}"
+  },
+  {
+    "name": "ack-96",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":1,\"stage\":\"submitted\",\"t_us\":-3200}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":1,\"stage\":\"submitted\",\"t_us\":-3200}"
+  },
+  {
+    "name": "ack-97",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":1,\"stage\":\"submitted\",\"t_us\":1e+21}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":1,\"stage\":\"submitted\",\"t_us\":1e+21}"
+  },
+  {
+    "name": "ack-98",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":1,\"stage\":\"submitted\",\"t_us\":null}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":1,\"stage\":\"submitted\",\"t_us\":null}"
+  },
+  {
+    "name": "ack-99",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":4294967301,\"stage\":\"received\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":4294967301,\"stage\":\"received\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-100",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":4294967301,\"stage\":\"received\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":4294967301,\"stage\":\"received\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-101",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":4294967301,\"stage\":\"received\",\"t_us\":16667}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":4294967301,\"stage\":\"received\",\"t_us\":16667}"
+  },
+  {
+    "name": "ack-102",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":4294967301,\"stage\":\"received\",\"t_us\":-3200}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":4294967301,\"stage\":\"received\",\"t_us\":-3200}"
+  },
+  {
+    "name": "ack-103",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":4294967301,\"stage\":\"received\",\"t_us\":1e+21}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":4294967301,\"stage\":\"received\",\"t_us\":1e+21}"
+  },
+  {
+    "name": "ack-104",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":4294967301,\"stage\":\"received\",\"t_us\":null}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":4294967301,\"stage\":\"received\",\"t_us\":null}"
+  },
+  {
+    "name": "ack-105",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":4294967301,\"stage\":\"applied\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":4294967301,\"stage\":\"applied\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-106",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":4294967301,\"stage\":\"applied\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":4294967301,\"stage\":\"applied\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-107",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":4294967301,\"stage\":\"applied\",\"t_us\":16667}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":4294967301,\"stage\":\"applied\",\"t_us\":16667}"
+  },
+  {
+    "name": "ack-108",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":4294967301,\"stage\":\"applied\",\"t_us\":-3200}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":4294967301,\"stage\":\"applied\",\"t_us\":-3200}"
+  },
+  {
+    "name": "ack-109",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":4294967301,\"stage\":\"applied\",\"t_us\":1e+21}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":4294967301,\"stage\":\"applied\",\"t_us\":1e+21}"
+  },
+  {
+    "name": "ack-110",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":4294967301,\"stage\":\"applied\",\"t_us\":null}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":4294967301,\"stage\":\"applied\",\"t_us\":null}"
+  },
+  {
+    "name": "ack-111",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":4294967301,\"stage\":\"submitted\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":4294967301,\"stage\":\"submitted\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-112",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":4294967301,\"stage\":\"submitted\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":4294967301,\"stage\":\"submitted\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-113",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":4294967301,\"stage\":\"submitted\",\"t_us\":16667}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":4294967301,\"stage\":\"submitted\",\"t_us\":16667}"
+  },
+  {
+    "name": "ack-114",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":4294967301,\"stage\":\"submitted\",\"t_us\":-3200}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":4294967301,\"stage\":\"submitted\",\"t_us\":-3200}"
+  },
+  {
+    "name": "ack-115",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":4294967301,\"stage\":\"submitted\",\"t_us\":1e+21}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":4294967301,\"stage\":\"submitted\",\"t_us\":1e+21}"
+  },
+  {
+    "name": "ack-116",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":4294967301,\"stage\":\"submitted\",\"t_us\":null}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":4294967301,\"stage\":\"submitted\",\"t_us\":null}"
+  },
+  {
+    "name": "ack-117",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":9007199254740991,\"stage\":\"received\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":9007199254740991,\"stage\":\"received\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-118",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":9007199254740991,\"stage\":\"received\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":9007199254740991,\"stage\":\"received\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-119",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":9007199254740991,\"stage\":\"received\",\"t_us\":16667}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":9007199254740991,\"stage\":\"received\",\"t_us\":16667}"
+  },
+  {
+    "name": "ack-120",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":9007199254740991,\"stage\":\"received\",\"t_us\":-3200}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":9007199254740991,\"stage\":\"received\",\"t_us\":-3200}"
+  },
+  {
+    "name": "ack-121",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":9007199254740991,\"stage\":\"received\",\"t_us\":1e+21}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":9007199254740991,\"stage\":\"received\",\"t_us\":1e+21}"
+  },
+  {
+    "name": "ack-122",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":9007199254740991,\"stage\":\"received\",\"t_us\":null}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":9007199254740991,\"stage\":\"received\",\"t_us\":null}"
+  },
+  {
+    "name": "ack-123",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":9007199254740991,\"stage\":\"applied\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":9007199254740991,\"stage\":\"applied\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-124",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":9007199254740991,\"stage\":\"applied\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":9007199254740991,\"stage\":\"applied\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-125",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":9007199254740991,\"stage\":\"applied\",\"t_us\":16667}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":9007199254740991,\"stage\":\"applied\",\"t_us\":16667}"
+  },
+  {
+    "name": "ack-126",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":9007199254740991,\"stage\":\"applied\",\"t_us\":-3200}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":9007199254740991,\"stage\":\"applied\",\"t_us\":-3200}"
+  },
+  {
+    "name": "ack-127",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":9007199254740991,\"stage\":\"applied\",\"t_us\":1e+21}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":9007199254740991,\"stage\":\"applied\",\"t_us\":1e+21}"
+  },
+  {
+    "name": "ack-128",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":9007199254740991,\"stage\":\"applied\",\"t_us\":null}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":9007199254740991,\"stage\":\"applied\",\"t_us\":null}"
+  },
+  {
+    "name": "ack-129",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":9007199254740991,\"stage\":\"submitted\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":9007199254740991,\"stage\":\"submitted\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-130",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":9007199254740991,\"stage\":\"submitted\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":9007199254740991,\"stage\":\"submitted\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-131",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":9007199254740991,\"stage\":\"submitted\",\"t_us\":16667}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":9007199254740991,\"stage\":\"submitted\",\"t_us\":16667}"
+  },
+  {
+    "name": "ack-132",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":9007199254740991,\"stage\":\"submitted\",\"t_us\":-3200}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":9007199254740991,\"stage\":\"submitted\",\"t_us\":-3200}"
+  },
+  {
+    "name": "ack-133",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":9007199254740991,\"stage\":\"submitted\",\"t_us\":1e+21}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":9007199254740991,\"stage\":\"submitted\",\"t_us\":1e+21}"
+  },
+  {
+    "name": "ack-134",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":9007199254740991,\"stage\":\"submitted\",\"t_us\":null}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":9007199254740991,\"stage\":\"submitted\",\"t_us\":null}"
+  },
+  {
+    "name": "ack-135",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":1e+21,\"stage\":\"received\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":1e+21,\"stage\":\"received\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-136",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":1e+21,\"stage\":\"received\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":1e+21,\"stage\":\"received\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-137",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":1e+21,\"stage\":\"received\",\"t_us\":16667}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":1e+21,\"stage\":\"received\",\"t_us\":16667}"
+  },
+  {
+    "name": "ack-138",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":1e+21,\"stage\":\"received\",\"t_us\":-3200}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":1e+21,\"stage\":\"received\",\"t_us\":-3200}"
+  },
+  {
+    "name": "ack-139",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":1e+21,\"stage\":\"received\",\"t_us\":1e+21}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":1e+21,\"stage\":\"received\",\"t_us\":1e+21}"
+  },
+  {
+    "name": "ack-140",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":1e+21,\"stage\":\"received\",\"t_us\":null}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":1e+21,\"stage\":\"received\",\"t_us\":null}"
+  },
+  {
+    "name": "ack-141",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":1e+21,\"stage\":\"applied\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":1e+21,\"stage\":\"applied\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-142",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":1e+21,\"stage\":\"applied\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":1e+21,\"stage\":\"applied\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-143",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":1e+21,\"stage\":\"applied\",\"t_us\":16667}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":1e+21,\"stage\":\"applied\",\"t_us\":16667}"
+  },
+  {
+    "name": "ack-144",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":1e+21,\"stage\":\"applied\",\"t_us\":-3200}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":1e+21,\"stage\":\"applied\",\"t_us\":-3200}"
+  },
+  {
+    "name": "ack-145",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":1e+21,\"stage\":\"applied\",\"t_us\":1e+21}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":1e+21,\"stage\":\"applied\",\"t_us\":1e+21}"
+  },
+  {
+    "name": "ack-146",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":1e+21,\"stage\":\"applied\",\"t_us\":null}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":1e+21,\"stage\":\"applied\",\"t_us\":null}"
+  },
+  {
+    "name": "ack-147",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":1e+21,\"stage\":\"submitted\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":1e+21,\"stage\":\"submitted\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-148",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":1e+21,\"stage\":\"submitted\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":1e+21,\"stage\":\"submitted\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-149",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":1e+21,\"stage\":\"submitted\",\"t_us\":16667}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":1e+21,\"stage\":\"submitted\",\"t_us\":16667}"
+  },
+  {
+    "name": "ack-150",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":1e+21,\"stage\":\"submitted\",\"t_us\":-3200}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":1e+21,\"stage\":\"submitted\",\"t_us\":-3200}"
+  },
+  {
+    "name": "ack-151",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":1e+21,\"stage\":\"submitted\",\"t_us\":1e+21}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":1e+21,\"stage\":\"submitted\",\"t_us\":1e+21}"
+  },
+  {
+    "name": "ack-152",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"\",\"seq\":1e+21,\"stage\":\"submitted\",\"t_us\":null}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"\",\"seq\":1e+21,\"stage\":\"submitted\",\"t_us\":null}"
+  },
+  {
+    "name": "ack-153",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":0,\"stage\":\"received\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":0,\"stage\":\"received\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-154",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":0,\"stage\":\"received\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":0,\"stage\":\"received\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-155",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":0,\"stage\":\"received\",\"t_us\":16667}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":0,\"stage\":\"received\",\"t_us\":16667}"
+  },
+  {
+    "name": "ack-156",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":0,\"stage\":\"received\",\"t_us\":-3200}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":0,\"stage\":\"received\",\"t_us\":-3200}"
+  },
+  {
+    "name": "ack-157",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":0,\"stage\":\"received\",\"t_us\":1e+21}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":0,\"stage\":\"received\",\"t_us\":1e+21}"
+  },
+  {
+    "name": "ack-158",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":0,\"stage\":\"received\",\"t_us\":null}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":0,\"stage\":\"received\",\"t_us\":null}"
+  },
+  {
+    "name": "ack-159",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":0,\"stage\":\"applied\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":0,\"stage\":\"applied\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-160",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":0,\"stage\":\"applied\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":0,\"stage\":\"applied\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-161",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":0,\"stage\":\"applied\",\"t_us\":16667}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":0,\"stage\":\"applied\",\"t_us\":16667}"
+  },
+  {
+    "name": "ack-162",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":0,\"stage\":\"applied\",\"t_us\":-3200}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":0,\"stage\":\"applied\",\"t_us\":-3200}"
+  },
+  {
+    "name": "ack-163",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":0,\"stage\":\"applied\",\"t_us\":1e+21}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":0,\"stage\":\"applied\",\"t_us\":1e+21}"
+  },
+  {
+    "name": "ack-164",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":0,\"stage\":\"applied\",\"t_us\":null}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":0,\"stage\":\"applied\",\"t_us\":null}"
+  },
+  {
+    "name": "ack-165",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":0,\"stage\":\"submitted\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":0,\"stage\":\"submitted\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-166",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":0,\"stage\":\"submitted\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":0,\"stage\":\"submitted\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-167",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":0,\"stage\":\"submitted\",\"t_us\":16667}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":0,\"stage\":\"submitted\",\"t_us\":16667}"
+  },
+  {
+    "name": "ack-168",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":0,\"stage\":\"submitted\",\"t_us\":-3200}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":0,\"stage\":\"submitted\",\"t_us\":-3200}"
+  },
+  {
+    "name": "ack-169",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":0,\"stage\":\"submitted\",\"t_us\":1e+21}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":0,\"stage\":\"submitted\",\"t_us\":1e+21}"
+  },
+  {
+    "name": "ack-170",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":0,\"stage\":\"submitted\",\"t_us\":null}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":0,\"stage\":\"submitted\",\"t_us\":null}"
+  },
+  {
+    "name": "ack-171",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":1,\"stage\":\"received\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":1,\"stage\":\"received\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-172",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":1,\"stage\":\"received\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":1,\"stage\":\"received\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-173",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":1,\"stage\":\"received\",\"t_us\":16667}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":1,\"stage\":\"received\",\"t_us\":16667}"
+  },
+  {
+    "name": "ack-174",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":1,\"stage\":\"received\",\"t_us\":-3200}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":1,\"stage\":\"received\",\"t_us\":-3200}"
+  },
+  {
+    "name": "ack-175",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":1,\"stage\":\"received\",\"t_us\":1e+21}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":1,\"stage\":\"received\",\"t_us\":1e+21}"
+  },
+  {
+    "name": "ack-176",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":1,\"stage\":\"received\",\"t_us\":null}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":1,\"stage\":\"received\",\"t_us\":null}"
+  },
+  {
+    "name": "ack-177",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":1,\"stage\":\"applied\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":1,\"stage\":\"applied\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-178",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":1,\"stage\":\"applied\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":1,\"stage\":\"applied\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-179",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":1,\"stage\":\"applied\",\"t_us\":16667}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":1,\"stage\":\"applied\",\"t_us\":16667}"
+  },
+  {
+    "name": "ack-180",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":1,\"stage\":\"applied\",\"t_us\":-3200}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":1,\"stage\":\"applied\",\"t_us\":-3200}"
+  },
+  {
+    "name": "ack-181",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":1,\"stage\":\"applied\",\"t_us\":1e+21}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":1,\"stage\":\"applied\",\"t_us\":1e+21}"
+  },
+  {
+    "name": "ack-182",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":1,\"stage\":\"applied\",\"t_us\":null}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":1,\"stage\":\"applied\",\"t_us\":null}"
+  },
+  {
+    "name": "ack-183",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":1,\"stage\":\"submitted\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":1,\"stage\":\"submitted\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-184",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":1,\"stage\":\"submitted\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":1,\"stage\":\"submitted\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-185",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":1,\"stage\":\"submitted\",\"t_us\":16667}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":1,\"stage\":\"submitted\",\"t_us\":16667}"
+  },
+  {
+    "name": "ack-186",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":1,\"stage\":\"submitted\",\"t_us\":-3200}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":1,\"stage\":\"submitted\",\"t_us\":-3200}"
+  },
+  {
+    "name": "ack-187",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":1,\"stage\":\"submitted\",\"t_us\":1e+21}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":1,\"stage\":\"submitted\",\"t_us\":1e+21}"
+  },
+  {
+    "name": "ack-188",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":1,\"stage\":\"submitted\",\"t_us\":null}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":1,\"stage\":\"submitted\",\"t_us\":null}"
+  },
+  {
+    "name": "ack-189",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":4294967301,\"stage\":\"received\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":4294967301,\"stage\":\"received\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-190",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":4294967301,\"stage\":\"received\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":4294967301,\"stage\":\"received\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-191",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":4294967301,\"stage\":\"received\",\"t_us\":16667}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":4294967301,\"stage\":\"received\",\"t_us\":16667}"
+  },
+  {
+    "name": "ack-192",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":4294967301,\"stage\":\"received\",\"t_us\":-3200}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":4294967301,\"stage\":\"received\",\"t_us\":-3200}"
+  },
+  {
+    "name": "ack-193",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":4294967301,\"stage\":\"received\",\"t_us\":1e+21}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":4294967301,\"stage\":\"received\",\"t_us\":1e+21}"
+  },
+  {
+    "name": "ack-194",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":4294967301,\"stage\":\"received\",\"t_us\":null}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":4294967301,\"stage\":\"received\",\"t_us\":null}"
+  },
+  {
+    "name": "ack-195",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":4294967301,\"stage\":\"applied\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":4294967301,\"stage\":\"applied\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-196",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":4294967301,\"stage\":\"applied\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":4294967301,\"stage\":\"applied\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-197",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":4294967301,\"stage\":\"applied\",\"t_us\":16667}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":4294967301,\"stage\":\"applied\",\"t_us\":16667}"
+  },
+  {
+    "name": "ack-198",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":4294967301,\"stage\":\"applied\",\"t_us\":-3200}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":4294967301,\"stage\":\"applied\",\"t_us\":-3200}"
+  },
+  {
+    "name": "ack-199",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":4294967301,\"stage\":\"applied\",\"t_us\":1e+21}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":4294967301,\"stage\":\"applied\",\"t_us\":1e+21}"
+  },
+  {
+    "name": "ack-200",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":4294967301,\"stage\":\"applied\",\"t_us\":null}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":4294967301,\"stage\":\"applied\",\"t_us\":null}"
+  },
+  {
+    "name": "ack-201",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":4294967301,\"stage\":\"submitted\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":4294967301,\"stage\":\"submitted\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-202",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":4294967301,\"stage\":\"submitted\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":4294967301,\"stage\":\"submitted\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-203",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":4294967301,\"stage\":\"submitted\",\"t_us\":16667}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":4294967301,\"stage\":\"submitted\",\"t_us\":16667}"
+  },
+  {
+    "name": "ack-204",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":4294967301,\"stage\":\"submitted\",\"t_us\":-3200}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":4294967301,\"stage\":\"submitted\",\"t_us\":-3200}"
+  },
+  {
+    "name": "ack-205",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":4294967301,\"stage\":\"submitted\",\"t_us\":1e+21}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":4294967301,\"stage\":\"submitted\",\"t_us\":1e+21}"
+  },
+  {
+    "name": "ack-206",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":4294967301,\"stage\":\"submitted\",\"t_us\":null}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":4294967301,\"stage\":\"submitted\",\"t_us\":null}"
+  },
+  {
+    "name": "ack-207",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":9007199254740991,\"stage\":\"received\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":9007199254740991,\"stage\":\"received\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-208",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":9007199254740991,\"stage\":\"received\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":9007199254740991,\"stage\":\"received\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-209",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":9007199254740991,\"stage\":\"received\",\"t_us\":16667}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":9007199254740991,\"stage\":\"received\",\"t_us\":16667}"
+  },
+  {
+    "name": "ack-210",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":9007199254740991,\"stage\":\"received\",\"t_us\":-3200}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":9007199254740991,\"stage\":\"received\",\"t_us\":-3200}"
+  },
+  {
+    "name": "ack-211",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":9007199254740991,\"stage\":\"received\",\"t_us\":1e+21}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":9007199254740991,\"stage\":\"received\",\"t_us\":1e+21}"
+  },
+  {
+    "name": "ack-212",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":9007199254740991,\"stage\":\"received\",\"t_us\":null}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":9007199254740991,\"stage\":\"received\",\"t_us\":null}"
+  },
+  {
+    "name": "ack-213",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":9007199254740991,\"stage\":\"applied\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":9007199254740991,\"stage\":\"applied\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-214",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":9007199254740991,\"stage\":\"applied\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":9007199254740991,\"stage\":\"applied\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-215",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":9007199254740991,\"stage\":\"applied\",\"t_us\":16667}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":9007199254740991,\"stage\":\"applied\",\"t_us\":16667}"
+  },
+  {
+    "name": "ack-216",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":9007199254740991,\"stage\":\"applied\",\"t_us\":-3200}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":9007199254740991,\"stage\":\"applied\",\"t_us\":-3200}"
+  },
+  {
+    "name": "ack-217",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":9007199254740991,\"stage\":\"applied\",\"t_us\":1e+21}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":9007199254740991,\"stage\":\"applied\",\"t_us\":1e+21}"
+  },
+  {
+    "name": "ack-218",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":9007199254740991,\"stage\":\"applied\",\"t_us\":null}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":9007199254740991,\"stage\":\"applied\",\"t_us\":null}"
+  },
+  {
+    "name": "ack-219",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":9007199254740991,\"stage\":\"submitted\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":9007199254740991,\"stage\":\"submitted\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-220",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":9007199254740991,\"stage\":\"submitted\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":9007199254740991,\"stage\":\"submitted\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-221",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":9007199254740991,\"stage\":\"submitted\",\"t_us\":16667}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":9007199254740991,\"stage\":\"submitted\",\"t_us\":16667}"
+  },
+  {
+    "name": "ack-222",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":9007199254740991,\"stage\":\"submitted\",\"t_us\":-3200}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":9007199254740991,\"stage\":\"submitted\",\"t_us\":-3200}"
+  },
+  {
+    "name": "ack-223",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":9007199254740991,\"stage\":\"submitted\",\"t_us\":1e+21}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":9007199254740991,\"stage\":\"submitted\",\"t_us\":1e+21}"
+  },
+  {
+    "name": "ack-224",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":9007199254740991,\"stage\":\"submitted\",\"t_us\":null}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":9007199254740991,\"stage\":\"submitted\",\"t_us\":null}"
+  },
+  {
+    "name": "ack-225",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":1e+21,\"stage\":\"received\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":1e+21,\"stage\":\"received\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-226",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":1e+21,\"stage\":\"received\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":1e+21,\"stage\":\"received\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-227",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":1e+21,\"stage\":\"received\",\"t_us\":16667}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":1e+21,\"stage\":\"received\",\"t_us\":16667}"
+  },
+  {
+    "name": "ack-228",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":1e+21,\"stage\":\"received\",\"t_us\":-3200}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":1e+21,\"stage\":\"received\",\"t_us\":-3200}"
+  },
+  {
+    "name": "ack-229",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":1e+21,\"stage\":\"received\",\"t_us\":1e+21}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":1e+21,\"stage\":\"received\",\"t_us\":1e+21}"
+  },
+  {
+    "name": "ack-230",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":1e+21,\"stage\":\"received\",\"t_us\":null}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":1e+21,\"stage\":\"received\",\"t_us\":null}"
+  },
+  {
+    "name": "ack-231",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":1e+21,\"stage\":\"applied\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":1e+21,\"stage\":\"applied\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-232",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":1e+21,\"stage\":\"applied\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":1e+21,\"stage\":\"applied\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-233",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":1e+21,\"stage\":\"applied\",\"t_us\":16667}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":1e+21,\"stage\":\"applied\",\"t_us\":16667}"
+  },
+  {
+    "name": "ack-234",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":1e+21,\"stage\":\"applied\",\"t_us\":-3200}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":1e+21,\"stage\":\"applied\",\"t_us\":-3200}"
+  },
+  {
+    "name": "ack-235",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":1e+21,\"stage\":\"applied\",\"t_us\":1e+21}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":1e+21,\"stage\":\"applied\",\"t_us\":1e+21}"
+  },
+  {
+    "name": "ack-236",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":1e+21,\"stage\":\"applied\",\"t_us\":null}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":1e+21,\"stage\":\"applied\",\"t_us\":null}"
+  },
+  {
+    "name": "ack-237",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":1e+21,\"stage\":\"submitted\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":1e+21,\"stage\":\"submitted\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-238",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":1e+21,\"stage\":\"submitted\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":1e+21,\"stage\":\"submitted\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-239",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":1e+21,\"stage\":\"submitted\",\"t_us\":16667}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":1e+21,\"stage\":\"submitted\",\"t_us\":16667}"
+  },
+  {
+    "name": "ack-240",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":1e+21,\"stage\":\"submitted\",\"t_us\":-3200}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":1e+21,\"stage\":\"submitted\",\"t_us\":-3200}"
+  },
+  {
+    "name": "ack-241",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":1e+21,\"stage\":\"submitted\",\"t_us\":1e+21}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":1e+21,\"stage\":\"submitted\",\"t_us\":1e+21}"
+  },
+  {
+    "name": "ack-242",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"s-1\",\"seq\":1e+21,\"stage\":\"submitted\",\"t_us\":null}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"s-1\",\"seq\":1e+21,\"stage\":\"submitted\",\"t_us\":null}"
+  },
+  {
+    "name": "ack-243",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":0,\"stage\":\"received\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":0,\"stage\":\"received\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-244",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":0,\"stage\":\"received\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":0,\"stage\":\"received\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-245",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":0,\"stage\":\"received\",\"t_us\":16667}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":0,\"stage\":\"received\",\"t_us\":16667}"
+  },
+  {
+    "name": "ack-246",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":0,\"stage\":\"received\",\"t_us\":-3200}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":0,\"stage\":\"received\",\"t_us\":-3200}"
+  },
+  {
+    "name": "ack-247",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":0,\"stage\":\"received\",\"t_us\":1e+21}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":0,\"stage\":\"received\",\"t_us\":1e+21}"
+  },
+  {
+    "name": "ack-248",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":0,\"stage\":\"received\",\"t_us\":null}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":0,\"stage\":\"received\",\"t_us\":null}"
+  },
+  {
+    "name": "ack-249",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":0,\"stage\":\"applied\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":0,\"stage\":\"applied\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-250",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":0,\"stage\":\"applied\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":0,\"stage\":\"applied\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-251",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":0,\"stage\":\"applied\",\"t_us\":16667}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":0,\"stage\":\"applied\",\"t_us\":16667}"
+  },
+  {
+    "name": "ack-252",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":0,\"stage\":\"applied\",\"t_us\":-3200}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":0,\"stage\":\"applied\",\"t_us\":-3200}"
+  },
+  {
+    "name": "ack-253",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":0,\"stage\":\"applied\",\"t_us\":1e+21}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":0,\"stage\":\"applied\",\"t_us\":1e+21}"
+  },
+  {
+    "name": "ack-254",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":0,\"stage\":\"applied\",\"t_us\":null}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":0,\"stage\":\"applied\",\"t_us\":null}"
+  },
+  {
+    "name": "ack-255",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":0,\"stage\":\"submitted\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":0,\"stage\":\"submitted\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-256",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":0,\"stage\":\"submitted\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":0,\"stage\":\"submitted\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-257",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":0,\"stage\":\"submitted\",\"t_us\":16667}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":0,\"stage\":\"submitted\",\"t_us\":16667}"
+  },
+  {
+    "name": "ack-258",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":0,\"stage\":\"submitted\",\"t_us\":-3200}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":0,\"stage\":\"submitted\",\"t_us\":-3200}"
+  },
+  {
+    "name": "ack-259",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":0,\"stage\":\"submitted\",\"t_us\":1e+21}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":0,\"stage\":\"submitted\",\"t_us\":1e+21}"
+  },
+  {
+    "name": "ack-260",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":0,\"stage\":\"submitted\",\"t_us\":null}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":0,\"stage\":\"submitted\",\"t_us\":null}"
+  },
+  {
+    "name": "ack-261",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":1,\"stage\":\"received\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":1,\"stage\":\"received\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-262",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":1,\"stage\":\"received\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":1,\"stage\":\"received\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-263",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":1,\"stage\":\"received\",\"t_us\":16667}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":1,\"stage\":\"received\",\"t_us\":16667}"
+  },
+  {
+    "name": "ack-264",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":1,\"stage\":\"received\",\"t_us\":-3200}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":1,\"stage\":\"received\",\"t_us\":-3200}"
+  },
+  {
+    "name": "ack-265",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":1,\"stage\":\"received\",\"t_us\":1e+21}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":1,\"stage\":\"received\",\"t_us\":1e+21}"
+  },
+  {
+    "name": "ack-266",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":1,\"stage\":\"received\",\"t_us\":null}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":1,\"stage\":\"received\",\"t_us\":null}"
+  },
+  {
+    "name": "ack-267",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":1,\"stage\":\"applied\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":1,\"stage\":\"applied\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-268",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":1,\"stage\":\"applied\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":1,\"stage\":\"applied\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-269",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":1,\"stage\":\"applied\",\"t_us\":16667}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":1,\"stage\":\"applied\",\"t_us\":16667}"
+  },
+  {
+    "name": "ack-270",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":1,\"stage\":\"applied\",\"t_us\":-3200}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":1,\"stage\":\"applied\",\"t_us\":-3200}"
+  },
+  {
+    "name": "ack-271",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":1,\"stage\":\"applied\",\"t_us\":1e+21}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":1,\"stage\":\"applied\",\"t_us\":1e+21}"
+  },
+  {
+    "name": "ack-272",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":1,\"stage\":\"applied\",\"t_us\":null}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":1,\"stage\":\"applied\",\"t_us\":null}"
+  },
+  {
+    "name": "ack-273",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":1,\"stage\":\"submitted\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":1,\"stage\":\"submitted\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-274",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":1,\"stage\":\"submitted\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":1,\"stage\":\"submitted\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-275",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":1,\"stage\":\"submitted\",\"t_us\":16667}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":1,\"stage\":\"submitted\",\"t_us\":16667}"
+  },
+  {
+    "name": "ack-276",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":1,\"stage\":\"submitted\",\"t_us\":-3200}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":1,\"stage\":\"submitted\",\"t_us\":-3200}"
+  },
+  {
+    "name": "ack-277",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":1,\"stage\":\"submitted\",\"t_us\":1e+21}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":1,\"stage\":\"submitted\",\"t_us\":1e+21}"
+  },
+  {
+    "name": "ack-278",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":1,\"stage\":\"submitted\",\"t_us\":null}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":1,\"stage\":\"submitted\",\"t_us\":null}"
+  },
+  {
+    "name": "ack-279",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":4294967301,\"stage\":\"received\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":4294967301,\"stage\":\"received\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-280",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":4294967301,\"stage\":\"received\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":4294967301,\"stage\":\"received\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-281",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":4294967301,\"stage\":\"received\",\"t_us\":16667}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":4294967301,\"stage\":\"received\",\"t_us\":16667}"
+  },
+  {
+    "name": "ack-282",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":4294967301,\"stage\":\"received\",\"t_us\":-3200}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":4294967301,\"stage\":\"received\",\"t_us\":-3200}"
+  },
+  {
+    "name": "ack-283",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":4294967301,\"stage\":\"received\",\"t_us\":1e+21}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":4294967301,\"stage\":\"received\",\"t_us\":1e+21}"
+  },
+  {
+    "name": "ack-284",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":4294967301,\"stage\":\"received\",\"t_us\":null}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":4294967301,\"stage\":\"received\",\"t_us\":null}"
+  },
+  {
+    "name": "ack-285",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":4294967301,\"stage\":\"applied\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":4294967301,\"stage\":\"applied\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-286",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":4294967301,\"stage\":\"applied\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":4294967301,\"stage\":\"applied\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-287",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":4294967301,\"stage\":\"applied\",\"t_us\":16667}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":4294967301,\"stage\":\"applied\",\"t_us\":16667}"
+  },
+  {
+    "name": "ack-288",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":4294967301,\"stage\":\"applied\",\"t_us\":-3200}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":4294967301,\"stage\":\"applied\",\"t_us\":-3200}"
+  },
+  {
+    "name": "ack-289",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":4294967301,\"stage\":\"applied\",\"t_us\":1e+21}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":4294967301,\"stage\":\"applied\",\"t_us\":1e+21}"
+  },
+  {
+    "name": "ack-290",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":4294967301,\"stage\":\"applied\",\"t_us\":null}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":4294967301,\"stage\":\"applied\",\"t_us\":null}"
+  },
+  {
+    "name": "ack-291",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":4294967301,\"stage\":\"submitted\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":4294967301,\"stage\":\"submitted\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-292",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":4294967301,\"stage\":\"submitted\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":4294967301,\"stage\":\"submitted\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-293",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":4294967301,\"stage\":\"submitted\",\"t_us\":16667}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":4294967301,\"stage\":\"submitted\",\"t_us\":16667}"
+  },
+  {
+    "name": "ack-294",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":4294967301,\"stage\":\"submitted\",\"t_us\":-3200}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":4294967301,\"stage\":\"submitted\",\"t_us\":-3200}"
+  },
+  {
+    "name": "ack-295",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":4294967301,\"stage\":\"submitted\",\"t_us\":1e+21}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":4294967301,\"stage\":\"submitted\",\"t_us\":1e+21}"
+  },
+  {
+    "name": "ack-296",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":4294967301,\"stage\":\"submitted\",\"t_us\":null}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":4294967301,\"stage\":\"submitted\",\"t_us\":null}"
+  },
+  {
+    "name": "ack-297",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":9007199254740991,\"stage\":\"received\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":9007199254740991,\"stage\":\"received\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-298",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":9007199254740991,\"stage\":\"received\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":9007199254740991,\"stage\":\"received\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-299",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":9007199254740991,\"stage\":\"received\",\"t_us\":16667}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":9007199254740991,\"stage\":\"received\",\"t_us\":16667}"
+  },
+  {
+    "name": "ack-300",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":9007199254740991,\"stage\":\"received\",\"t_us\":-3200}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":9007199254740991,\"stage\":\"received\",\"t_us\":-3200}"
+  },
+  {
+    "name": "ack-301",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":9007199254740991,\"stage\":\"received\",\"t_us\":1e+21}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":9007199254740991,\"stage\":\"received\",\"t_us\":1e+21}"
+  },
+  {
+    "name": "ack-302",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":9007199254740991,\"stage\":\"received\",\"t_us\":null}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":9007199254740991,\"stage\":\"received\",\"t_us\":null}"
+  },
+  {
+    "name": "ack-303",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":9007199254740991,\"stage\":\"applied\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":9007199254740991,\"stage\":\"applied\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-304",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":9007199254740991,\"stage\":\"applied\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":9007199254740991,\"stage\":\"applied\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-305",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":9007199254740991,\"stage\":\"applied\",\"t_us\":16667}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":9007199254740991,\"stage\":\"applied\",\"t_us\":16667}"
+  },
+  {
+    "name": "ack-306",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":9007199254740991,\"stage\":\"applied\",\"t_us\":-3200}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":9007199254740991,\"stage\":\"applied\",\"t_us\":-3200}"
+  },
+  {
+    "name": "ack-307",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":9007199254740991,\"stage\":\"applied\",\"t_us\":1e+21}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":9007199254740991,\"stage\":\"applied\",\"t_us\":1e+21}"
+  },
+  {
+    "name": "ack-308",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":9007199254740991,\"stage\":\"applied\",\"t_us\":null}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":9007199254740991,\"stage\":\"applied\",\"t_us\":null}"
+  },
+  {
+    "name": "ack-309",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":9007199254740991,\"stage\":\"submitted\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":9007199254740991,\"stage\":\"submitted\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-310",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":9007199254740991,\"stage\":\"submitted\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":9007199254740991,\"stage\":\"submitted\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-311",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":9007199254740991,\"stage\":\"submitted\",\"t_us\":16667}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":9007199254740991,\"stage\":\"submitted\",\"t_us\":16667}"
+  },
+  {
+    "name": "ack-312",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":9007199254740991,\"stage\":\"submitted\",\"t_us\":-3200}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":9007199254740991,\"stage\":\"submitted\",\"t_us\":-3200}"
+  },
+  {
+    "name": "ack-313",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":9007199254740991,\"stage\":\"submitted\",\"t_us\":1e+21}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":9007199254740991,\"stage\":\"submitted\",\"t_us\":1e+21}"
+  },
+  {
+    "name": "ack-314",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":9007199254740991,\"stage\":\"submitted\",\"t_us\":null}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":9007199254740991,\"stage\":\"submitted\",\"t_us\":null}"
+  },
+  {
+    "name": "ack-315",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":1e+21,\"stage\":\"received\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":1e+21,\"stage\":\"received\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-316",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":1e+21,\"stage\":\"received\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":1e+21,\"stage\":\"received\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-317",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":1e+21,\"stage\":\"received\",\"t_us\":16667}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":1e+21,\"stage\":\"received\",\"t_us\":16667}"
+  },
+  {
+    "name": "ack-318",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":1e+21,\"stage\":\"received\",\"t_us\":-3200}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":1e+21,\"stage\":\"received\",\"t_us\":-3200}"
+  },
+  {
+    "name": "ack-319",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":1e+21,\"stage\":\"received\",\"t_us\":1e+21}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":1e+21,\"stage\":\"received\",\"t_us\":1e+21}"
+  },
+  {
+    "name": "ack-320",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":1e+21,\"stage\":\"received\",\"t_us\":null}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":1e+21,\"stage\":\"received\",\"t_us\":null}"
+  },
+  {
+    "name": "ack-321",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":1e+21,\"stage\":\"applied\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":1e+21,\"stage\":\"applied\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-322",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":1e+21,\"stage\":\"applied\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":1e+21,\"stage\":\"applied\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-323",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":1e+21,\"stage\":\"applied\",\"t_us\":16667}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":1e+21,\"stage\":\"applied\",\"t_us\":16667}"
+  },
+  {
+    "name": "ack-324",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":1e+21,\"stage\":\"applied\",\"t_us\":-3200}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":1e+21,\"stage\":\"applied\",\"t_us\":-3200}"
+  },
+  {
+    "name": "ack-325",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":1e+21,\"stage\":\"applied\",\"t_us\":1e+21}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":1e+21,\"stage\":\"applied\",\"t_us\":1e+21}"
+  },
+  {
+    "name": "ack-326",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":1e+21,\"stage\":\"applied\",\"t_us\":null}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":1e+21,\"stage\":\"applied\",\"t_us\":null}"
+  },
+  {
+    "name": "ack-327",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":1e+21,\"stage\":\"submitted\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":1e+21,\"stage\":\"submitted\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-328",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":1e+21,\"stage\":\"submitted\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":1e+21,\"stage\":\"submitted\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-329",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":1e+21,\"stage\":\"submitted\",\"t_us\":16667}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":1e+21,\"stage\":\"submitted\",\"t_us\":16667}"
+  },
+  {
+    "name": "ack-330",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":1e+21,\"stage\":\"submitted\",\"t_us\":-3200}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":1e+21,\"stage\":\"submitted\",\"t_us\":-3200}"
+  },
+  {
+    "name": "ack-331",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":1e+21,\"stage\":\"submitted\",\"t_us\":1e+21}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":1e+21,\"stage\":\"submitted\",\"t_us\":1e+21}"
+  },
+  {
+    "name": "ack-332",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":1e+21,\"stage\":\"submitted\",\"t_us\":null}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"quote\\\"back\\\\slash/\",\"seq\":1e+21,\"stage\":\"submitted\",\"t_us\":null}"
+  },
+  {
+    "name": "ack-333",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":0,\"stage\":\"received\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":0,\"stage\":\"received\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-334",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":0,\"stage\":\"received\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":0,\"stage\":\"received\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-335",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":0,\"stage\":\"received\",\"t_us\":16667}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":0,\"stage\":\"received\",\"t_us\":16667}"
+  },
+  {
+    "name": "ack-336",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":0,\"stage\":\"received\",\"t_us\":-3200}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":0,\"stage\":\"received\",\"t_us\":-3200}"
+  },
+  {
+    "name": "ack-337",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":0,\"stage\":\"received\",\"t_us\":1e+21}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":0,\"stage\":\"received\",\"t_us\":1e+21}"
+  },
+  {
+    "name": "ack-338",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":0,\"stage\":\"received\",\"t_us\":null}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":0,\"stage\":\"received\",\"t_us\":null}"
+  },
+  {
+    "name": "ack-339",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":0,\"stage\":\"applied\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":0,\"stage\":\"applied\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-340",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":0,\"stage\":\"applied\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":0,\"stage\":\"applied\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-341",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":0,\"stage\":\"applied\",\"t_us\":16667}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":0,\"stage\":\"applied\",\"t_us\":16667}"
+  },
+  {
+    "name": "ack-342",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":0,\"stage\":\"applied\",\"t_us\":-3200}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":0,\"stage\":\"applied\",\"t_us\":-3200}"
+  },
+  {
+    "name": "ack-343",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":0,\"stage\":\"applied\",\"t_us\":1e+21}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":0,\"stage\":\"applied\",\"t_us\":1e+21}"
+  },
+  {
+    "name": "ack-344",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":0,\"stage\":\"applied\",\"t_us\":null}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":0,\"stage\":\"applied\",\"t_us\":null}"
+  },
+  {
+    "name": "ack-345",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":0,\"stage\":\"submitted\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":0,\"stage\":\"submitted\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-346",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":0,\"stage\":\"submitted\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":0,\"stage\":\"submitted\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-347",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":0,\"stage\":\"submitted\",\"t_us\":16667}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":0,\"stage\":\"submitted\",\"t_us\":16667}"
+  },
+  {
+    "name": "ack-348",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":0,\"stage\":\"submitted\",\"t_us\":-3200}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":0,\"stage\":\"submitted\",\"t_us\":-3200}"
+  },
+  {
+    "name": "ack-349",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":0,\"stage\":\"submitted\",\"t_us\":1e+21}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":0,\"stage\":\"submitted\",\"t_us\":1e+21}"
+  },
+  {
+    "name": "ack-350",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":0,\"stage\":\"submitted\",\"t_us\":null}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":0,\"stage\":\"submitted\",\"t_us\":null}"
+  },
+  {
+    "name": "ack-351",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":1,\"stage\":\"received\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":1,\"stage\":\"received\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-352",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":1,\"stage\":\"received\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":1,\"stage\":\"received\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-353",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":1,\"stage\":\"received\",\"t_us\":16667}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":1,\"stage\":\"received\",\"t_us\":16667}"
+  },
+  {
+    "name": "ack-354",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":1,\"stage\":\"received\",\"t_us\":-3200}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":1,\"stage\":\"received\",\"t_us\":-3200}"
+  },
+  {
+    "name": "ack-355",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":1,\"stage\":\"received\",\"t_us\":1e+21}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":1,\"stage\":\"received\",\"t_us\":1e+21}"
+  },
+  {
+    "name": "ack-356",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":1,\"stage\":\"received\",\"t_us\":null}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":1,\"stage\":\"received\",\"t_us\":null}"
+  },
+  {
+    "name": "ack-357",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":1,\"stage\":\"applied\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":1,\"stage\":\"applied\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-358",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":1,\"stage\":\"applied\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":1,\"stage\":\"applied\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-359",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":1,\"stage\":\"applied\",\"t_us\":16667}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":1,\"stage\":\"applied\",\"t_us\":16667}"
+  },
+  {
+    "name": "ack-360",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":1,\"stage\":\"applied\",\"t_us\":-3200}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":1,\"stage\":\"applied\",\"t_us\":-3200}"
+  },
+  {
+    "name": "ack-361",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":1,\"stage\":\"applied\",\"t_us\":1e+21}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":1,\"stage\":\"applied\",\"t_us\":1e+21}"
+  },
+  {
+    "name": "ack-362",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":1,\"stage\":\"applied\",\"t_us\":null}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":1,\"stage\":\"applied\",\"t_us\":null}"
+  },
+  {
+    "name": "ack-363",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":1,\"stage\":\"submitted\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":1,\"stage\":\"submitted\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-364",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":1,\"stage\":\"submitted\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":1,\"stage\":\"submitted\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-365",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":1,\"stage\":\"submitted\",\"t_us\":16667}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":1,\"stage\":\"submitted\",\"t_us\":16667}"
+  },
+  {
+    "name": "ack-366",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":1,\"stage\":\"submitted\",\"t_us\":-3200}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":1,\"stage\":\"submitted\",\"t_us\":-3200}"
+  },
+  {
+    "name": "ack-367",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":1,\"stage\":\"submitted\",\"t_us\":1e+21}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":1,\"stage\":\"submitted\",\"t_us\":1e+21}"
+  },
+  {
+    "name": "ack-368",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":1,\"stage\":\"submitted\",\"t_us\":null}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":1,\"stage\":\"submitted\",\"t_us\":null}"
+  },
+  {
+    "name": "ack-369",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":4294967301,\"stage\":\"received\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":4294967301,\"stage\":\"received\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-370",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":4294967301,\"stage\":\"received\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":4294967301,\"stage\":\"received\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-371",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":4294967301,\"stage\":\"received\",\"t_us\":16667}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":4294967301,\"stage\":\"received\",\"t_us\":16667}"
+  },
+  {
+    "name": "ack-372",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":4294967301,\"stage\":\"received\",\"t_us\":-3200}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":4294967301,\"stage\":\"received\",\"t_us\":-3200}"
+  },
+  {
+    "name": "ack-373",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":4294967301,\"stage\":\"received\",\"t_us\":1e+21}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":4294967301,\"stage\":\"received\",\"t_us\":1e+21}"
+  },
+  {
+    "name": "ack-374",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":4294967301,\"stage\":\"received\",\"t_us\":null}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":4294967301,\"stage\":\"received\",\"t_us\":null}"
+  },
+  {
+    "name": "ack-375",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":4294967301,\"stage\":\"applied\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":4294967301,\"stage\":\"applied\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-376",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":4294967301,\"stage\":\"applied\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":4294967301,\"stage\":\"applied\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-377",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":4294967301,\"stage\":\"applied\",\"t_us\":16667}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":4294967301,\"stage\":\"applied\",\"t_us\":16667}"
+  },
+  {
+    "name": "ack-378",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":4294967301,\"stage\":\"applied\",\"t_us\":-3200}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":4294967301,\"stage\":\"applied\",\"t_us\":-3200}"
+  },
+  {
+    "name": "ack-379",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":4294967301,\"stage\":\"applied\",\"t_us\":1e+21}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":4294967301,\"stage\":\"applied\",\"t_us\":1e+21}"
+  },
+  {
+    "name": "ack-380",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":4294967301,\"stage\":\"applied\",\"t_us\":null}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":4294967301,\"stage\":\"applied\",\"t_us\":null}"
+  },
+  {
+    "name": "ack-381",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":4294967301,\"stage\":\"submitted\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":4294967301,\"stage\":\"submitted\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-382",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":4294967301,\"stage\":\"submitted\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":4294967301,\"stage\":\"submitted\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-383",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":4294967301,\"stage\":\"submitted\",\"t_us\":16667}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":4294967301,\"stage\":\"submitted\",\"t_us\":16667}"
+  },
+  {
+    "name": "ack-384",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":4294967301,\"stage\":\"submitted\",\"t_us\":-3200}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":4294967301,\"stage\":\"submitted\",\"t_us\":-3200}"
+  },
+  {
+    "name": "ack-385",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":4294967301,\"stage\":\"submitted\",\"t_us\":1e+21}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":4294967301,\"stage\":\"submitted\",\"t_us\":1e+21}"
+  },
+  {
+    "name": "ack-386",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":4294967301,\"stage\":\"submitted\",\"t_us\":null}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":4294967301,\"stage\":\"submitted\",\"t_us\":null}"
+  },
+  {
+    "name": "ack-387",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":9007199254740991,\"stage\":\"received\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":9007199254740991,\"stage\":\"received\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-388",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":9007199254740991,\"stage\":\"received\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":9007199254740991,\"stage\":\"received\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-389",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":9007199254740991,\"stage\":\"received\",\"t_us\":16667}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":9007199254740991,\"stage\":\"received\",\"t_us\":16667}"
+  },
+  {
+    "name": "ack-390",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":9007199254740991,\"stage\":\"received\",\"t_us\":-3200}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":9007199254740991,\"stage\":\"received\",\"t_us\":-3200}"
+  },
+  {
+    "name": "ack-391",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":9007199254740991,\"stage\":\"received\",\"t_us\":1e+21}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":9007199254740991,\"stage\":\"received\",\"t_us\":1e+21}"
+  },
+  {
+    "name": "ack-392",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":9007199254740991,\"stage\":\"received\",\"t_us\":null}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":9007199254740991,\"stage\":\"received\",\"t_us\":null}"
+  },
+  {
+    "name": "ack-393",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":9007199254740991,\"stage\":\"applied\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":9007199254740991,\"stage\":\"applied\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-394",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":9007199254740991,\"stage\":\"applied\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":9007199254740991,\"stage\":\"applied\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-395",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":9007199254740991,\"stage\":\"applied\",\"t_us\":16667}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":9007199254740991,\"stage\":\"applied\",\"t_us\":16667}"
+  },
+  {
+    "name": "ack-396",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":9007199254740991,\"stage\":\"applied\",\"t_us\":-3200}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":9007199254740991,\"stage\":\"applied\",\"t_us\":-3200}"
+  },
+  {
+    "name": "ack-397",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":9007199254740991,\"stage\":\"applied\",\"t_us\":1e+21}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":9007199254740991,\"stage\":\"applied\",\"t_us\":1e+21}"
+  },
+  {
+    "name": "ack-398",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":9007199254740991,\"stage\":\"applied\",\"t_us\":null}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":9007199254740991,\"stage\":\"applied\",\"t_us\":null}"
+  },
+  {
+    "name": "ack-399",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":9007199254740991,\"stage\":\"submitted\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":9007199254740991,\"stage\":\"submitted\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-400",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":9007199254740991,\"stage\":\"submitted\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":9007199254740991,\"stage\":\"submitted\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-401",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":9007199254740991,\"stage\":\"submitted\",\"t_us\":16667}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":9007199254740991,\"stage\":\"submitted\",\"t_us\":16667}"
+  },
+  {
+    "name": "ack-402",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":9007199254740991,\"stage\":\"submitted\",\"t_us\":-3200}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":9007199254740991,\"stage\":\"submitted\",\"t_us\":-3200}"
+  },
+  {
+    "name": "ack-403",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":9007199254740991,\"stage\":\"submitted\",\"t_us\":1e+21}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":9007199254740991,\"stage\":\"submitted\",\"t_us\":1e+21}"
+  },
+  {
+    "name": "ack-404",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":9007199254740991,\"stage\":\"submitted\",\"t_us\":null}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":9007199254740991,\"stage\":\"submitted\",\"t_us\":null}"
+  },
+  {
+    "name": "ack-405",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":1e+21,\"stage\":\"received\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":1e+21,\"stage\":\"received\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-406",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":1e+21,\"stage\":\"received\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":1e+21,\"stage\":\"received\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-407",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":1e+21,\"stage\":\"received\",\"t_us\":16667}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":1e+21,\"stage\":\"received\",\"t_us\":16667}"
+  },
+  {
+    "name": "ack-408",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":1e+21,\"stage\":\"received\",\"t_us\":-3200}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":1e+21,\"stage\":\"received\",\"t_us\":-3200}"
+  },
+  {
+    "name": "ack-409",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":1e+21,\"stage\":\"received\",\"t_us\":1e+21}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":1e+21,\"stage\":\"received\",\"t_us\":1e+21}"
+  },
+  {
+    "name": "ack-410",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":1e+21,\"stage\":\"received\",\"t_us\":null}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":1e+21,\"stage\":\"received\",\"t_us\":null}"
+  },
+  {
+    "name": "ack-411",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":1e+21,\"stage\":\"applied\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":1e+21,\"stage\":\"applied\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-412",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":1e+21,\"stage\":\"applied\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":1e+21,\"stage\":\"applied\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-413",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":1e+21,\"stage\":\"applied\",\"t_us\":16667}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":1e+21,\"stage\":\"applied\",\"t_us\":16667}"
+  },
+  {
+    "name": "ack-414",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":1e+21,\"stage\":\"applied\",\"t_us\":-3200}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":1e+21,\"stage\":\"applied\",\"t_us\":-3200}"
+  },
+  {
+    "name": "ack-415",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":1e+21,\"stage\":\"applied\",\"t_us\":1e+21}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":1e+21,\"stage\":\"applied\",\"t_us\":1e+21}"
+  },
+  {
+    "name": "ack-416",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":1e+21,\"stage\":\"applied\",\"t_us\":null}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":1e+21,\"stage\":\"applied\",\"t_us\":null}"
+  },
+  {
+    "name": "ack-417",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":1e+21,\"stage\":\"submitted\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":1e+21,\"stage\":\"submitted\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-418",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":1e+21,\"stage\":\"submitted\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":1e+21,\"stage\":\"submitted\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-419",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":1e+21,\"stage\":\"submitted\",\"t_us\":16667}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":1e+21,\"stage\":\"submitted\",\"t_us\":16667}"
+  },
+  {
+    "name": "ack-420",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":1e+21,\"stage\":\"submitted\",\"t_us\":-3200}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":1e+21,\"stage\":\"submitted\",\"t_us\":-3200}"
+  },
+  {
+    "name": "ack-421",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":1e+21,\"stage\":\"submitted\",\"t_us\":1e+21}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":1e+21,\"stage\":\"submitted\",\"t_us\":1e+21}"
+  },
+  {
+    "name": "ack-422",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":1e+21,\"stage\":\"submitted\",\"t_us\":null}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"ctl\\n\\t\\r\\b\\f\\u0000\\u001f\",\"seq\":1e+21,\"stage\":\"submitted\",\"t_us\":null}"
+  },
+  {
+    "name": "ack-423",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":0,\"stage\":\"received\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":0,\"stage\":\"received\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-424",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":0,\"stage\":\"received\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":0,\"stage\":\"received\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-425",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":0,\"stage\":\"received\",\"t_us\":16667}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":0,\"stage\":\"received\",\"t_us\":16667}"
+  },
+  {
+    "name": "ack-426",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":0,\"stage\":\"received\",\"t_us\":-3200}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":0,\"stage\":\"received\",\"t_us\":-3200}"
+  },
+  {
+    "name": "ack-427",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":0,\"stage\":\"received\",\"t_us\":1e+21}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":0,\"stage\":\"received\",\"t_us\":1e+21}"
+  },
+  {
+    "name": "ack-428",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":0,\"stage\":\"received\",\"t_us\":null}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":0,\"stage\":\"received\",\"t_us\":null}"
+  },
+  {
+    "name": "ack-429",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":0,\"stage\":\"applied\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":0,\"stage\":\"applied\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-430",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":0,\"stage\":\"applied\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":0,\"stage\":\"applied\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-431",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":0,\"stage\":\"applied\",\"t_us\":16667}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":0,\"stage\":\"applied\",\"t_us\":16667}"
+  },
+  {
+    "name": "ack-432",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":0,\"stage\":\"applied\",\"t_us\":-3200}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":0,\"stage\":\"applied\",\"t_us\":-3200}"
+  },
+  {
+    "name": "ack-433",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":0,\"stage\":\"applied\",\"t_us\":1e+21}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":0,\"stage\":\"applied\",\"t_us\":1e+21}"
+  },
+  {
+    "name": "ack-434",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":0,\"stage\":\"applied\",\"t_us\":null}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":0,\"stage\":\"applied\",\"t_us\":null}"
+  },
+  {
+    "name": "ack-435",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":0,\"stage\":\"submitted\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":0,\"stage\":\"submitted\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-436",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":0,\"stage\":\"submitted\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":0,\"stage\":\"submitted\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-437",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":0,\"stage\":\"submitted\",\"t_us\":16667}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":0,\"stage\":\"submitted\",\"t_us\":16667}"
+  },
+  {
+    "name": "ack-438",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":0,\"stage\":\"submitted\",\"t_us\":-3200}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":0,\"stage\":\"submitted\",\"t_us\":-3200}"
+  },
+  {
+    "name": "ack-439",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":0,\"stage\":\"submitted\",\"t_us\":1e+21}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":0,\"stage\":\"submitted\",\"t_us\":1e+21}"
+  },
+  {
+    "name": "ack-440",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":0,\"stage\":\"submitted\",\"t_us\":null}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":0,\"stage\":\"submitted\",\"t_us\":null}"
+  },
+  {
+    "name": "ack-441",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":1,\"stage\":\"received\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":1,\"stage\":\"received\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-442",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":1,\"stage\":\"received\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":1,\"stage\":\"received\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-443",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":1,\"stage\":\"received\",\"t_us\":16667}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":1,\"stage\":\"received\",\"t_us\":16667}"
+  },
+  {
+    "name": "ack-444",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":1,\"stage\":\"received\",\"t_us\":-3200}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":1,\"stage\":\"received\",\"t_us\":-3200}"
+  },
+  {
+    "name": "ack-445",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":1,\"stage\":\"received\",\"t_us\":1e+21}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":1,\"stage\":\"received\",\"t_us\":1e+21}"
+  },
+  {
+    "name": "ack-446",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":1,\"stage\":\"received\",\"t_us\":null}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":1,\"stage\":\"received\",\"t_us\":null}"
+  },
+  {
+    "name": "ack-447",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":1,\"stage\":\"applied\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":1,\"stage\":\"applied\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-448",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":1,\"stage\":\"applied\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":1,\"stage\":\"applied\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-449",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":1,\"stage\":\"applied\",\"t_us\":16667}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":1,\"stage\":\"applied\",\"t_us\":16667}"
+  },
+  {
+    "name": "ack-450",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":1,\"stage\":\"applied\",\"t_us\":-3200}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":1,\"stage\":\"applied\",\"t_us\":-3200}"
+  },
+  {
+    "name": "ack-451",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":1,\"stage\":\"applied\",\"t_us\":1e+21}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":1,\"stage\":\"applied\",\"t_us\":1e+21}"
+  },
+  {
+    "name": "ack-452",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":1,\"stage\":\"applied\",\"t_us\":null}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":1,\"stage\":\"applied\",\"t_us\":null}"
+  },
+  {
+    "name": "ack-453",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":1,\"stage\":\"submitted\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":1,\"stage\":\"submitted\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-454",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":1,\"stage\":\"submitted\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":1,\"stage\":\"submitted\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-455",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":1,\"stage\":\"submitted\",\"t_us\":16667}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":1,\"stage\":\"submitted\",\"t_us\":16667}"
+  },
+  {
+    "name": "ack-456",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":1,\"stage\":\"submitted\",\"t_us\":-3200}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":1,\"stage\":\"submitted\",\"t_us\":-3200}"
+  },
+  {
+    "name": "ack-457",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":1,\"stage\":\"submitted\",\"t_us\":1e+21}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":1,\"stage\":\"submitted\",\"t_us\":1e+21}"
+  },
+  {
+    "name": "ack-458",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":1,\"stage\":\"submitted\",\"t_us\":null}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":1,\"stage\":\"submitted\",\"t_us\":null}"
+  },
+  {
+    "name": "ack-459",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":4294967301,\"stage\":\"received\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":4294967301,\"stage\":\"received\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-460",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":4294967301,\"stage\":\"received\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":4294967301,\"stage\":\"received\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-461",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":4294967301,\"stage\":\"received\",\"t_us\":16667}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":4294967301,\"stage\":\"received\",\"t_us\":16667}"
+  },
+  {
+    "name": "ack-462",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":4294967301,\"stage\":\"received\",\"t_us\":-3200}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":4294967301,\"stage\":\"received\",\"t_us\":-3200}"
+  },
+  {
+    "name": "ack-463",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":4294967301,\"stage\":\"received\",\"t_us\":1e+21}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":4294967301,\"stage\":\"received\",\"t_us\":1e+21}"
+  },
+  {
+    "name": "ack-464",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":4294967301,\"stage\":\"received\",\"t_us\":null}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":4294967301,\"stage\":\"received\",\"t_us\":null}"
+  },
+  {
+    "name": "ack-465",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":4294967301,\"stage\":\"applied\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":4294967301,\"stage\":\"applied\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-466",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":4294967301,\"stage\":\"applied\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":4294967301,\"stage\":\"applied\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-467",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":4294967301,\"stage\":\"applied\",\"t_us\":16667}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":4294967301,\"stage\":\"applied\",\"t_us\":16667}"
+  },
+  {
+    "name": "ack-468",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":4294967301,\"stage\":\"applied\",\"t_us\":-3200}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":4294967301,\"stage\":\"applied\",\"t_us\":-3200}"
+  },
+  {
+    "name": "ack-469",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":4294967301,\"stage\":\"applied\",\"t_us\":1e+21}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":4294967301,\"stage\":\"applied\",\"t_us\":1e+21}"
+  },
+  {
+    "name": "ack-470",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":4294967301,\"stage\":\"applied\",\"t_us\":null}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":4294967301,\"stage\":\"applied\",\"t_us\":null}"
+  },
+  {
+    "name": "ack-471",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":4294967301,\"stage\":\"submitted\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":4294967301,\"stage\":\"submitted\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-472",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":4294967301,\"stage\":\"submitted\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":4294967301,\"stage\":\"submitted\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-473",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":4294967301,\"stage\":\"submitted\",\"t_us\":16667}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":4294967301,\"stage\":\"submitted\",\"t_us\":16667}"
+  },
+  {
+    "name": "ack-474",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":4294967301,\"stage\":\"submitted\",\"t_us\":-3200}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":4294967301,\"stage\":\"submitted\",\"t_us\":-3200}"
+  },
+  {
+    "name": "ack-475",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":4294967301,\"stage\":\"submitted\",\"t_us\":1e+21}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":4294967301,\"stage\":\"submitted\",\"t_us\":1e+21}"
+  },
+  {
+    "name": "ack-476",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":4294967301,\"stage\":\"submitted\",\"t_us\":null}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":4294967301,\"stage\":\"submitted\",\"t_us\":null}"
+  },
+  {
+    "name": "ack-477",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":9007199254740991,\"stage\":\"received\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":9007199254740991,\"stage\":\"received\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-478",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":9007199254740991,\"stage\":\"received\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":9007199254740991,\"stage\":\"received\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-479",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":9007199254740991,\"stage\":\"received\",\"t_us\":16667}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":9007199254740991,\"stage\":\"received\",\"t_us\":16667}"
+  },
+  {
+    "name": "ack-480",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":9007199254740991,\"stage\":\"received\",\"t_us\":-3200}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":9007199254740991,\"stage\":\"received\",\"t_us\":-3200}"
+  },
+  {
+    "name": "ack-481",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":9007199254740991,\"stage\":\"received\",\"t_us\":1e+21}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":9007199254740991,\"stage\":\"received\",\"t_us\":1e+21}"
+  },
+  {
+    "name": "ack-482",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":9007199254740991,\"stage\":\"received\",\"t_us\":null}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":9007199254740991,\"stage\":\"received\",\"t_us\":null}"
+  },
+  {
+    "name": "ack-483",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":9007199254740991,\"stage\":\"applied\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":9007199254740991,\"stage\":\"applied\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-484",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":9007199254740991,\"stage\":\"applied\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":9007199254740991,\"stage\":\"applied\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-485",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":9007199254740991,\"stage\":\"applied\",\"t_us\":16667}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":9007199254740991,\"stage\":\"applied\",\"t_us\":16667}"
+  },
+  {
+    "name": "ack-486",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":9007199254740991,\"stage\":\"applied\",\"t_us\":-3200}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":9007199254740991,\"stage\":\"applied\",\"t_us\":-3200}"
+  },
+  {
+    "name": "ack-487",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":9007199254740991,\"stage\":\"applied\",\"t_us\":1e+21}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":9007199254740991,\"stage\":\"applied\",\"t_us\":1e+21}"
+  },
+  {
+    "name": "ack-488",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":9007199254740991,\"stage\":\"applied\",\"t_us\":null}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":9007199254740991,\"stage\":\"applied\",\"t_us\":null}"
+  },
+  {
+    "name": "ack-489",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":9007199254740991,\"stage\":\"submitted\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":9007199254740991,\"stage\":\"submitted\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-490",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":9007199254740991,\"stage\":\"submitted\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":9007199254740991,\"stage\":\"submitted\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-491",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":9007199254740991,\"stage\":\"submitted\",\"t_us\":16667}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":9007199254740991,\"stage\":\"submitted\",\"t_us\":16667}"
+  },
+  {
+    "name": "ack-492",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":9007199254740991,\"stage\":\"submitted\",\"t_us\":-3200}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":9007199254740991,\"stage\":\"submitted\",\"t_us\":-3200}"
+  },
+  {
+    "name": "ack-493",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":9007199254740991,\"stage\":\"submitted\",\"t_us\":1e+21}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":9007199254740991,\"stage\":\"submitted\",\"t_us\":1e+21}"
+  },
+  {
+    "name": "ack-494",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":9007199254740991,\"stage\":\"submitted\",\"t_us\":null}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":9007199254740991,\"stage\":\"submitted\",\"t_us\":null}"
+  },
+  {
+    "name": "ack-495",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":1e+21,\"stage\":\"received\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":1e+21,\"stage\":\"received\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-496",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":1e+21,\"stage\":\"received\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":1e+21,\"stage\":\"received\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-497",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":1e+21,\"stage\":\"received\",\"t_us\":16667}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":1e+21,\"stage\":\"received\",\"t_us\":16667}"
+  },
+  {
+    "name": "ack-498",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":1e+21,\"stage\":\"received\",\"t_us\":-3200}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":1e+21,\"stage\":\"received\",\"t_us\":-3200}"
+  },
+  {
+    "name": "ack-499",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":1e+21,\"stage\":\"received\",\"t_us\":1e+21}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":1e+21,\"stage\":\"received\",\"t_us\":1e+21}"
+  },
+  {
+    "name": "ack-500",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":1e+21,\"stage\":\"received\",\"t_us\":null}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":1e+21,\"stage\":\"received\",\"t_us\":null}"
+  },
+  {
+    "name": "ack-501",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":1e+21,\"stage\":\"applied\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":1e+21,\"stage\":\"applied\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-502",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":1e+21,\"stage\":\"applied\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":1e+21,\"stage\":\"applied\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-503",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":1e+21,\"stage\":\"applied\",\"t_us\":16667}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":1e+21,\"stage\":\"applied\",\"t_us\":16667}"
+  },
+  {
+    "name": "ack-504",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":1e+21,\"stage\":\"applied\",\"t_us\":-3200}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":1e+21,\"stage\":\"applied\",\"t_us\":-3200}"
+  },
+  {
+    "name": "ack-505",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":1e+21,\"stage\":\"applied\",\"t_us\":1e+21}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":1e+21,\"stage\":\"applied\",\"t_us\":1e+21}"
+  },
+  {
+    "name": "ack-506",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":1e+21,\"stage\":\"applied\",\"t_us\":null}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":1e+21,\"stage\":\"applied\",\"t_us\":null}"
+  },
+  {
+    "name": "ack-507",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":1e+21,\"stage\":\"submitted\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":1e+21,\"stage\":\"submitted\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-508",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":1e+21,\"stage\":\"submitted\",\"t_us\":0}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":1e+21,\"stage\":\"submitted\",\"t_us\":0}"
+  },
+  {
+    "name": "ack-509",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":1e+21,\"stage\":\"submitted\",\"t_us\":16667}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":1e+21,\"stage\":\"submitted\",\"t_us\":16667}"
+  },
+  {
+    "name": "ack-510",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":1e+21,\"stage\":\"submitted\",\"t_us\":-3200}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":1e+21,\"stage\":\"submitted\",\"t_us\":-3200}"
+  },
+  {
+    "name": "ack-511",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":1e+21,\"stage\":\"submitted\",\"t_us\":1e+21}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":1e+21,\"stage\":\"submitted\",\"t_us\":1e+21}"
+  },
+  {
+    "name": "ack-512",
+    "op": "encode_ack",
+    "input": "{\"stream_id\":\"unié中😀  \",\"seq\":1e+21,\"stage\":\"submitted\",\"t_us\":null}",
+    "output": "{\"type\":\"ack\",\"stream_id\":\"unié中😀  \",\"seq\":1e+21,\"stage\":\"submitted\",\"t_us\":null}"
+  },
+  {
+    "name": "host-text-513",
+    "op": "parse_host_error",
+    "input": "not JSON",
+    "output": "{\"ok\":false,\"reason\":\"\",\"detail\":\"not JSON\"}"
+  },
+  {
+    "name": "host-text-514",
+    "op": "parse_host_error",
+    "input": "null",
+    "output": "{\"ok\":false,\"reason\":\"\",\"detail\":\"null\"}"
+  },
+  {
+    "name": "host-text-515",
+    "op": "parse_host_error",
+    "input": "[]",
+    "output": "{\"ok\":false,\"reason\":\"\",\"detail\":\"[]\"}"
+  },
+  {
+    "name": "host-text-516",
+    "op": "parse_host_error",
+    "input": "{}",
+    "output": "{\"ok\":false,\"reason\":\"\",\"detail\":\"{}\"}"
+  },
+  {
+    "name": "host-text-517",
+    "op": "parse_host_error",
+    "input": "{\"type\":\"error\",\"reason\":\"bad-hello\",\"detail\":\"bad\"}",
+    "output": "{\"ok\":true,\"reason\":\"bad-hello\",\"detail\":\"bad\"}"
+  },
+  {
+    "name": "host-text-518",
+    "op": "parse_host_error",
+    "input": "{\"detail\":\"gone\",\"reason\":\"unauthorized\",\"type\":\"error\"}",
+    "output": "{\"ok\":true,\"reason\":\"unauthorized\",\"detail\":\"gone\"}"
+  },
+  {
+    "name": "host-text-519",
+    "op": "parse_host_error",
+    "input": "{\"type\":\"error\",\"reason\":4,\"detail\":\"bad\"}",
+    "output": "{\"ok\":false,\"reason\":\"\",\"detail\":\"{\\\"type\\\":\\\"error\\\",\\\"reason\\\":4,\\\"detail\\\":\\\"bad\\\"}\"}"
+  },
+  {
+    "name": "host-text-520",
+    "op": "parse_host_error",
+    "input": "{\"type\":\"error\",\"reason\":\"bad\",\"detail\":\"bad\",\"extra\":true}",
+    "output": "{\"ok\":false,\"reason\":\"\",\"detail\":\"{\\\"type\\\":\\\"error\\\",\\\"reason\\\":\\\"bad\\\",\\\"detail\\\":\\\"bad\\\",\\\"extra\\\":true}\"}"
+  },
+  {
+    "name": "strict-accept-case-and-default-port",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"WSS://Host.EXAMPLE:443/rs\",\"resourceBase\":\"http://Assets.EXAMPLE:80/base\",\"token\":null,\"protocol\":19},\"origin\":\"HTTPS://Origin.EXAMPLE:443\"}",
+    "output": "{\"url\":\"wss://host.example/rs\",\"resourceBase\":\"http://assets.example/base\",\"token\":null,\"protocol\":19}"
+  },
+  {
+    "name": "strict-accept-socket-root",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"ws://h\",\"resourceBase\":\"\",\"token\":null,\"protocol\":19},\"origin\":\"https://origin\"}",
+    "output": "{\"url\":\"ws://h/\",\"resourceBase\":\"https://origin\",\"token\":null,\"protocol\":19}"
+  },
+  {
+    "name": "strict-accept-ipv6",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"/rs\",\"resourceBase\":\"/resources\",\"token\":null,\"protocol\":19},\"origin\":\"https://[2001:0db8:0000::1]:8443\"}",
+    "output": "{\"url\":\"wss://[2001:db8::1]:8443/rs\",\"resourceBase\":\"https://[2001:db8::1]:8443/resources\",\"token\":null,\"protocol\":19}"
+  },
+  {
+    "name": "strict-accept-ipv4-mapped",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"ws://[::ffff:192.0.2.1]:80/rs\",\"resourceBase\":\"\",\"token\":null,\"protocol\":19},\"origin\":\"http://h\"}",
+    "output": "{\"url\":\"ws://[::ffff:c000:201]/rs\",\"resourceBase\":\"http://h\",\"token\":null,\"protocol\":19}"
+  },
+  {
+    "name": "strict-accept-ipv4-prefix",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"/path/a-b_~.json\",\"resourceBase\":\"http://192.0.2.4:8080/cache\",\"token\":null,\"protocol\":19},\"origin\":\"http://127.0.0.1:5190\"}",
+    "output": "{\"url\":\"ws://127.0.0.1:5190/path/a-b_~.json\",\"resourceBase\":\"http://192.0.2.4:8080/cache\",\"token\":null,\"protocol\":19}"
+  },
+  {
+    "name": "strict-accept-dns-trailing-dot",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"/rs\",\"resourceBase\":\"\",\"token\":null,\"protocol\":19},\"origin\":\"https://H.EXAMPLE.\"}",
+    "output": "{\"url\":\"wss://h.example./rs\",\"resourceBase\":\"https://h.example.\",\"token\":null,\"protocol\":19}"
+  },
+  {
+    "name": "strict-url-query",
+    "category": "strict",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"wss://h/rs?q=1\",\"resourceBase\":\"\",\"token\":null,\"protocol\":19},\"origin\":\"https://h\"}",
+    "error": "render-stream endpoint: url: query"
+  },
+  {
+    "name": "strict-url-fragment",
+    "category": "strict",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"wss://h/rs#x\",\"resourceBase\":\"\",\"token\":null,\"protocol\":19},\"origin\":\"https://h\"}",
+    "error": "render-stream endpoint: url: fragment"
+  },
+  {
+    "name": "strict-url-dot",
+    "category": "strict",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"wss://h/a/./rs\",\"resourceBase\":\"\",\"token\":null,\"protocol\":19},\"origin\":\"https://h\"}",
+    "error": "render-stream endpoint: url: dot-segment"
+  },
+  {
+    "name": "strict-url-parent",
+    "category": "strict",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"wss://h/a/../rs\",\"resourceBase\":\"\",\"token\":null,\"protocol\":19},\"origin\":\"https://h\"}",
+    "error": "render-stream endpoint: url: dot-segment"
+  },
+  {
+    "name": "strict-url-terminal-dot",
+    "category": "strict",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"wss://h/a/.\",\"resourceBase\":\"\",\"token\":null,\"protocol\":19},\"origin\":\"https://h\"}",
+    "error": "render-stream endpoint: url: dot-segment"
+  },
+  {
+    "name": "strict-url-terminal-parent",
+    "category": "strict",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"wss://h/a/..\",\"resourceBase\":\"\",\"token\":null,\"protocol\":19},\"origin\":\"https://h\"}",
+    "error": "render-stream endpoint: url: dot-segment"
+  },
+  {
+    "name": "strict-url-escape",
+    "category": "strict",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"wss://h/a%20b\",\"resourceBase\":\"\",\"token\":null,\"protocol\":19},\"origin\":\"https://h\"}",
+    "error": "render-stream endpoint: url: percent-escape"
+  },
+  {
+    "name": "strict-url-path-space",
+    "category": "strict",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"wss://h/a b\",\"resourceBase\":\"\",\"token\":null,\"protocol\":19},\"origin\":\"https://h\"}",
+    "error": "render-stream endpoint: url: invalid-path"
+  },
+  {
+    "name": "strict-url-path-unicode",
+    "category": "strict",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"wss://h/café\",\"resourceBase\":\"\",\"token\":null,\"protocol\":19},\"origin\":\"https://h\"}",
+    "error": "render-stream endpoint: url: invalid-path"
+  },
+  {
+    "name": "strict-url-backslash",
+    "category": "strict",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"wss://h/a\\\\b\",\"resourceBase\":\"\",\"token\":null,\"protocol\":19},\"origin\":\"https://h\"}",
+    "error": "render-stream endpoint: url: invalid-path"
+  },
+  {
+    "name": "strict-url-userinfo",
+    "category": "strict",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"wss://u:p@h/rs\",\"resourceBase\":\"\",\"token\":null,\"protocol\":19},\"origin\":\"https://h\"}",
+    "error": "render-stream endpoint: url: userinfo"
+  },
+  {
+    "name": "strict-url-unicode-host",
+    "category": "strict",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"wss://hé/rs\",\"resourceBase\":\"\",\"token\":null,\"protocol\":19},\"origin\":\"https://h\"}",
+    "error": "render-stream endpoint: url: non-ascii-host"
+  },
+  {
+    "name": "strict-url-scheme",
+    "category": "strict",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"ftp://h/rs\",\"resourceBase\":\"\",\"token\":null,\"protocol\":19},\"origin\":\"https://h\"}",
+    "error": "render-stream endpoint: url: unsupported-scheme"
+  },
+  {
+    "name": "strict-url-protocol-relative",
+    "category": "strict",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"//h/rs\",\"resourceBase\":\"\",\"token\":null,\"protocol\":19},\"origin\":\"https://h\"}",
+    "error": "render-stream endpoint: url: protocol-relative"
+  },
+  {
+    "name": "strict-url-empty-host",
+    "category": "strict",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"wss:///rs\",\"resourceBase\":\"\",\"token\":null,\"protocol\":19},\"origin\":\"https://h\"}",
+    "error": "render-stream endpoint: url: invalid-host"
+  },
+  {
+    "name": "strict-url-bad-port",
+    "category": "strict",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"wss://h:65536/rs\",\"resourceBase\":\"\",\"token\":null,\"protocol\":19},\"origin\":\"https://h\"}",
+    "error": "render-stream endpoint: url: invalid-port"
+  },
+  {
+    "name": "strict-url-empty-port",
+    "category": "strict",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"wss://h:/rs\",\"resourceBase\":\"\",\"token\":null,\"protocol\":19},\"origin\":\"https://h\"}",
+    "error": "render-stream endpoint: url: invalid-port"
+  },
+  {
+    "name": "strict-url-zero-port",
+    "category": "strict",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"wss://h:0/rs\",\"resourceBase\":\"\",\"token\":null,\"protocol\":19},\"origin\":\"https://h\"}",
+    "error": "render-stream endpoint: url: invalid-port"
+  },
+  {
+    "name": "strict-url-bad-ipv6",
+    "category": "strict",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"wss://[x]/rs\",\"resourceBase\":\"\",\"token\":null,\"protocol\":19},\"origin\":\"https://h\"}",
+    "error": "render-stream endpoint: url: invalid-host"
+  },
+  {
+    "name": "strict-url-abbreviated-ipv4",
+    "category": "strict",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"wss://127.1/rs\",\"resourceBase\":\"\",\"token\":null,\"protocol\":19},\"origin\":\"https://h\"}",
+    "error": "render-stream endpoint: url: invalid-host"
+  },
+  {
+    "name": "strict-url-numeric-host",
+    "category": "strict",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"wss://0x7f000001/rs\",\"resourceBase\":\"\",\"token\":null,\"protocol\":19},\"origin\":\"https://h\"}",
+    "error": "render-stream endpoint: url: invalid-host"
+  },
+  {
+    "name": "strict-resourceBase-query",
+    "category": "strict",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"/rs\",\"resourceBase\":\"https://h/rs?q=1\",\"token\":null,\"protocol\":19},\"origin\":\"https://h\"}",
+    "error": "render-stream endpoint: resourceBase: query"
+  },
+  {
+    "name": "strict-resourceBase-fragment",
+    "category": "strict",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"/rs\",\"resourceBase\":\"https://h/rs#x\",\"token\":null,\"protocol\":19},\"origin\":\"https://h\"}",
+    "error": "render-stream endpoint: resourceBase: fragment"
+  },
+  {
+    "name": "strict-resourceBase-dot",
+    "category": "strict",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"/rs\",\"resourceBase\":\"https://h/a/./rs\",\"token\":null,\"protocol\":19},\"origin\":\"https://h\"}",
+    "error": "render-stream endpoint: resourceBase: dot-segment"
+  },
+  {
+    "name": "strict-resourceBase-parent",
+    "category": "strict",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"/rs\",\"resourceBase\":\"https://h/a/../rs\",\"token\":null,\"protocol\":19},\"origin\":\"https://h\"}",
+    "error": "render-stream endpoint: resourceBase: dot-segment"
+  },
+  {
+    "name": "strict-resourceBase-terminal-dot",
+    "category": "strict",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"/rs\",\"resourceBase\":\"https://h/a/.\",\"token\":null,\"protocol\":19},\"origin\":\"https://h\"}",
+    "error": "render-stream endpoint: resourceBase: dot-segment"
+  },
+  {
+    "name": "strict-resourceBase-terminal-parent",
+    "category": "strict",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"/rs\",\"resourceBase\":\"https://h/a/..\",\"token\":null,\"protocol\":19},\"origin\":\"https://h\"}",
+    "error": "render-stream endpoint: resourceBase: dot-segment"
+  },
+  {
+    "name": "strict-resourceBase-escape",
+    "category": "strict",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"/rs\",\"resourceBase\":\"https://h/a%20b\",\"token\":null,\"protocol\":19},\"origin\":\"https://h\"}",
+    "error": "render-stream endpoint: resourceBase: percent-escape"
+  },
+  {
+    "name": "strict-resourceBase-path-space",
+    "category": "strict",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"/rs\",\"resourceBase\":\"https://h/a b\",\"token\":null,\"protocol\":19},\"origin\":\"https://h\"}",
+    "error": "render-stream endpoint: resourceBase: invalid-path"
+  },
+  {
+    "name": "strict-resourceBase-path-unicode",
+    "category": "strict",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"/rs\",\"resourceBase\":\"https://h/café\",\"token\":null,\"protocol\":19},\"origin\":\"https://h\"}",
+    "error": "render-stream endpoint: resourceBase: invalid-path"
+  },
+  {
+    "name": "strict-resourceBase-backslash",
+    "category": "strict",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"/rs\",\"resourceBase\":\"https://h/a\\\\b\",\"token\":null,\"protocol\":19},\"origin\":\"https://h\"}",
+    "error": "render-stream endpoint: resourceBase: invalid-path"
+  },
+  {
+    "name": "strict-resourceBase-userinfo",
+    "category": "strict",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"/rs\",\"resourceBase\":\"https://u:p@h/rs\",\"token\":null,\"protocol\":19},\"origin\":\"https://h\"}",
+    "error": "render-stream endpoint: resourceBase: userinfo"
+  },
+  {
+    "name": "strict-resourceBase-unicode-host",
+    "category": "strict",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"/rs\",\"resourceBase\":\"https://hé/rs\",\"token\":null,\"protocol\":19},\"origin\":\"https://h\"}",
+    "error": "render-stream endpoint: resourceBase: non-ascii-host"
+  },
+  {
+    "name": "strict-resourceBase-scheme",
+    "category": "strict",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"/rs\",\"resourceBase\":\"ftp://h/rs\",\"token\":null,\"protocol\":19},\"origin\":\"https://h\"}",
+    "error": "render-stream endpoint: resourceBase: unsupported-scheme"
+  },
+  {
+    "name": "strict-resourceBase-protocol-relative",
+    "category": "strict",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"/rs\",\"resourceBase\":\"//h/rs\",\"token\":null,\"protocol\":19},\"origin\":\"https://h\"}",
+    "error": "render-stream endpoint: resourceBase: protocol-relative"
+  },
+  {
+    "name": "strict-resourceBase-empty-host",
+    "category": "strict",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"/rs\",\"resourceBase\":\"https:///rs\",\"token\":null,\"protocol\":19},\"origin\":\"https://h\"}",
+    "error": "render-stream endpoint: resourceBase: invalid-host"
+  },
+  {
+    "name": "strict-resourceBase-bad-port",
+    "category": "strict",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"/rs\",\"resourceBase\":\"https://h:65536/rs\",\"token\":null,\"protocol\":19},\"origin\":\"https://h\"}",
+    "error": "render-stream endpoint: resourceBase: invalid-port"
+  },
+  {
+    "name": "strict-resourceBase-empty-port",
+    "category": "strict",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"/rs\",\"resourceBase\":\"https://h:/rs\",\"token\":null,\"protocol\":19},\"origin\":\"https://h\"}",
+    "error": "render-stream endpoint: resourceBase: invalid-port"
+  },
+  {
+    "name": "strict-resourceBase-zero-port",
+    "category": "strict",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"/rs\",\"resourceBase\":\"https://h:0/rs\",\"token\":null,\"protocol\":19},\"origin\":\"https://h\"}",
+    "error": "render-stream endpoint: resourceBase: invalid-port"
+  },
+  {
+    "name": "strict-resourceBase-bad-ipv6",
+    "category": "strict",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"/rs\",\"resourceBase\":\"https://[x]/rs\",\"token\":null,\"protocol\":19},\"origin\":\"https://h\"}",
+    "error": "render-stream endpoint: resourceBase: invalid-host"
+  },
+  {
+    "name": "strict-resourceBase-abbreviated-ipv4",
+    "category": "strict",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"/rs\",\"resourceBase\":\"https://127.1/rs\",\"token\":null,\"protocol\":19},\"origin\":\"https://h\"}",
+    "error": "render-stream endpoint: resourceBase: invalid-host"
+  },
+  {
+    "name": "strict-resourceBase-numeric-host",
+    "category": "strict",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"/rs\",\"resourceBase\":\"https://0x7f000001/rs\",\"token\":null,\"protocol\":19},\"origin\":\"https://h\"}",
+    "error": "render-stream endpoint: resourceBase: invalid-host"
+  },
+  {
+    "name": "strict-origin-query",
+    "category": "strict",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"/rs\",\"resourceBase\":\"\",\"token\":null,\"protocol\":19},\"origin\":\"https://h/rs?q=1\"}",
+    "error": "render-stream endpoint: origin: query"
+  },
+  {
+    "name": "strict-origin-fragment",
+    "category": "strict",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"/rs\",\"resourceBase\":\"\",\"token\":null,\"protocol\":19},\"origin\":\"https://h/rs#x\"}",
+    "error": "render-stream endpoint: origin: fragment"
+  },
+  {
+    "name": "strict-origin-dot",
+    "category": "strict",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"/rs\",\"resourceBase\":\"\",\"token\":null,\"protocol\":19},\"origin\":\"https://h/a/./rs\"}",
+    "error": "render-stream endpoint: origin: dot-segment"
+  },
+  {
+    "name": "strict-origin-parent",
+    "category": "strict",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"/rs\",\"resourceBase\":\"\",\"token\":null,\"protocol\":19},\"origin\":\"https://h/a/../rs\"}",
+    "error": "render-stream endpoint: origin: dot-segment"
+  },
+  {
+    "name": "strict-origin-terminal-dot",
+    "category": "strict",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"/rs\",\"resourceBase\":\"\",\"token\":null,\"protocol\":19},\"origin\":\"https://h/a/.\"}",
+    "error": "render-stream endpoint: origin: dot-segment"
+  },
+  {
+    "name": "strict-origin-terminal-parent",
+    "category": "strict",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"/rs\",\"resourceBase\":\"\",\"token\":null,\"protocol\":19},\"origin\":\"https://h/a/..\"}",
+    "error": "render-stream endpoint: origin: dot-segment"
+  },
+  {
+    "name": "strict-origin-escape",
+    "category": "strict",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"/rs\",\"resourceBase\":\"\",\"token\":null,\"protocol\":19},\"origin\":\"https://h/a%20b\"}",
+    "error": "render-stream endpoint: origin: percent-escape"
+  },
+  {
+    "name": "strict-origin-path-space",
+    "category": "strict",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"/rs\",\"resourceBase\":\"\",\"token\":null,\"protocol\":19},\"origin\":\"https://h/a b\"}",
+    "error": "render-stream endpoint: origin: invalid-path"
+  },
+  {
+    "name": "strict-origin-path-unicode",
+    "category": "strict",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"/rs\",\"resourceBase\":\"\",\"token\":null,\"protocol\":19},\"origin\":\"https://h/café\"}",
+    "error": "render-stream endpoint: origin: invalid-path"
+  },
+  {
+    "name": "strict-origin-backslash",
+    "category": "strict",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"/rs\",\"resourceBase\":\"\",\"token\":null,\"protocol\":19},\"origin\":\"https://h/a\\\\b\"}",
+    "error": "render-stream endpoint: origin: invalid-path"
+  },
+  {
+    "name": "strict-origin-userinfo",
+    "category": "strict",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"/rs\",\"resourceBase\":\"\",\"token\":null,\"protocol\":19},\"origin\":\"https://u:p@h/rs\"}",
+    "error": "render-stream endpoint: origin: userinfo"
+  },
+  {
+    "name": "strict-origin-unicode-host",
+    "category": "strict",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"/rs\",\"resourceBase\":\"\",\"token\":null,\"protocol\":19},\"origin\":\"https://hé/rs\"}",
+    "error": "render-stream endpoint: origin: non-ascii-host"
+  },
+  {
+    "name": "strict-origin-scheme",
+    "category": "strict",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"/rs\",\"resourceBase\":\"\",\"token\":null,\"protocol\":19},\"origin\":\"ftp://h/rs\"}",
+    "error": "render-stream endpoint: origin: unsupported-scheme"
+  },
+  {
+    "name": "strict-origin-protocol-relative",
+    "category": "strict",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"/rs\",\"resourceBase\":\"\",\"token\":null,\"protocol\":19},\"origin\":\"//h/rs\"}",
+    "error": "render-stream endpoint: origin: protocol-relative"
+  },
+  {
+    "name": "strict-origin-empty-host",
+    "category": "strict",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"/rs\",\"resourceBase\":\"\",\"token\":null,\"protocol\":19},\"origin\":\"https:///rs\"}",
+    "error": "render-stream endpoint: origin: invalid-host"
+  },
+  {
+    "name": "strict-origin-bad-port",
+    "category": "strict",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"/rs\",\"resourceBase\":\"\",\"token\":null,\"protocol\":19},\"origin\":\"https://h:65536/rs\"}",
+    "error": "render-stream endpoint: origin: invalid-port"
+  },
+  {
+    "name": "strict-origin-empty-port",
+    "category": "strict",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"/rs\",\"resourceBase\":\"\",\"token\":null,\"protocol\":19},\"origin\":\"https://h:/rs\"}",
+    "error": "render-stream endpoint: origin: invalid-port"
+  },
+  {
+    "name": "strict-origin-zero-port",
+    "category": "strict",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"/rs\",\"resourceBase\":\"\",\"token\":null,\"protocol\":19},\"origin\":\"https://h:0/rs\"}",
+    "error": "render-stream endpoint: origin: invalid-port"
+  },
+  {
+    "name": "strict-origin-bad-ipv6",
+    "category": "strict",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"/rs\",\"resourceBase\":\"\",\"token\":null,\"protocol\":19},\"origin\":\"https://[x]/rs\"}",
+    "error": "render-stream endpoint: origin: invalid-host"
+  },
+  {
+    "name": "strict-origin-abbreviated-ipv4",
+    "category": "strict",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"/rs\",\"resourceBase\":\"\",\"token\":null,\"protocol\":19},\"origin\":\"https://127.1/rs\"}",
+    "error": "render-stream endpoint: origin: invalid-host"
+  },
+  {
+    "name": "strict-origin-numeric-host",
+    "category": "strict",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"/rs\",\"resourceBase\":\"\",\"token\":null,\"protocol\":19},\"origin\":\"https://0x7f000001/rs\"}",
+    "error": "render-stream endpoint: origin: invalid-host"
+  },
+  {
+    "name": "strict-origin-page-path",
+    "category": "strict",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"/rs\",\"resourceBase\":\"\",\"token\":null,\"protocol\":19},\"origin\":\"https://h/app\"}",
+    "error": "render-stream endpoint: origin: invalid-origin"
+  },
+  {
+    "name": "strict-url-relative",
+    "category": "strict",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"relative/rs\",\"resourceBase\":\"\",\"token\":null,\"protocol\":19},\"origin\":\"https://h\"}",
+    "error": "render-stream endpoint: url: relative-path"
+  },
+  {
+    "name": "strict-url-wrong-transport",
+    "category": "strict",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"http://h/rs\",\"resourceBase\":\"\",\"token\":null,\"protocol\":19},\"origin\":\"https://h\"}",
+    "error": "render-stream endpoint: url: unsupported-scheme"
+  },
+  {
+    "name": "strict-resourceBase-relative",
+    "category": "strict",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"/rs\",\"resourceBase\":\"relative/rs\",\"token\":null,\"protocol\":19},\"origin\":\"https://h\"}",
+    "error": "render-stream endpoint: resourceBase: relative-path"
+  },
+  {
+    "name": "strict-resourceBase-wrong-transport",
+    "category": "strict",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"/rs\",\"resourceBase\":\"ws://h/rs\",\"token\":null,\"protocol\":19},\"origin\":\"https://h\"}",
+    "error": "render-stream endpoint: resourceBase: unsupported-scheme"
+  },
+  {
+    "name": "strict-wt-query",
+    "category": "strict",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"/rs\",\"resourceBase\":\"\",\"token\":null,\"protocol\":19,\"webTransport\":{\"url\":\"https://h/rs?q=1\"}},\"origin\":\"https://h\"}",
+    "error": "render-stream endpoint: webTransport.url: query"
+  },
+  {
+    "name": "strict-wt-fragment",
+    "category": "strict",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"/rs\",\"resourceBase\":\"\",\"token\":null,\"protocol\":19,\"webTransport\":{\"url\":\"https://h/rs#x\"}},\"origin\":\"https://h\"}",
+    "error": "render-stream endpoint: webTransport.url: fragment"
+  },
+  {
+    "name": "strict-wt-dot-segment",
+    "category": "strict",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"/rs\",\"resourceBase\":\"\",\"token\":null,\"protocol\":19,\"webTransport\":{\"url\":\"https://h/a/../rs\"}},\"origin\":\"https://h\"}",
+    "error": "render-stream endpoint: webTransport.url: dot-segment"
+  },
+  {
+    "name": "strict-wt-percent-escape",
+    "category": "strict",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"/rs\",\"resourceBase\":\"\",\"token\":null,\"protocol\":19,\"webTransport\":{\"url\":\"https://h/%20\"}},\"origin\":\"https://h\"}",
+    "error": "render-stream endpoint: webTransport.url: percent-escape"
+  },
+  {
+    "name": "descriptor-float-presentation-only",
+    "op": "resolve_descriptor",
+    "input": "{\"descriptor\":{\"url\":\"/rs\",\"resourceBase\":\"\",\"token\":null,\"protocol\":19,\"presentation\":[640.0,360.0]},\"origin\":\"https://h\"}",
+    "output": "{\"url\":\"wss://h/rs\",\"resourceBase\":\"https://h\",\"token\":null,\"protocol\":19,\"presentation\":[640,360]}"
+  }
+]

@@ -56,6 +56,16 @@ const PROTOCOL_V8: String = "render-stream/8"
 const CREDIT_STAGES: Array[String] = ["submitted", "applied"]
 const ACK_STAGES: Array[String] = ["received", "applied", "submitted"]
 
+signal tapped(screen_pos: Vector2, item: int, game_pos: Vector2)
+
+## Set the descriptor's page/origin before connect_descriptor for host-relative URLs.
+var origin: String = "http://127.0.0.1/"
+var descriptor: Dictionary = {}
+var resource_base: String = ""
+var last_error: String = ""
+var _protocol_core: RefCounted = null
+var _descriptor_hello: String = ""
+
 var peer: WebSocketPeer = null
 var url: String = ""
 var inbound_buffer_bytes: int = 0
@@ -81,7 +91,11 @@ func open(target_url: String, inbound_bytes: int, token: String = "", wire_versi
 	peer = WebSocketPeer.new()
 	# Before connect_to_url: the buffer (and wslay's message cap) is fixed at handshake time.
 	peer.inbound_buffer_size = inbound_bytes
-	if version == 7:
+	if version >= 16:
+		peer.supported_protocols = PackedStringArray([protocol_call("subprotocol", str(version))])
+	elif version == 14:
+		peer.supported_protocols = PackedStringArray(["render-stream.14"])
+	elif version == 7:
 		peer.supported_protocols = PackedStringArray([SUBPROTOCOL_V7])
 	elif version == 8:
 		# G8g: a /8 client offers only render-stream.8 (a gate 8 policy host offers only .8); /7's transport.
@@ -114,6 +128,9 @@ func open(target_url: String, inbound_bytes: int, token: String = "", wire_versi
 func poll() -> void:
 	if peer != null:
 		peer.poll()
+		if not _descriptor_hello.is_empty() and peer.get_ready_state() == WebSocketPeer.STATE_OPEN:
+			peer.send_text(_descriptor_hello)
+			_descriptor_hello = ""
 
 
 func state() -> WebSocketPeer.State:
@@ -240,3 +257,63 @@ static func hello_v9(v7: Dictionary, texture_encodings: String, gpu_formats: Str
 	out["texture_encodings"] = texture_encodings
 	out["gpu_formats"] = gpu_formats
 	return out
+
+
+## Shared Rust protocol seam. The cached handle carries no scene or per-frame applier.
+func protocol_call(method: String, input: String) -> String:
+	if _protocol_core == null:
+		last_error = RsRustApplier.load_core(RsRustApplier.DEFAULT_EXTENSION)
+		if last_error != "":
+			return JSON.stringify({"error": last_error})
+		_protocol_core = ClassDB.instantiate("RsCore")
+	var result: String = _protocol_core.call(method, input)
+	return result
+
+
+## Opens one descriptor connection. poll/take_packets retain their platform I/O contract.
+## The Rust core resolves/validates the descriptor and constructs its /16+ hello.
+func connect_descriptor(d: Dictionary) -> Error:
+	var resolved: Variant = JSON.parse_string(protocol_call("resolve_descriptor", JSON.stringify({"descriptor": d, "origin": origin})))
+	if not resolved is Dictionary:
+		last_error = "invalid descriptor"
+		return ERR_INVALID_PARAMETER
+	var result: Dictionary = resolved
+	if result.has("error"):
+		last_error = str(result["error"])
+		return ERR_INVALID_PARAMETER
+	descriptor = result
+	version = RsWire.as_int(descriptor["protocol"])
+	if version < 16:
+		last_error = "connect_descriptor requires protocol 16..19"
+		return ERR_INVALID_PARAMETER
+	resource_base = str(descriptor["resourceBase"])
+	var presentation: Array = descriptor.get("presentation", [640, 360])
+	var token: String = str(descriptor["token"]) if descriptor["token"] != null else ""
+	var err: Error = open(str(descriptor["url"]), 16777216, token, version)
+	if err != OK:
+		return err
+	_descriptor_hello = protocol_call("client_hello", JSON.stringify({
+		"protocol": version, "creditWindow": 2, "token": descriptor["token"],
+		"backing": presentation, "css": presentation, "dprMilli": 1000, "gpuFormats": "none",
+		"itemMeta": {"fields": ["mouse_filter"], "groups": [], "meta_keys": []},
+	}))
+	last_error = ""
+	return OK
+
+
+## The view supplies presentation coordinates. Singular mappings emit nothing.
+func tap(screen_pos: Vector2, core: Object) -> void:
+	var point: PackedFloat64Array = core.call("to_game", screen_pos.x, screen_pos.y)
+	if point.size() == 3:
+		tapped.emit(screen_pos, int(point[0]), Vector2(point[1], point[2]))
+
+
+func send_ack(stream_id: String, seq: int, stage: String, t_us: int) -> Error:
+	if peer == null or peer.get_ready_state() != WebSocketPeer.STATE_OPEN:
+		return ERR_CONNECTION_ERROR
+	return peer.send_text(protocol_call("encode_ack", JSON.stringify({"stream_id": stream_id, "seq": seq, "stage": stage, "t_us": t_us})))
+
+
+func host_error(text: String) -> Dictionary:
+	var parsed: Dictionary = JSON.parse_string(protocol_call("parse_host_error", text))
+	return parsed

@@ -4146,3 +4146,25 @@ impl GswRs {
 
 #[cfg(test)]
 mod tween_tests;
+
+// Pure protocol helpers: the native C ABI exports the same JSON/text boundary.
+#[wasm_bindgen]
+pub fn client_hello(input: &str) -> Result<String, JsValue> {
+    render_stream_core::client::call("client_hello", input).map_err(|e| JsValue::from_str(&e))
+}
+#[wasm_bindgen]
+pub fn resolve_descriptor(input: &str) -> Result<String, JsValue> {
+    render_stream_core::client::call("resolve_descriptor", input).map_err(|e| JsValue::from_str(&e))
+}
+#[wasm_bindgen]
+pub fn parse_host_error(input: &str) -> Result<String, JsValue> {
+    render_stream_core::client::call("parse_host_error", input).map_err(|e| JsValue::from_str(&e))
+}
+#[wasm_bindgen]
+pub fn encode_ack(input: &str) -> Result<String, JsValue> {
+    render_stream_core::client::call("encode_ack", input).map_err(|e| JsValue::from_str(&e))
+}
+#[wasm_bindgen]
+pub fn subprotocol(input: &str) -> Result<String, JsValue> {
+    render_stream_core::client::call("subprotocol", input).map_err(|e| JsValue::from_str(&e))
+}

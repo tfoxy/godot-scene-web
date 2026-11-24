@@ -134,8 +134,57 @@ fn capi_tree_queries_match_applier_on_clipped_grid() {
             1
         );
         assert_eq!(rsc_pick(h, 90., 10.), -1);
-        assert_eq!(rsc_set_hit_filters(h, std::ptr::null(), filters.as_ptr(), 3), 0);
+        assert_eq!(
+            rsc_set_hit_filters(h, std::ptr::null(), filters.as_ptr(), 3),
+            0
+        );
         assert!(!rsc_to_game(h, 0., 0., std::ptr::null_mut()));
         rsc_free(h);
     }
+}
+
+#[test]
+fn native_metadata_filters_commit_with_transaction() {
+    use render_stream_core::apply::overrides::PickSource;
+    use render_stream_core::validate::Accepted;
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../protocol/golden-14/item-meta-v2.rs14"
+    );
+    let data = std::fs::read(path).unwrap();
+    let spans = wire::split_records(&data, 14).unwrap();
+    let mut reference = Validator::new(spans[0].bytes(&data), 0, Options::new(14)).unwrap();
+    let mut native = rs_core_capi::core::Core::new();
+    assert_eq!(native.session(&data, spans[0].offset, 14), 4);
+    let mut checked = 0;
+    let mut inputs = 0;
+    let mut ignored = 0;
+    let mut held = 0;
+    for span in &spans[1..] {
+        let before: Vec<_> = (1..=30).map(|id| native.hit_filter(id)).collect();
+        let accepted = reference.accept(span.bytes(&data), span.offset).unwrap();
+        assert_ne!(native.accept(&data, span.offset), 0);
+        if matches!(accepted, Accepted::Transaction) {
+            for id in reference.state().items.keys() {
+                assert_eq!(
+                    native.hit_filter(*id),
+                    render_stream_core::client::hit_filter(reference.item_meta(), *id)
+                );
+                match native.hit_filter(*id) {
+                    Some(HIT_INPUT) => inputs += 1,
+                    Some(HIT_IGNORE) => ignored += 1,
+                    _ => {}
+                }
+                checked += 1;
+            }
+        } else if matches!(accepted, Accepted::ItemMeta) {
+            assert_eq!(
+                (1..=30).map(|id| native.hit_filter(id)).collect::<Vec<_>>(),
+                before,
+                "metadata is held until its transaction"
+            );
+            held += 1;
+        }
+    }
+    assert!(checked > 0 && inputs > 0 && ignored > 0 && held > 0);
 }

@@ -688,6 +688,11 @@ func _ready() -> void:
 		_wire_version = 8
 		var receiver_block_v8: Dictionary = _report["receiver"]
 		receiver_block_v8["protocol"] = "render-stream/8"
+	for version: int in [16, 17, 18, 19]:
+		if _data.size() >= 8 and _data.slice(0, 8).hex_encode() == RsWire.MAGIC_HEX_BY_VERSION[version]:
+			_wire_version = version
+			var receiver_block: Dictionary = _report["receiver"]
+			receiver_block["protocol"] = "render-stream/%d" % version
 	var sha256: String = RsWire.sha256_hex(_data)
 	_report["recording"] = {"path": _recording_path, "sha256": sha256, "bytes": _data.size()}
 	_stream_report = {
@@ -1430,6 +1435,8 @@ func _process(_delta: float) -> void:
 			# identities for client extensions; the core
 			# holds the record for its transaction. Nothing to apply.
 			pass
+		"tween":
+			pass  # Native clients never request evaluation.
 		"hint":
 			# A /15 resource_hint or resource_unhint: advisory (render-stream-15.md "Resource
 			# hints"); this receiver never prefetches, so nothing to apply.
@@ -1848,8 +1855,8 @@ func _parse_wire_env() -> bool:
 	var protocol_text: String = RsConfig.get_env("RS_RECEIVER_PROTOCOL").strip_edges()
 	if protocol_text == "":
 		protocol_text = "7" if RsConfig.is_web() else "6"
-	if not ["6", "7", "8", "9", "10", "11", "12", "13", "15"].has(protocol_text):
-		_log("error: RS_RECEIVER_PROTOCOL must be 6, 7, 8, 9, 10, 11, 12, 13 or 15 (got %s)" % JSON.stringify(protocol_text))
+	if not ["6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19"].has(protocol_text):
+		_log("error: RS_RECEIVER_PROTOCOL must be a version from 6 through 19 (got %s)" % JSON.stringify(protocol_text))
 		return false
 	if RsConfig.is_web() and not ["7", "8", "9", "10", "11", "12", "13"].has(protocol_text):
 		_log("error: a web receiver speaks only render-stream/7, /8, (G8ku) /9, (CG1) /10, (W11e) /11, (PM5) /12 or (W13d) /13 (RS_RECEIVER_PROTOCOL %s)" % protocol_text)
@@ -2010,7 +2017,20 @@ func _process_live() -> void:
 					_reconnect_record["opened_us"] = Time.get_ticks_usec()
 				if _conn_index == 1:
 					_web_mark("rs-socket-open")
-				if _wire_version >= 11:
+				if _wire_version >= 16:
+					var presentation: Vector2i = DisplayServer.window_get_size() if DisplayServer.get_name() != "headless" else Vector2i(640, 360)
+					var facts: Dictionary = {
+						"protocol": _wire_version, "creditWindow": _credit_window, "creditStage": _credit_stage,
+						"token": null if _token == "" else _token, "backing": [presentation.x, presentation.y],
+						"css": [presentation.x, presentation.y], "dprMilli": 1000, "gpuFormats": "none",
+						"receiver": "godot-receiver", "receiverKind": "native", "inboundBufferBytes": _inbound_bytes,
+						"manifestSha256": null if _manifest_sha256 == "" else _manifest_sha256, "liveCoding": _live_coding,
+						"itemMeta": {"fields": ["mouse_filter"], "groups": [], "meta_keys": []},
+					}
+					_applier.coding_open(_live_coding, _inbound_bytes)
+					_coding_on = true
+					_client.peer.send_text(_client.protocol_call("client_hello", JSON.stringify(facts)))
+				elif _wire_version >= 11:
 					# W11d: /10's hello under render-stream/11, W11t's live_coding last (golden-11's
 					# control hello); the connection's decoder opens with the same offer.
 					# PM5: /12's hello is /11's under render-stream/12; W13d: /13's is /12's under
@@ -2232,7 +2252,7 @@ func _drain_packets() -> void:
 	for packet: Dictionary in _client.take_packets():
 		var data: PackedByteArray = packet["data"]
 		if not packet["binary"]:
-			var parsed: Dictionary = RsLiveClient.parse_host_text(data.get_string_from_utf8())
+			var parsed: Dictionary = _client.host_error(data.get_string_from_utf8()) if _wire_version >= 16 else RsLiveClient.parse_host_text(data.get_string_from_utf8())
 			var detail: String = "%s: %s" % [parsed["reason"], parsed["detail"]] if parsed["ok"] else "unexpected text message %s" % JSON.stringify(data.get_string_from_utf8())
 			if parsed["ok"] and parsed["reason"] == "unauthorized" and not _session_seen:
 				# G7l: as the close 1008 `unauthorized` below (a browser may deliver both).
@@ -3127,7 +3147,11 @@ func _accept_record(data: PackedByteArray, offset: int) -> Dictionary:
 
 
 func _send(message: Dictionary) -> void:
-	var sent: Error = _client.send(message)
+	var sent: Error
+	if _wire_version >= 16 and message.get("type") == "ack":
+		sent = _client.send_ack(str(message["stream_id"]), RsWire.as_int(message["seq"]), str(message["stage"]), RsWire.as_int(message["t_us"]))
+	else:
+		sent = _client.send(message)
 	if sent != OK:
 		_log("warning: could not send %s (%s)" % [RsLiveClient.encode(message), error_string(sent)])
 
@@ -3315,3 +3339,21 @@ static func _env_or_null(variable: String) -> Variant:
 
 func _log(text: String) -> void:
 	print("[receiver] " + text)
+
+
+## The receiver view forwards pointer releases through the shared core's presentation mapping.
+func _unhandled_input(event: InputEvent) -> void:
+	if _client == null or _applier == null:
+		return
+	if event is InputEventScreenTouch:
+		var touch: InputEventScreenTouch = event
+		if not touch.pressed:
+			_client.tap(touch.position, _applier)
+	elif event is InputEventMouseButton:
+		var mouse: InputEventMouseButton = event
+		if mouse.button_index == MOUSE_BUTTON_LEFT and not mouse.pressed:
+			_client.tap(mouse.position, _applier)
+
+
+func live_client() -> RsLiveClient:
+	return _client

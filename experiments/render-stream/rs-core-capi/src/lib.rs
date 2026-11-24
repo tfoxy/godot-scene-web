@@ -617,3 +617,67 @@ pub unsafe extern "C" fn rsc_to_game(h: *mut RsCore, x: f32, y: f32, out: *mut f
         None => false,
     })
 }
+
+// Pure client helpers share the handle's text output, like the other text-returning C calls.
+fn client_call(h: *mut RsCore, operation: &str, data: *const u8, len: usize) -> i32 {
+    guard(h, 0, |c| {
+        let input = unsafe { bytes(data, len) };
+        let result = std::str::from_utf8(input)
+            .map_err(|_| "render-stream client: invalid UTF-8".to_owned())
+            .and_then(|input| render_stream_core::client::call(operation, input));
+        match result {
+            Ok(text) => {
+                c.text = text.into_bytes();
+                1
+            }
+            Err(error) => {
+                c.text = serde_json::json!({"error":error}).to_string().into_bytes();
+                0
+            }
+        }
+    })
+}
+
+/// Pure client helper: 1 success, 0 error; result (or JSON error) is in text.
+/// # Safety
+/// `data` contains `len` readable bytes; `h` is a live handle.
+#[no_mangle]
+pub unsafe extern "C" fn rsc_client_hello(h: *mut RsCore, data: *const u8, len: usize) -> i32 {
+    client_call(h, "client_hello", data, len)
+}
+
+/// Pure client helper: 1 success, 0 error; result (or JSON error) is in text.
+/// # Safety
+/// `data` contains `len` readable bytes; `h` is a live handle.
+#[no_mangle]
+pub unsafe extern "C" fn rsc_resolve_descriptor(
+    h: *mut RsCore,
+    data: *const u8,
+    len: usize,
+) -> i32 {
+    client_call(h, "resolve_descriptor", data, len)
+}
+
+/// Pure client helper: 1 success, 0 error; result (or JSON error) is in text.
+/// # Safety
+/// `data` contains `len` readable bytes; `h` is a live handle.
+#[no_mangle]
+pub unsafe extern "C" fn rsc_parse_host_error(h: *mut RsCore, data: *const u8, len: usize) -> i32 {
+    client_call(h, "parse_host_error", data, len)
+}
+
+/// Pure client helper: 1 success, 0 error; result (or JSON error) is in text.
+/// # Safety
+/// `data` contains `len` readable bytes; `h` is a live handle.
+#[no_mangle]
+pub unsafe extern "C" fn rsc_encode_ack(h: *mut RsCore, data: *const u8, len: usize) -> i32 {
+    client_call(h, "encode_ack", data, len)
+}
+
+/// Pure client helper: 1 success, 0 error; result (or JSON error) is in text.
+/// # Safety
+/// `data` contains `len` readable bytes; `h` is a live handle.
+#[no_mangle]
+pub unsafe extern "C" fn rsc_subprotocol(h: *mut RsCore, data: *const u8, len: usize) -> i32 {
+    client_call(h, "subprotocol", data, len)
+}

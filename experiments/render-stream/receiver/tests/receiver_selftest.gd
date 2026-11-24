@@ -8,7 +8,7 @@ extends SceneTree
 ##      which project.godot levels as an error, fails the load and prints a script diagnostic the
 ##      checker also greps for);
 ##   2. RsWire.split_records() frames every valid golden recording exactly as its *.decoded.json
-##      lists the records (offset, byte_length), for golden-2 to golden-15 (PM5 adds golden-11's
+##      lists the records (offset, byte_length), for golden-2 to golden-19 (PM5 adds golden-11's
 ##      GRSB and golden-12's GRSC);
 ##   3. every golden invalid/ vector whose index.json code is a framing code (bad-magic, truncated,
 ##      record-length) fails framing with that code;
@@ -26,7 +26,7 @@ extends SceneTree
 ## GDScript codec self-test (codec2_selftest.gd) with the GDScript decoder.
 ##
 ## RS_SELFTEST_GOLDEN_DIR names golden-2 (default <receiver>/../protocol/golden-2); golden-3 to
-## golden-15 are its siblings. Prints "[receiver-selftest] ok" and quits 0, or prints each failure
+## golden-19 are its siblings. Prints "[receiver-selftest] ok" and quits 0, or prints each failure
 ## and quits 1.
 
 const FRAMING_CODES: Array[String] = ["bad-magic", "truncated", "record-length"]
@@ -42,11 +42,12 @@ func _init() -> void:
 	_check_row_log()
 	_check_cache_budget()
 	_check_native_queries()
+	_check_protocol_helpers()
 	var golden2: String = OS.get_environment("RS_SELFTEST_GOLDEN_DIR").strip_edges()
 	if golden2 == "":
 		golden2 = ProjectSettings.globalize_path("res://").path_join("../protocol/golden-2").simplify_path()
 	var root: String = golden2.get_base_dir()
-	for version: int in [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]:
+	for version: int in [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]:
 		var dir: String = golden2 if version == 2 else root.path_join("golden-%d" % version)
 		_check_golden(dir, version)
 	if _failures.is_empty():
@@ -264,6 +265,9 @@ func _check_scripts() -> void:
 
 
 func _check_golden(dir: String, version: int) -> void:
+	if version >= 16:
+		_check_recent_goldens(dir, version)
+		return
 	if not DirAccess.dir_exists_absolute(dir):
 		_fail("%s does not exist" % dir)
 		return
@@ -310,7 +314,7 @@ func _check_invalid(dir: String, version: int) -> void:
 	var invalid: Array = index.get("invalid", [])
 	for value: Variant in invalid:
 		var entry: Dictionary = value
-		var code: String = entry["code"]
+		var code: String = str(entry.get("code", entry.get("error", "")))
 		if not FRAMING_CODES.has(code):
 			continue
 		var path: String = dir.path_join(str(entry["file"]))
@@ -344,3 +348,53 @@ func _check_native_queries() -> void:
 		_fail("native set_hit_filters accepted mismatched lengths")
 	if core.call("set_hit_filters", PackedInt32Array([1]), PackedByteArray([0])) == "":
 		_fail("native set_hit_filters accepted an invalid filter")
+
+
+## Later golden sets also contain standalone .record decodes and recordings without JSON.
+func _check_recent_goldens(dir: String, version: int) -> void:
+	var framed: int = 0
+	for file_name: String in DirAccess.get_files_at(dir):
+		if not file_name.ends_with(".rs%d" % version) or file_name.begins_with("corrupt"):
+			continue
+		var data: PackedByteArray = FileAccess.get_file_as_bytes(dir.path_join(file_name))
+		var split: Dictionary = RsWire.split_records(data, version)
+		var errors: PackedStringArray = split["errors"]
+		var records: Array[Dictionary] = split["records"]
+		_checked += 1
+		framed += 1
+		if not errors.is_empty() or records.is_empty():
+			_fail("%s: %s" % [file_name, errors])
+			continue
+		var end: int = 8
+		for record: Dictionary in records:
+			if RsWire.as_int(record["offset"]) != end:
+				_fail("%s: non-contiguous record" % file_name)
+			end += RsWire.as_int(record["byte_length"])
+		if end != data.size():
+			_fail("%s: framing left bytes" % file_name)
+	if framed == 0:
+		_fail("%s has no recordings" % dir)
+	_check_invalid(dir, version)
+
+
+## The same vectors cross the native String ABI as the Rust and browser tests.
+func _check_protocol_helpers() -> void:
+	var client := RsLiveClient.new()
+	var path: String = ProjectSettings.globalize_path("res://../rs-core/src/client/vectors.json")
+	var parsed: Variant = JSON.parse_string(FileAccess.get_file_as_string(path))
+	if not parsed is Array:
+		_fail("shared client vectors are unreadable")
+		return
+	var vectors: Array = parsed
+	for value: Variant in vectors:
+		var vector: Dictionary = value
+		var operation: String = vector["op"]
+		var input: String = vector["input"]
+		var output: String = client.protocol_call(operation, input)
+		_checked += 1
+		if vector.has("error"):
+			var error: Dictionary = JSON.parse_string(output)
+			if error.get("error") != vector["error"]:
+				_fail("shared client vector %s: wrong error" % vector["name"])
+		elif output != vector["output"]:
+			_fail("shared client vector %s: wrong output" % vector["name"])

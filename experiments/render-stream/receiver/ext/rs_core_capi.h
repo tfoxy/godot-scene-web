@@ -48,6 +48,12 @@ int32_t rsc_set_hit_filters(RsCore *h, const uint32_t *ids, const uint8_t *filte
 int64_t rsc_pick(RsCore *h, float x, float y);
 // false for a singular override; out is unchanged. true writes [item|-1, game_x, game_y].
 bool rsc_to_game(RsCore *h, float x, float y, double out[3]);
+// Pure client helpers: UTF-8 input; 1 success or 0 error. text holds the result or {"error":...}.
+int32_t rsc_client_hello(RsCore *h, const uint8_t *data, size_t len);
+int32_t rsc_resolve_descriptor(RsCore *h, const uint8_t *data, size_t len);
+int32_t rsc_parse_host_error(RsCore *h, const uint8_t *data, size_t len);
+int32_t rsc_encode_ack(RsCore *h, const uint8_t *data, size_t len);
+int32_t rsc_subprotocol(RsCore *h, const uint8_t *data, size_t len);
 // ops.
 void rsc_begin_session(RsCore *h);
 // 1 resource, 2 transaction, 3 end, 5 held, 6 item_meta, 7 hint, 8 tween, 0 error;

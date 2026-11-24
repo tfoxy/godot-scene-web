@@ -2038,6 +2038,11 @@ enum Method : int {
   M_SET_HIT_FILTERS,
   M_HIT_TEST,
   M_TO_GAME,
+  M_CLIENT_HELLO,
+  M_RESOLVE_DESCRIPTOR,
+  M_PARSE_HOST_ERROR,
+  M_ENCODE_ACK,
+  M_SUBPROTOCOL,
   M_COUNT,
 };
 
@@ -2086,6 +2091,11 @@ constexpr MethodSpec METHODS[M_COUNT] = {
     {"set_hit_filters", 2},  // (PackedInt32Array, PackedByteArray) -> String (empty on success)
     {"hit_test", 2},         // (x, y) -> int: GUI tree order only
     {"to_game", 2},          // (x, y) -> PackedFloat64Array (empty for a singular override)
+    {"client_hello", 1}, // UTF-8 JSON/text -> String
+    {"resolve_descriptor", 1}, // UTF-8 JSON/text -> String
+    {"parse_host_error", 1}, // UTF-8 JSON/text -> String
+    {"encode_ack", 1}, // UTF-8 JSON/text -> String
+    {"subprotocol", 1}, // UTF-8 JSON/text -> String
 };
 
 void method_call(void *userdata, GDExtensionClassInstancePtr instance, const GDExtensionConstVariantPtr *args,
@@ -2402,6 +2412,23 @@ void method_call(void *userdata, GDExtensionClassInstancePtr instance, const GDE
       out.resize(ok ? 3 : 0);
       if (ok) std::memcpy(out.data(), point, sizeof(point));
       gd.from[out.type](ret, &out.p);
+      return;
+    }
+    case M_CLIENT_HELLO:
+    case M_RESOLVE_DESCRIPTOR:
+    case M_PARSE_HOST_ERROR:
+    case M_ENCODE_ACK:
+    case M_SUBPROTOCOL:
+    {
+      if (!arg_is(args[0], GDEXTENSION_VARIANT_TYPE_STRING)) {
+        ret_string(ret, "{\"error\":\"render-stream client: expected String\"}");
+        return;
+      }
+      const std::string input = arg_string(args[0]);
+      using Fn = int32_t (*)(RsCore *, const uint8_t *, size_t);
+      constexpr Fn calls[] = {rsc_client_hello, rsc_resolve_descriptor, rsc_parse_host_error, rsc_encode_ack, rsc_subprotocol};
+      calls[m - M_CLIENT_HELLO](inst->core, reinterpret_cast<const uint8_t *>(input.data()), input.size());
+      text_string(inst, static_cast<Variant *>(ret));
       return;
     }
     case M_COUNT:

@@ -460,3 +460,13 @@ func root_canvas_xform() -> PackedFloat32Array:
 		_refresh_counters()
 	var xform: PackedFloat32Array = _counters["root_canvas_xform"]
 	return xform
+
+
+func hit_test(x: float, y: float) -> int:
+	var item: int = _core.call("hit_test", x, y)
+	return item
+
+
+func to_game(x: float, y: float) -> PackedFloat64Array:
+	var point: PackedFloat64Array = _core.call("to_game", x, y)
+	return point

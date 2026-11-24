@@ -30,6 +30,10 @@ const MAGIC_HEX_BY_VERSION: Dictionary[int, String] = {
 	13: "475253440d0a1a0a",
 	14: "475253450d0a1a0a",
 	15: "475253460d0a1a0a",
+	16: "475253470d0a1a0a",
+	17: "475253480d0a1a0a",
+	18: "475253490d0a1a0a",
+	19: "4752534a0d0a1a0a",
 }
 const MAGIC_V7_HEX: String = "475253370d0a1a0a"
 ## G8t: render-stream/8 files (gate 8 recordings, render-stream-8.md) replay at /8.

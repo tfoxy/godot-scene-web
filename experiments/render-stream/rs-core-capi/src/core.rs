@@ -6,10 +6,10 @@
 //! the former GDScript applier (`rs_applier.gd`, removed in G7gd) and `Rs2Decoder` give receiver.gd, so receiver.gd's own logic (failure
 //! seqs, evidence, acks) runs unchanged on top of either core.
 
+use crate::mm::MmStore;
 use crate::ops::OpBuf;
 use crate::plan::{Library, Needed, Payloads, Planner, Sabotage};
 use crate::vt::{gd, Vt};
-use crate::mm::MmStore;
 use render_stream_core::apply::dynamic::{body_sha256, DynamicMeshes};
 use render_stream_core::apply::retention::Retention;
 use render_stream_core::canon;
@@ -47,12 +47,11 @@ pub const VERSION: u8 = 6;
 /// multimesh blocks at accept into its /12 record (`Validator::record_view`), which is what the
 /// ingest reads, so the planner sees /12's model; a `predict-check` failure holds every patch
 /// until the full transaction (`KIND_HELD`); the live hello offers .13 under
-/// RS_RECEIVER_PROTOCOL=13. render-stream/14 adds item_meta v2 rows, which rs-core decodes and
-/// the native receiver never asks for (a recording that carries them stays playable). /15
+/// RS_RECEIVER_PROTOCOL=13. render-stream/14 adds item_meta v2 rows, which rs-core decodes; the native client can
+/// request mouse_filter rows for tree picking. /15
 /// (render-stream-15.md) adds resource hints, which this receiver accepts and ignores
 /// (`KIND_HINT`), and a texture entry's `size_override`, which the planner applies with
-/// `texture_set_size_override`; the live hello offers .15 under RS_RECEIVER_PROTOCOL=15 (the
-/// native receiver never asks for item_meta v2, so it does not offer .14).
+/// `texture_set_size_override`; the live hello offers .15 under RS_RECEIVER_PROTOCOL=15.
 /// /16–/19 retain the native planner: viewport/proxy samples are counted unsupported,
 /// resource hints and announced tweens are accepted without client-side evaluation.
 pub const VERSIONS: [u8; 14] = [6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19];
@@ -67,8 +66,8 @@ pub const KIND_SESSION: i32 = 4;
 pub const KIND_HELD: i32 = 5;
 /// a /13 `item_meta` record (kind "item_meta"). The
 /// validator holds it for the transaction it describes; nothing to apply and nothing to ack.
-/// The native receiver does not opt in, so this only keeps a recording that carries the records
-/// playable. (5 is `KIND_HELD` here; GSW's wasm ABI calls it `ACCEPT_ITEM_META` = 5.)
+/// Native clients request mouse_filter rows for tree picking; metadata commits with its
+/// transaction. (5 is `KIND_HELD` here; GSW's wasm ABI calls it `ACCEPT_ITEM_META` = 5.)
 pub const KIND_ITEM_META: i32 = 6;
 /// a /15 `resource_hint` or `resource_unhint` record (kind "hint"; `record.meta` carries `type`
 /// and `hash`). Hints are advisory (render-stream-15.md "Resource hints"): the validator keeps
@@ -474,6 +473,16 @@ impl Core {
                 None => {}
             }
         }
+        let meta_change = self
+            .validator
+            .as_ref()
+            .and_then(|v| v.item_meta_pending())
+            .map(|m| {
+                (
+                    m.full,
+                    m.items.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+                )
+            });
         let result = match self.validator.as_mut() {
             Some(v) => v.accept(record, offset),
             None => Err(Error::new("missing-session", "no session")),
@@ -500,6 +509,23 @@ impl Core {
             }
         }
         let validator = self.validator.as_ref().unwrap();
+        if matches!(accepted, Accepted::Transaction) {
+            for id in &validator.delta().items_removed {
+                self.hit_filters.remove(id);
+            }
+            if let Some((full, ids)) = meta_change {
+                if full {
+                    self.hit_filters.clear();
+                }
+                for id in ids {
+                    if let Some(filter) =
+                        render_stream_core::client::hit_filter(validator.item_meta(), id)
+                    {
+                        self.hit_filters.insert(id, filter);
+                    }
+                }
+            }
+        }
         let digest = validator
             .record_digests()
             .last()
@@ -1039,7 +1065,10 @@ impl Core {
             ("payloads_unstaged", pc.unstaged),
             ("payloads_provided_staged", pc.provided_staged),
             ("payloads_provided_in_frame", pc.provided_in_frame),
-            ("payloads_provided_in_frame_bytes", pc.provided_in_frame_bytes),
+            (
+                "payloads_provided_in_frame_bytes",
+                pc.provided_in_frame_bytes,
+            ),
             ("payloads_staged_now", staged_now),
         ] {
             v.key(k);
