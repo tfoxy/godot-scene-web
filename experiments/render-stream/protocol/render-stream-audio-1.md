@@ -135,16 +135,16 @@ assigned by the seat from 1 upward per run and never reused. They are never Godo
 
 | `type` | Members | Meaning |
 | ------ | ------- | ------- |
-| `audio-state` | `godot: {buses, voices} \| null`, `fmod: {bankset, groups, lanes} \| null` | The snapshot after every `track-ready`, followed by one `sample` per registered sample. `voices` entries are `start` members plus `position_s` and `paused`. |
+| `audio-state` | `godot: {buses, voices} \| null`, `fmod: {bankset, groups, lanes} \| null` | The snapshot after every `track-ready`, followed by one `sample` per registered sample. `buses` is in bus-index order (see Buses below). `voices` entries are `start` members plus `position_s` and `paused`. |
 | `sample` | `id, variants: [{codec, hash, bytes}], channels, rate, length_ms, loop: {mode, begin, end}, store` | Registration (`register_sample`) or a re-announce (store class changed). `mode` is `disabled\|forward\|pingpong\|backward`. `begin`/`end` are frames for `wav`, seconds for `mp3`/`ogg-vorbis` (Godot's `loop_offset`). |
 | `sample-variant` | `id, codec, hash, bytes` | A lazily built `wav` variant is ready. |
 | `sample-drop` | `id` | `unregister_sample`. |
-| `start` | `voice, sample, bus, offset_s, pitch, volumes: [8 floats]` | `start_sample_playback` (the web driver's argument set, `audio_driver_web.cpp:274-299`). |
+| `start` | `voice, sample, bus, offset_s, pitch, volumes: [8 floats]` | `start_sample_playback` (the web driver's argument set, `audio_driver_web.cpp:274-299`). `bus` is an integer index; volumes are four linear stereo pairs (L,R × 4 channels). |
 | `stop` | `voice, reason: "stop"\|"end"` | Exactly one per `start` or snapshot voice. |
 | `pause` | `voice, paused` | `set_sample_playback_pause`. |
 | `pitch` | `voice, pitch` | `update_sample_playback_pitch_scale`. |
-| `voice-volumes` | `voice, buses: [{bus, v: [8 floats]}]` | `set_sample_playback_bus_volumes_linear`. |
-| `bus` | `op: count\|add\|remove\|move\|send\|volume_db\|solo\|mute`, `bus`, `value` | One per `set_sample_bus_*` call, in call order. |
+| `voice-volumes` | `voice, buses: [{bus, v: [8 floats]}]` | `set_sample_playback_bus_volumes_linear`. Bus identities are integer indices; `v` contains four linear stereo pairs. |
+| `bus` | `op: count\|add\|remove\|move\|send\|volume_db\|solo\|mute`, `bus`, `value` | One per `set_sample_bus_*` call, in call order; integer indices and operation-specific values as below. |
 | `cue` | `key_id, key, kind: oneshot\|loop-start\|loop-stop\|loop-stop-all, group, pitch, volume` | A producer cue . Loop kinds only gate a lane's gain on the client. |
 | `groups` | `gains: {name: gain}, snapshot: bool` | FMOD group gains . |
 | `take-start` | `key_id, stream, frames, bankset` | Before the first take block, only to a connection that lacks the key. |
@@ -153,6 +153,37 @@ assigned by the seat from 1 upward per run and never reused. They are never Godo
 | `lanes` | `lanes: [{id, name, group, state: on\|off\|unavailable}]` | Lane state after a subscription change. |
 | `clock` | `c, h` | Reply to a client `clock`: `h` = capture µs at reply. |
 | `track-error` | (track/1) | Before a host close. |
+
+### Buses
+
+Bus identity is always the integer Godot bus index: `start.bus`,
+`voice-volumes.buses[].bus`, `bus.bus`, and send targets. The host resolves names
+with the bound `AudioServer.get_bus_index(name)` before emitting. An unknown name
+maps to -1: a voice routes to Master and a send routes directly to the destination.
+The client never resolves diagnostic names.
+
+`audio-state.godot.buses` is in bus-index order (array position = Godot index).
+Each entry is `{name: string, volume_db: number, send: int, solo: bool, mute: bool}`.
+`send` is a destination bus index, or -1 for none. Master (bus 0) always has send
+-1 and feeds the output. An empty array means one Master bus at 0 dB, send -1,
+not soloed or muted. New buses take these default fields.
+
+| `op` | `bus` | `value` |
+| ---- | ----- | ------- |
+| `count` | 0 | New count (int); truncate or extend. |
+| `add` | Insert position (-1 = append) | Absent. |
+| `remove` | Index | Absent. |
+| `move` | From-index | To-index (int). |
+| `send` | Index | Destination index (int; -1 = none). |
+| `volume_db` | Index | Number. |
+| `solo` | Index | Bool. |
+| `mute` | Index | Bool. |
+
+Index shifts after `add`, `remove` and `move` follow Godot's semantics. Move
+positions refer to the array before removal: a forward move inserts at
+`to-index - 1`, a backward move at `to-index`, and -1 appends. Existing routes
+retain their bus identity when indices shift. Out-of-range indices close
+`audio-protocol`.
 
 ### Client texts (≤ 4096 B, track/1's rate bucket)
 

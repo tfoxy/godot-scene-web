@@ -202,6 +202,21 @@
   },
   "rules": [
     {
+      "why": "The opt-in audio client has no import edge from the view or tracks entries; its session, PCM engine and wire codec are covered by package tests and pure self-tests",
+      "paths": [
+        "packages/render-stream-client/src/audio/**",
+        "packages/render-stream-client/src/audio.ts",
+        "packages/render-stream-client/test/*audio*",
+        "packages/render-stream-client/THIRD-PARTY*",
+        "packages/render-stream-client/tsdown.audio.config.ts",
+        "packages/render-stream-client/package.json",
+        "experiments/render-stream/scripts/*audio-browser*",
+        "experiments/render-stream/scripts/test/*audio-browser*"
+      ],
+      "reach": ["pure", "pnpm-test"],
+      "exclusive": true
+    },
+    {
       "why": "Opt-in RTC engine and crypto backend reach the RTC probe and feature-enabled Rust tests",
       "paths": [
         "experiments/render-stream/rs-net/src/rtc/**",

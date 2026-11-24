@@ -21,15 +21,21 @@
       "development": "./src/webtransport.ts",
       "types": "./dist/webtransport.d.ts",
       "import": "./dist/webtransport.js"
+    },
+    "./audio": {
+      "development": "./src/audio.ts",
+      "types": "./dist/audio.d.ts",
+      "import": "./dist/audio.js"
     }
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "files": [
-    "dist"
+    "dist",
+    "THIRD-PARTY-NOTICES"
   ],
   "scripts": {
-    "build": "tsdown",
+    "build": "tsdown && tsdown --config tsdown.audio.config.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "cd ../.. && vitest run --config vitest.config.ts packages/render-stream-client/test"
   },
