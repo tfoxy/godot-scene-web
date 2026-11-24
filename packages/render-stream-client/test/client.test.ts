@@ -48,6 +48,41 @@ const core = {
 };
 
 describe("createRenderStreamClient", () => {
+  it("accepts saver with an automatic frame cap and rejects explicit credit knobs", () => {
+    const options = {
+      canvas: document.createElement("canvas"),
+      core,
+      endpoint,
+    };
+    for (const knob of [
+      { creditWindow: 1 as const },
+      { creditStage: "applied" as const },
+    ]) {
+      expect(() =>
+        createRenderStreamClient({ ...options, ...knob, pacing: "saver" }),
+      ).toThrow("pacing owns creditWindow and creditStage");
+      const c = createRenderStreamClient({ ...options, ...knob });
+      expect(() => c.setPacing!("saver")).toThrow(
+        "setPacing conflicts with explicit credit knobs",
+      );
+      c.dispose();
+    }
+    const c = createRenderStreamClient({
+      ...options,
+      pacing: "saver",
+      frameCap: "automatic",
+    });
+    expect(c.stats()).toMatchObject({
+      pacing: "saver",
+      creditStage: "applied",
+      saverDisplayHz: null,
+      saverCapacityHz: null,
+    });
+    expect(() => c.setPacing!("invalid" as never)).toThrow(
+      'pacing must be "fidelity", "balanced" or "saver"',
+    );
+    c.dispose();
+  });
   it("validates pacing and reserves explicit credit knobs", () => {
     const options = {
       canvas: document.createElement("canvas"),
@@ -952,6 +987,35 @@ describe("endpoint protocol changes", () => {
       );
     } finally {
       set.mockRestore();
+    }
+  });
+
+  it("resets saver on visible, removes the listener on preset change and disposal", async () => {
+    const reset = vi.spyOn(StreamLoop.prototype, "resetSaver");
+    try {
+      const h = mount(18);
+      h.c.setPacing!("saver");
+      h.c.connect();
+      await vi.advanceTimersByTimeAsync(0);
+      h.open();
+      reset.mockClear();
+      vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+      document.dispatchEvent(new Event("visibilitychange"));
+      expect(reset).not.toHaveBeenCalled();
+      vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+      document.dispatchEvent(new Event("visibilitychange"));
+      expect(reset).toHaveBeenCalledTimes(1);
+      h.c.setPacing!("fidelity");
+      reset.mockClear();
+      document.dispatchEvent(new Event("visibilitychange"));
+      expect(reset).not.toHaveBeenCalled();
+      h.c.setPacing!("saver");
+      h.c.dispose();
+      reset.mockClear();
+      document.dispatchEvent(new Event("visibilitychange"));
+      expect(reset).not.toHaveBeenCalled();
+    } finally {
+      vi.restoreAllMocks();
     }
   });
 

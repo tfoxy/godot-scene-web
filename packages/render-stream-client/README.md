@@ -6,13 +6,14 @@ point; `client.stats()` reports what it is doing.
 
 ## Pacing
 
-`pacing` selects the existing hello's credit stage and window for each connection. It changes
+`pacing` selects credit settings and, for saver, client presentation slots. It changes
 neither the wire format nor the host. `fidelity` matches the defaults: `applied`, with window 8
 at protocol /18 and later, else 2. Leave `pacing` out to keep the existing credit-knob behaviour.
 
 | Preset                    | Protocol /18 and later | Below /18 (including /16–17) |
 | ------------------------- | ---------------------- | ---------------------------- |
 | `fidelity` (default)      | `applied`, window 8    | `applied`, window 2          |
+| `saver`                   | `applied`, window 8    | `applied`, window 2          |
 | `balanced` trial          | `submitted`, window 3  | `submitted`, window 2        |
 | `balanced` after fallback | `applied`, window 8    | `applied`, window 2          |
 
@@ -39,9 +40,29 @@ client.setPacing?.("fidelity");
 ```
 
 `pacing` owns both knobs: combining it with an explicit `creditWindow` or `creditStage` throws
-`TypeError`, as does any preset other than `fidelity` or `balanced`. An explicit knob at creation
+`TypeError`, as does any preset other than `fidelity`, `balanced` or `saver`. An explicit knob at creation
 also prevents `setPacing`. A client created with neither knob may adopt a preset later, even if
 it was created without `pacing`.
+
+### Saver
+
+Choose `saver` for battery- or heat-limited viewers on weaker devices that cannot hold the display
+rate steadily. It presents on a fixed display divisor, typically halving or thirding draws with
+headroom, at a small content-age cost. It keeps fidelity's applied credit and window; sends and
+bandwidth are unchanged because the host is not told. Transactions arriving between presentation
+slots fold into the next draw. Saver runs no starvation trial. For slower networks, choose fidelity
+when keeping content fresh matters more than cutting viewer draw work.
+
+Saver first measures the idle display grid, then presents every callback while measuring callback
+capacity for three seconds starting two seconds after the first draw. It chooses the smallest
+integer divisor `k >= 2` whose rate fits within 85% of that capacity. It continuously refits the
+display grid, excludes callback stalls over 100 ms, and lowers the presentation rate if missed slots
+persist. After a clean interval it may try the next faster divisor, reverting if it cannot hold it.
+An eligible callback with nothing new to draw is stale; an eligible slot with no callback is missed.
+
+A new connection, becoming visible again, context restore, and `setPacing` reset saver measurement.
+Selecting saver again also resets it. `frameCap: "automatic"` is allowed: when engaged, the cap
+skips every other saver slot. Client tweens and payload revisits can still force a presentation.
 
 ### Balanced trial and runtime changes
 
@@ -71,8 +92,9 @@ sticky across later reconnects and backoff retries. `setPacing(preset)` resets i
 selecting `balanced` again; `setEndpoint` with a different endpoint also resets it.
 
 `setPacing` quietly reconnects while connecting or streaming only if the resolved hello changes
-(close code 1000, reason `"pacing changed"`). Otherwise the selection takes effect on the next
-connection. Selecting the same preset and hello is a no-op unless resetting a fallback; after
+(close code 1000, reason `"pacing changed"`). Otherwise credit settings take effect on the next
+connection, while saver presentation changes immediately. Selecting the same preset and hello is a
+no-op unless resetting a fallback or saver measurement; after
 disposal every call is a no-op. A quiet reconnect emits no `connecting` status. The new session
 emits `streaming` with `firstFrame: false`, then its first drawn transaction emits it with
 `firstFrame: true`, once each per connection. Real failures retain the existing retry/backoff
@@ -92,6 +114,17 @@ compatibility with consumer stats literals, like the frame-cap fields.
 | `creditWindowGranted` | Session's granted window; `null` before a session.                                                                                                                                             |
 | `starvedCycleShare`   | Starved samples / samples in the last 32 eligible completed cycles (after the first drawn frame, excluding payload work) during balanced's trial; `null` before a sample or outside the trial. |
 | `draws`               | Presented stream draws over all connections, including revisits and restored redraws; uses the loop's `drawSerial` counter.                                                                    |
+
+Saver also sets the following fields. Each is `null` outside saver; rate and slot fields remain
+`null` until there is a measurement or an eligible slot.
+
+| Field                  | Meaning                                                                                               |
+| ---------------------- | ----------------------------------------------------------------------------------------------------- |
+| `saverDivisor`         | Display divisor `k`; 1 while measuring uncapped capacity.                                             |
+| `saverDisplayHz`       | Measured display rate in Hz.                                                                          |
+| `saverCapacityHz`      | Callback capacity in Hz from the uncapped measurement window.                                         |
+| `saverMissedSlotShare` | Eligible slots without a callback / eligible slots over the last two seconds, excluding stalls.       |
+| `saverStaleSlotShare`  | Eligible callback slots without a fresh transaction drawn / eligible slots over the last two seconds. |
 
 ## Extension clip outsets
 
@@ -191,6 +224,7 @@ implement them; a created client always has both).
 while engaged), `skippedFrames` (those that presented nothing) and `frameCapWake`, what last woke
 the cap or kept it awake (`input`, `session`, `payload`, `motion`, `colour`, `resource`, ...): when
 the cap never engages on a scene that looks idle, it names what the scene keeps changing.
+Under saver, `cappedFrames` and `skippedFrames` count saver-eligible slots rather than all callbacks.
 
 ## Viewport surfaces (render-stream/16)
 

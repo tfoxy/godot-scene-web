@@ -1,14 +1,14 @@
 import type { CreditStage, LoopOptions } from "./loop";
 
 /** Presets for the hello's credit stage and window, resolved separately for each connection. */
-export type RenderStreamPacing = "fidelity" | "balanced";
+export type RenderStreamPacing = "fidelity" | "balanced" | "saver";
 
 export function checkPacing(
   value: unknown,
 ): asserts value is RenderStreamPacing {
-  if (value !== "fidelity" && value !== "balanced")
+  if (value !== "fidelity" && value !== "balanced" && value !== "saver")
     throw new TypeError(
-      'render-stream client: pacing must be "fidelity" or "balanced"',
+      'render-stream client: pacing must be "fidelity", "balanced" or "saver"',
     );
 }
 
@@ -21,7 +21,7 @@ export function resolvePacing(
   creditWindow: NonNullable<LoopOptions["creditWindow"]>;
   creditStage: CreditStage;
 } {
-  if (pacing === "fidelity" || fellBack)
+  if (pacing !== "balanced" || fellBack)
     return { creditWindow: protocol >= 18 ? 8 : 2, creditStage: "applied" };
   return { creditWindow: protocol >= 18 ? 3 : 2, creditStage: "submitted" };
 }

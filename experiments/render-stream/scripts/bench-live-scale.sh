@@ -7,7 +7,7 @@
 #   bash experiments/render-stream/scripts/bench-live-scale.sh --extension EXT --receiver KIND
 #     [--window 1..8] [--protocol 8|9|10|11|12|13|14|15|16|18] [--bundle DIR] [--out DIR] [--frames N] [--binary PATH]
 #     [--calibration PATH] [--min-rate R] [--max-credit-rtt-ms MS] [--viewers N] [--perf]
-#     [--rx-cmd CMD] [-- NAME=value ...]
+#     [--max-fps N (host-only, default 60)] [--rx-cmd CMD] [-- NAME=value ...]
 #
 # Engine-free: put --engine-free /abs/path/capture/build/rs_live_host FIRST, then
 # --receiver host-only|null --protocol 16|18 --window 1..8 --out DIR [--rx-cmd CMD].
@@ -64,7 +64,7 @@ fi
 EXTENSION="" OUT="" KIND="" WINDOW=2 PROTOCOL=8 BUNDLE="" FRAMES=1200 RX_CMD=""
 BINARY="$HOME/.cache/godot-render-stream/templates/4.5.1-stable/linux_release.x86_64"
 CALIBRATION="$EXPERIMENT_DIR/calibration/godot-4.5.1-stable-linux-release.json"
-MIN_RATE=15 MAX_RTT_MS=100 VIEWERS=1 PERF=0
+MIN_RATE=15 MAX_RTT_MS=100 VIEWERS=1 PERF=0 MAX_FPS=60
 PORT="${RS_BENCH_PORT:-13831}" PAGE="${RS_BENCH_PAGE_PORT:-13832}"
 EXTRA=()
 while [ $# -gt 0 ]; do
@@ -76,6 +76,7 @@ while [ $# -gt 0 ]; do
 	--bundle) BUNDLE="$2" && shift 2 ;;
 	--out) OUT="$2" && shift 2 ;;
 	--frames) FRAMES="$2" && shift 2 ;;
+	--max-fps) MAX_FPS="$2" && shift 2 ;;
 	--binary) BINARY="$2" && shift 2 ;;
 	--calibration) CALIBRATION="$2" && shift 2 ;;
 	--min-rate) MIN_RATE="$2" && shift 2 ;;
@@ -88,6 +89,8 @@ while [ $# -gt 0 ]; do
 	*) echo "bench-live-scale: unknown argument $1" >&2 && exit 2 ;;
 	esac
 done
+[[ "$MAX_FPS" =~ ^[1-9][0-9]*$ ]] || { echo "bench-live-scale: --max-fps must be a positive integer" >&2; exit 2; }
+[ "$MAX_FPS" = 60 ] || [ "$KIND" = host-only ] || { echo "bench-live-scale: --max-fps needs --receiver host-only" >&2; exit 2; }
 [ -f "$EXTENSION" ] || { echo "bench-live-scale: pass --extension /abs/path/render_stream_capture.gdextension" >&2; exit 2; }
 case "$KIND" in native | gsw | web | null | host-only) ;; *) echo "bench-live-scale: --receiver native|gsw|web|null|host-only" >&2 && exit 2 ;; esac
 [ -z "$RX_CMD" ] || [ "$KIND" = host-only ] || { echo "bench-live-scale: --rx-cmd needs --receiver host-only" >&2; exit 2; }
@@ -138,6 +141,7 @@ fi
 if [ -z "${RS_BENCH_LIVE_INSIDE:-}" ]; then
 	rm -rf "$OUT/host" "$OUT"/rx "$OUT"/rx[0-9] && mkdir -p "$OUT/host/evidence"
 	printf '%s\n' "${HOST_ENV[@]}" >"$OUT/host/env.txt"
+	printf '%s\n' "$BINARY" --headless --max-fps "$MAX_FPS" --path "$FIXTURE" >"$OUT/host/argv.txt"
 	for rx in "${RX_NAMES[@]}"; do
 		mkdir -p "$OUT/$rx"
 		printf '%s\n' "${RX_ENV[@]//@RX@/$OUT/$rx}" >"$OUT/$rx/env.txt"
@@ -145,7 +149,7 @@ if [ -z "${RS_BENCH_LIVE_INSIDE:-}" ]; then
 	echo "bench-live-scale: $VIEWERS $KIND receiver(s), window $WINDOW, /$PROTOCOL, $FRAMES host frames (load $(cut -d' ' -f1-3 /proc/loadavg))"
 	RS_BENCH_LIVE_INSIDE=1 bash "$SCRIPT_DIR/lib/quiet.sh" exclusive --label "bench-live-scale:$KIND-w$WINDOW-x$VIEWERS" -- \
 		bash "${BASH_SOURCE[0]}" --extension "$EXTENSION" --receiver "$KIND" --window "$WINDOW" --protocol "$PROTOCOL" \
-		${BUNDLE:+--bundle "$BUNDLE"} --out "$OUT" --frames "$FRAMES" --binary "$BINARY" --calibration "$CALIBRATION" \
+		${BUNDLE:+--bundle "$BUNDLE"} --out "$OUT" --frames "$FRAMES" --max-fps "$MAX_FPS" --binary "$BINARY" --calibration "$CALIBRATION" \
 		--viewers "$VIEWERS" $([ "$PERF" = 1 ] && echo --perf) ${RX_CMD:+--rx-cmd "$RX_CMD"} -- ${EXTRA[@]+"${EXTRA[@]}"}
 	if [ "${RS_BENCH_KEEP:-0}" != 1 ]; then
 		for rx in "${RX_NAMES[@]}"; do
@@ -158,7 +162,7 @@ if [ -z "${RS_BENCH_LIVE_INSIDE:-}" ]; then
 fi
 
 python3 "$SCRIPT_DIR/lib/bench-capture-scale.py" run "$OUT/host" -- \
-	env -i "${HOST_ENV[@]}" "$BINARY" --headless --max-fps 60 --path "$FIXTURE" &
+	env -i "${HOST_ENV[@]}" "$BINARY" --headless --max-fps "$MAX_FPS" --path "$FIXTURE" &
 HOST_PID=$!
 for _ in $(seq 1 300); do
 	[ -f "$OUT/host/evidence/live.json" ] && break

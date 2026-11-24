@@ -15,9 +15,12 @@
 //       [--credit-stage submitted|applied] [--apply-on frame|message]' \
 //     -- GRC_LIVE_AUTH=token
 //
-// Pacing proof: --protocol 18|19 --pacing fidelity|balanced --one-way-ms 0|24
-//   --gpu-load-hz 30|45 --gpu-load-mode coupled|always (default coupled)
+// Pacing proof: --protocol 18|19 --pacing fidelity|balanced|saver --one-way-ms 0|24
+//   --gpu-load-hz none|N --gpu-load-mode coupled|always (default coupled)
 //   --main-s 180 --remounts 0 --attrib-s 0 --core <prebuilt dir>.
+// --device desktop uses pinned local Chromium without adb. Phone-only conditions,
+// cpufreq and thermal fields are null, and PSS checks are non-gating there.
+// Saver runs also write saver-trace.jsonl beside client-device.json.
 // Coupled GPU load runs after stream draws only; always submits a heavy pass every rAF.
 // --pacing excludes explicitly supplied --window and --credit-stage. GPU-load calibration
 // runs before the first connection. --one-way-ms delays stream messages both ways, not GETs.
@@ -59,11 +62,17 @@ import {
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { CDPSession, Page } from "@playwright/test";
 import { build } from "esbuild";
 import {
   buildThreadIndex,
   computeCpu,
 } from "../../../packages/perf-harness/src/analyze";
+import {
+  CdpClient,
+  type CdpParams,
+  type SendOptions,
+} from "../../../packages/perf-harness/src/cdp";
 import {
   readTraceEvents,
   startTracing,
@@ -75,6 +84,7 @@ import type {
   RenderStreamEndpoint,
 } from "../../../packages/render-stream-client/src/index";
 import { pacingTrial } from "../web/client-phone/pacing-trial";
+import type { PresentationTrace } from "../web/client-phone/presentation-trace";
 import {
   dist,
   pct,
@@ -82,11 +92,16 @@ import {
   type Taken,
 } from "../web/client-phone/probe-summary";
 import {
+  BACKGROUND_THROTTLING_ARGS,
+  BROWSER_LAUNCH_ARGS,
+  checkBrowserProvenance,
   checkDeviceProvenance,
   DEVICE_PAGE_FACTS_EXPRESSION,
+  type DeviceHarness,
   type DeviceId,
   type DevicePageFacts,
   HarnessServer,
+  launchHarnessBrowser,
   loadDeviceTable,
   openHarnessDevice,
   withAttachedSerial,
@@ -113,8 +128,8 @@ function args(): Record<string, string> {
   )
     throw new Error("client-device-check: --gpu-load-mode always|coupled");
   if (out.pacing !== undefined) {
-    if (!["fidelity", "balanced"].includes(out.pacing))
-      throw new Error("client-device-check: --pacing fidelity|balanced");
+    if (!["fidelity", "balanced", "saver"].includes(out.pacing))
+      throw new Error("client-device-check: --pacing fidelity|balanced|saver");
     if (out.window !== undefined || out["credit-stage"] !== undefined)
       throw new Error(
         "client-device-check: --pacing excludes --window/--credit-stage",
@@ -132,6 +147,7 @@ function args(): Record<string, string> {
   for (const key of ["main-s", "cycle-s", "gpu-load-hz"]) {
     if (
       out[key] !== undefined &&
+      !(key === "gpu-load-hz" && out[key] === "none") &&
       (!Number.isFinite(Number(out[key])) || Number(out[key]) <= 0)
     )
       throw new Error(`client-device-check: --${key} must be positive`);
@@ -163,6 +179,7 @@ interface Recording {
   firstFrameAt: number | null;
   fallbackAt: number | null;
   calibration: unknown;
+  presentation: PresentationTrace;
 }
 
 /** `dumpsys meminfo <pid>`: TOTAL PSS / TOTAL RSS (KiB) and the process name. */
@@ -236,9 +253,63 @@ function profileSummary(profile: {
   };
 }
 
+/** Adapt the pinned desktop browser's two CDP targets to the phone driver's interface. */
+class DesktopCdp extends CdpClient {
+  private readonly listeners = new Map<
+    string,
+    ((params: CdpParams, sessionId?: string) => void)[]
+  >();
+  constructor(
+    private readonly pageSession: CDPSession,
+    private readonly browserSession: CDPSession,
+  ) {
+    super();
+  }
+  override async send<T = Record<string, unknown>>(
+    method: string,
+    params: CdpParams = {},
+    options: SendOptions = {},
+  ): Promise<T> {
+    const session = options.flat ? this.browserSession : this.pageSession;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        session.send(method as never, params as never) as Promise<T>,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error(`CDP timeout: ${method}`)),
+            options.timeoutMs ?? 60000,
+          );
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  override on(
+    method: string,
+    fn: (params: CdpParams, sessionId?: string) => void,
+  ) {
+    const session = method.startsWith("Tracing.")
+      ? this.browserSession
+      : this.pageSession;
+    session.on(method as never, fn as never);
+    this.listeners.set(method, [...(this.listeners.get(method) ?? []), fn]);
+  }
+  override off(method: string) {
+    const session = method.startsWith("Tracing.")
+      ? this.browserSession
+      : this.pageSession;
+    for (const fn of this.listeners.get(method) ?? [])
+      session.removeListener(method as never, fn as never);
+    this.listeners.delete(method);
+  }
+}
+
 async function main(): Promise<number> {
   const a = args();
   const dir = resolve(a.dir);
+  const desktop = a.device === "desktop";
   const deviceId = (a.device ?? "g31") as DeviceId;
   const mainS = Number(a["main-s"] ?? 180);
   const remounts = Number(a.remounts ?? 3);
@@ -248,10 +319,12 @@ async function main(): Promise<number> {
   const tolerance = Number(a.tolerance ?? 0.15);
   const protocol = Number(a.protocol ?? 12) as RenderStreamEndpoint["protocol"];
   const creditWindow = Number(a.window ?? 2) as 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
-  const pacing = a.pacing as "fidelity" | "balanced" | undefined;
+  const pacing = a.pacing as "fidelity" | "balanced" | "saver" | undefined;
   const oneWayMs = Number(a["one-way-ms"] ?? 0);
   const gpuLoadHz =
-    a["gpu-load-hz"] === undefined ? undefined : Number(a["gpu-load-hz"]);
+    a["gpu-load-hz"] === undefined || a["gpu-load-hz"] === "none"
+      ? undefined
+      : Number(a["gpu-load-hz"]);
   const gpuLoadMode = (a["gpu-load-mode"] ?? "coupled") as "always" | "coupled";
   // PH3: the client's pacing options (omitted: the package's defaults).
   const creditStage = a["credit-stage"] as "submitted" | "applied" | undefined;
@@ -303,10 +376,10 @@ async function main(): Promise<number> {
 
   const table = loadDeviceTable();
   const tableEntry = table[deviceId];
-  if (!tableEntry)
+  if (!desktop && !tableEntry)
     throw new Error(`client-device-check: no device ${deviceId}`);
   // ANDROID_SERIAL names the attached phone (the table's serials are placeholders).
-  const entry = withAttachedSerial(tableEntry);
+  const entry = desktop ? undefined : withAttachedSerial(tableEntry);
   const server = new HarnessServer({
     staticRoot: staticDir,
     evidenceRoot: join(dir, "evidence"),
@@ -330,23 +403,44 @@ async function main(): Promise<number> {
     host_load_start: readFileSync("/proc/loadavg", "utf8").trim(),
   };
   const log = (m: string) => console.log(`client-device-check: ${m}`);
-  const harness = await openHarnessDevice({
-    id: deviceId,
-    entry,
-    serverPort: Number(a.port),
-    extraReversePorts: [hostPort],
-    onProgress: (m) => log(`device: ${m}`),
-  });
-  const browser = harness.browser;
-  const client = browser.client;
-  const adb = browser.adb;
-  let lease: Awaited<ReturnType<typeof browser.targets.acquire>> | null = null;
+  let harness: DeviceHarness | undefined;
+  let launched: Awaited<ReturnType<typeof launchHarnessBrowser>> | undefined;
+  let desktopPage: Page | undefined;
+  let lease: Awaited<
+    ReturnType<DeviceHarness["browser"]["targets"]["acquire"]>
+  > | null = null;
   let code = 1;
   const mounts: Record<string, unknown>[] = [];
   report.mounts = mounts;
   try {
-    report.conditions_before = await browser.conditions();
-    report.cpufreq_before = await readCpuFreqs(adb, entry.cpu_clusters ?? []);
+    let client: CdpClient;
+    if (desktop) {
+      launched = await launchHarnessBrowser();
+      desktopPage = await launched.browser.newPage({
+        viewport: { width: 1280, height: 720 },
+      });
+      desktopPage.on("pageerror", (error) =>
+        log(`page error: ${error.message}`),
+      );
+      client = new DesktopCdp(
+        await desktopPage.context().newCDPSession(desktopPage),
+        await launched.browser.newBrowserCDPSession(),
+      );
+    } else {
+      harness = await openHarnessDevice({
+        id: deviceId,
+        entry: entry!,
+        serverPort: Number(a.port),
+        extraReversePorts: [hostPort],
+        onProgress: (m) => log(`device: ${m}`),
+      });
+      client = harness.browser.client;
+    }
+    const browser = harness?.browser;
+    const adb = browser?.adb;
+    report.conditions_before = browser ? await browser.conditions() : null;
+    report.cpufreq_before =
+      adb && entry ? await readCpuFreqs(adb, entry.cpu_clusters ?? []) : null;
     const procsBefore = await client
       .send<{ processInfo: { type: string; id: number }[] }>(
         "SystemInfo.getProcessInfo",
@@ -355,10 +449,11 @@ async function main(): Promise<number> {
       )
       .then((r) => r.processInfo)
       .catch(() => []);
-    lease = await browser.targets.acquire({
-      width: entry.screen_css_px[0],
-      height: entry.screen_css_px[1],
-    });
+    if (browser && entry)
+      lease = await browser.targets.acquire({
+        width: entry.screen_css_px[0],
+        height: entry.screen_css_px[1],
+      });
     const ev = <T>(expr: string, timeoutMs = 20_000) =>
       client.evaluate<T>(expr, { timeoutMs });
     await client.send("Page.navigate", { url: `${origin}/index.html` });
@@ -370,23 +465,28 @@ async function main(): Promise<number> {
       if (i > 150) throw new Error("the page never exposed __rsc");
       await sleep(200);
     }
-    const facts = await harness.facts({
-      evaluate: (e, o) => client.evaluate(e, o),
-      facts: () =>
-        client.evaluate<DevicePageFacts>(DEVICE_PAGE_FACTS_EXPRESSION, {
-          timeoutMs: 10_000,
-        }),
-      close: async () => {},
-    });
-    const prov = checkDeviceProvenance(entry, facts);
-    report.provenance = {
-      ok: prov.ok,
-      reasons: prov.reasons,
-      notes: prov.notes,
-      renderer: prov.renderer,
-      chrome: prov.chromeVersion,
-      facts: prov.facts,
-    };
+    const prov =
+      desktopPage && launched
+        ? await checkBrowserProvenance(
+            desktopPage,
+            launched,
+            [...BROWSER_LAUNCH_ARGS, ...BACKGROUND_THROTTLING_ARGS],
+            { DISPLAY: undefined, WAYLAND_DISPLAY: undefined },
+          )
+        : checkDeviceProvenance(
+            entry!,
+            await harness!.facts({
+              evaluate: (e, o) => client.evaluate(e, o),
+              facts: () =>
+                client.evaluate<DevicePageFacts>(DEVICE_PAGE_FACTS_EXPRESSION, {
+                  timeoutMs: 10000,
+                }),
+              close: async () => {},
+            }),
+          );
+    const chromeVersion =
+      "chromeVersion" in prov ? prov.chromeVersion : prov.version;
+    report.provenance = { ...prov, chrome: chromeVersion };
     report.cross_origin_isolated = await ev<boolean>(
       "self.crossOriginIsolated",
     );
@@ -413,6 +513,7 @@ async function main(): Promise<number> {
       for (const p of ps.filter(
         (x) => x.type === "renderer" || x.type === "GPU",
       )) {
+        if (!adb) continue;
         const text = await adb
           .shell(`dumpsys meminfo ${p.id}`)
           .catch((e: Error) => e.message);
@@ -531,7 +632,7 @@ async function main(): Promise<number> {
             creditWindowGranted: s.creditWindowGranted ?? null,
             draws: s.draws ?? 0,
           });
-        if (m === 1 && Date.now() >= nextFreq) {
+        if (adb && entry && m === 1 && Date.now() >= nextFreq) {
           freqs.push({
             t: Date.now() - w0,
             cpus: await readCpuFreqs(adb, entry.cpu_clusters ?? []),
@@ -556,6 +657,9 @@ async function main(): Promise<number> {
       const median = pct(drawIntervals, 50);
       const pacingReport = {
         preset: pacing ?? null,
+        page_window_start_ms: pageWindowStart,
+        page_window_end_ms: rec.t,
+        saver_summary: { k: end.stats.saverDivisor ?? null },
         ...pacingTrial(
           pacing,
           drawTimes,
@@ -599,7 +703,13 @@ async function main(): Promise<number> {
         ).length,
         statuses: end.statuses,
       };
-      if (m === 1) report.pacing = pacingReport;
+      if (m === 1) {
+        report.pacing = pacingReport;
+        writeFileSync(
+          join(dir, "saver-trace.jsonl"),
+          `${rec.presentation.map((row) => JSON.stringify(row)).join("\n")}\n`,
+        );
+      }
       const wSecs = (Date.now() - w0) / 1000;
       const probes = summarize(await take(), wSecs);
       const applied0 = perSec[0]?.applied ?? 0;
@@ -624,7 +734,7 @@ async function main(): Promise<number> {
         ),
         probes,
         per_second: perSec,
-        cpufreq: m === 1 ? freqs : undefined,
+        cpufreq: desktop ? null : m === 1 ? freqs : undefined,
         host_load: readFileSync("/proc/loadavg", "utf8").trim(),
       };
       log(
@@ -726,8 +836,9 @@ async function main(): Promise<number> {
       );
       mounts.push(row);
     }
-    report.conditions_after = await browser.conditions();
-    report.cpufreq_after = await readCpuFreqs(adb, entry.cpu_clusters ?? []);
+    report.conditions_after = browser ? await browser.conditions() : null;
+    report.cpufreq_after =
+      adb && entry ? await readCpuFreqs(adb, entry.cpu_clusters ?? []) : null;
 
     // Checks.
     type Mem = {
@@ -784,6 +895,7 @@ async function main(): Promise<number> {
     });
     checks.push({
       id: "instance-released",
+      gating: !desktop,
       passed:
         pid !== null &&
         drops.every(
@@ -797,6 +909,7 @@ async function main(): Promise<number> {
     const held0 = drops[0]?.after ?? null;
     checks.push({
       id: "remount-no-growth",
+      gating: !desktop,
       passed:
         held0 !== null &&
         drops.every(
@@ -814,7 +927,7 @@ async function main(): Promise<number> {
       id: "device-provenance",
       passed: prov.ok,
       detail: prov.ok
-        ? `${prov.renderer} ${prov.chromeVersion}`
+        ? `${prov.renderer} ${chromeVersion}`
         : prov.reasons.join("; "),
     });
     const aps = rows[0]?.applies_per_s ?? 0;
@@ -837,7 +950,8 @@ async function main(): Promise<number> {
       `${JSON.stringify(report, null, 1)}\n`,
     );
     if (lease) await lease.release().catch(() => {});
-    await harness.close().catch(() => {});
+    await harness?.close().catch(() => {});
+    await launched?.browser.close().catch(() => {});
     await server.stop().catch(() => {});
   }
   return code;

@@ -87,6 +87,7 @@ import {
 import type { ProgramCounts } from "./programs";
 import type { RenderStreamRecorder } from "./recorder";
 import { FETCH_PARALLEL } from "./resource-limits";
+import { SaverPacer, type SaverSlot } from "./saver";
 import type { StagingStats } from "./staging";
 import type {
   RenderStreamTransport,
@@ -245,9 +246,23 @@ export interface RenderStreamStats {
   /** The frame cap in effect (`frameCap`). The frame-cap fields are always set by `stats()`
    * (optional as `carrier`). */
   frameCap?: RenderStreamFrameCap;
+  /** Saver's display divisor (1 during measurement), or null outside saver. Always set by
+   * `stats()`; optional for consumer stats literals, like `carrier`. */
+  saverDivisor?: number | null;
+  /** Measured display rate in Hz; null before calibration or outside saver. */
+  saverDisplayHz?: number | null;
+  /** Eligible slots without a callback / eligible slots over the last 2 s, or null before
+   * any eligible slot or outside saver. Stalls are excluded. */
+  saverMissedSlotShare?: number | null;
+  /** Eligible callback slots without a fresh transaction drawn / eligible slots over the
+   * last 2 s, or null before any eligible slot or outside saver. */
+  saverStaleSlotShare?: number | null;
+  /** Uncapped callback capacity in Hz; null before measurement or outside saver. */
+  saverCapacityHz?: number | null;
   /** The cap is engaged now: idle under `automatic`, presenting every other frame callback. */
   frameCapEngaged?: boolean;
-  /** Frame callbacks run while the cap was engaged, over every connection. */
+  /** Frame callbacks run while the cap was engaged, over every connection. Under saver,
+   * counts only saver-eligible slots. */
   cappedFrames?: number;
   /** Of those, the ones that presented nothing because of the cap (about half). */
   skippedFrames?: number;
@@ -315,12 +330,22 @@ export interface HelloCanvas {
   gpuFormats: string;
 }
 
+/** @internal Observation only, using the loop's monotonic clock in milliseconds.
+ * Return values are ignored and exceptions cannot fail playback. */
+export interface PacingObserver {
+  onTransaction?(info: { seq: number; frame: number; arrivalMs: number }): void;
+  onPresent?(info: { seqs: number[]; newestSeq: number; tMs: number }): void;
+  onSlot?(info: Readonly<SaverSlot>): void;
+}
+
 export interface LoopOptions {
   core: StreamCore;
   transport: RenderStreamTransportFactory;
   endpoint: RenderStreamEndpoint;
   creditWindow?: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
   pacing?: RenderStreamPacing;
+  /** @internal Observe pacing without controlling presentation or credit. */
+  pacingObserver?: PacingObserver;
   /** The hello's credit stage: the ack the host waits on. Default `applied`. */
   creditStage?: CreditStage;
   /** Where a transaction with every payload in is applied (acked `applied`): `frame` (the next
@@ -530,6 +555,7 @@ export class StreamLoop {
   } | null;
   /** The idle frame cap; under `off` one branch per frame callback and nothing measured. */
   private readonly cap: FrameCap;
+  private saver: SaverPacer | null = null;
 
   private creditStage: CreditStage;
   private pacing: RenderStreamPacing | null;
@@ -542,6 +568,8 @@ export class StreamLoop {
   constructor(private readonly o: LoopOptions) {
     this.endpoint = o.endpoint;
     this.pacing = o.pacing ?? null;
+    if (this.pacing === "saver")
+      this.saver = new SaverPacer(o.clock, o.pacingObserver?.onSlot);
     if (this.pacing === "balanced")
       this.starvation = new PacingStarvationTracker();
     this.creditStage = o.creditStage ?? DEFAULT_CREDIT_STAGE;
@@ -634,7 +662,14 @@ export class StreamLoop {
 
   setPacing(pacing: RenderStreamPacing): void {
     if (this.phase === "disposed") return;
-    if (this.pacing === pacing && !this.fellBack) return;
+    if (this.pacing === pacing && !this.fellBack) {
+      this.saver?.reset();
+      return;
+    }
+    this.saver =
+      pacing === "saver"
+        ? new SaverPacer(this.o.clock, this.o.pacingObserver?.onSlot)
+        : null;
     this.pacing = pacing;
     this.fellBack = false;
     this.resetStarvation();
@@ -647,6 +682,11 @@ export class StreamLoop {
         current.creditStage !== next.creditStage)
     )
       this.quietRehello("pacing changed");
+  }
+
+  /** A lifecycle reset supplied by the page when it becomes visible again. */
+  resetSaver(): void {
+    this.saver?.reset();
   }
 
   private resetStarvation(): void {
@@ -708,6 +748,7 @@ export class StreamLoop {
   contextRestored(): void {
     if (this.phase === "disposed" || this.ctx === "ok") return;
     this.ctx = "restoring";
+    this.resetSaver();
     this.o.core.pauseParticles?.(false);
     this.cap.activity(this.o.clock.now(), "restore");
   }
@@ -727,7 +768,13 @@ export class StreamLoop {
       const sorted = Array.from(this.rtts.subarray(0, m)).sort((a, b) => a - b);
       p50 = sorted[(m - 1) >> 1];
     }
+    const saver = this.saver?.stats();
     return {
+      saverDivisor: saver?.divisor ?? null,
+      saverDisplayHz: saver?.displayHz ?? null,
+      saverMissedSlotShare: saver?.missedSlotShare ?? null,
+      saverStaleSlotShare: saver?.staleSlotShare ?? null,
+      saverCapacityHz: saver?.capacityHz ?? null,
       ...this.damageStats(now),
       ...(this.o.clientTweens
         ? {
@@ -850,6 +897,7 @@ export class StreamLoop {
 
   private open(rehello = false): void {
     this.starvation?.reset();
+    this.resetSaver();
     const core = this.o.core;
     this.phase = "connecting";
     this.deadline = this.o.clock.now() + (this.o.connectTimeoutMs ?? 10000);
@@ -1088,6 +1136,15 @@ export class StreamLoop {
       this.rttCount++;
       this.lastCreditAt = null;
     }
+    try {
+      this.o.pacingObserver?.onTransaction?.({
+        seq: m.seq,
+        frame: m.frame,
+        arrivalMs: now,
+      });
+    } catch {
+      /* Observation cannot fail playback. */
+    }
     this.ack(m.seq, "received");
     // The cap's measure, at receipt: a real change wakes it before the next frame callback (a
     // folded or superseded transaction counts as much as one applied alone).
@@ -1270,7 +1327,7 @@ export class StreamLoop {
     this.timerId = null;
   }
 
-  private readonly onFrame = (): void => {
+  private readonly onFrame = (timestamp?: number): void => {
     const cycleWasOpen = this.starvation?.isOpen === true;
     this.frameId = null;
     this.lastFrameAt = this.o.clock.now();
@@ -1298,7 +1355,7 @@ export class StreamLoop {
           else throw e;
         }
       }
-      this.step(cycleWasOpen);
+      this.step(cycleWasOpen, timestamp ?? this.lastFrameAt);
     } catch (e) {
       this.fail(e);
       return;
@@ -1314,9 +1371,10 @@ export class StreamLoop {
   };
 
   /** receiver.gd `_process_live`, one callback. */
-  private step(cycleWasOpen: boolean): void {
+  private step(cycleWasOpen: boolean, frameTimestamp: number): void {
     const now = this.o.clock.now();
     const drawsBefore = this.drawSerial;
+    const drawnBefore = this.drawnSeq;
     const conn = this.conn as Connection;
     switch (this.phase) {
       case "connecting":
@@ -1340,9 +1398,11 @@ export class StreamLoop {
     if (this.ctx !== "ok") {
       this.stepContext();
     } else {
+      // Observe every callback, including ones forced by client tweens.
+      const saverPresent = this.saver?.presents(frameTimestamp) ?? true;
       present =
         (this.o.clientTweens && this.o.core.tweensActive?.() === true) ||
-        this.presents(now);
+        this.presents(now, saverPresent);
       // J1: links that settled since the last callback register before this callback's
       // applier run, which draws their materials.
       const linked = this.o.core.pollPrograms?.() === true;
@@ -1414,6 +1474,9 @@ export class StreamLoop {
         this.tweenRedraw(now);
       else if (this.ext) this.extensionRedraw(now);
     }
+    if (this.drawSerial > drawsBefore)
+      this.saver?.draw(this.o.clock.now(), this.drawnSeq !== drawnBefore);
+    this.saver?.finishSlot();
     if (this.phase !== "streaming") return;
     if (
       this.ctx === "ok" &&
@@ -1454,11 +1517,11 @@ export class StreamLoop {
     }
   }
 
-  /** The cap's answer for this callback; an extension animating (asking redraws) is activity. */
-  private presents(now: number): boolean {
-    if (this.cap.mode === "off") return true;
+  /** The cap counts saver-eligible slots; an extension asking redraws is always activity. */
+  private presents(now: number, saverPresent: boolean): boolean {
+    if (this.cap.mode === "off") return saverPresent;
     if (this.ext?.wantsRedraw) this.cap.activity(now, "extension");
-    return this.cap.present(now);
+    return saverPresent && this.cap.present(now);
   }
 
   private connectFailed(conn: Connection): void {
@@ -2187,14 +2250,29 @@ export class StreamLoop {
     if (!this.cold.pending) {
       this.o.core.draw(seq);
       this.drawSerial++;
+      this.notifyPresent(seq);
       this.sampleDamage(this.o.clock.now());
       return;
     }
     const start = this.o.clock.now();
     this.o.core.draw(seq);
     this.drawSerial++;
+    this.notifyPresent(seq);
     this.sampleDamage(this.o.clock.now());
     this.cold.drew(start);
+  }
+
+  private notifyPresent(seq: number): void {
+    if (!this.o.pacingObserver?.onPresent) return;
+    try {
+      this.o.pacingObserver.onPresent({
+        seqs: [...this.undrawn],
+        newestSeq: seq,
+        tMs: this.o.clock.now(),
+      });
+    } catch {
+      /* Observation cannot fail playback. */
+    }
   }
 
   // ----------------------------------------------------------------------- context loss
@@ -2286,6 +2364,7 @@ export class StreamLoop {
       return;
     }
     this.drawSerial++;
+    this.notifyPresent(this.lastAppliedSeq);
     this.sampleDamage(this.o.clock.now());
     if (this.cold.pending) this.cold.drew(redrawAt);
     this.restoreWant = null;

@@ -46,6 +46,25 @@ describe("@godot-scene-web/render-stream-client export surface", () => {
 });
 
 describe("RenderStreamStats", () => {
+  it("pins saver pacing and its optional stats on the existing public types", () => {
+    const pacing: client.RenderStreamPacing = "saver";
+    const stats: Pick<
+      client.RenderStreamStats,
+      | "saverDivisor"
+      | "saverDisplayHz"
+      | "saverMissedSlotShare"
+      | "saverStaleSlotShare"
+      | "saverCapacityHz"
+    > = {
+      saverDivisor: 2,
+      saverDisplayHz: 60,
+      saverMissedSlotShare: 0,
+      saverStaleSlotShare: 0.1,
+      saverCapacityHz: 40,
+    };
+    expect(pacing).toBe("saver");
+    expect(stats.saverDivisor).toBe(2);
+  });
   it("exposes optional hint prefetch options and counters on the existing public types", () => {
     const options: Pick<
       client.RenderStreamClientOptions,

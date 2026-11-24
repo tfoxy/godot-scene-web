@@ -3,7 +3,7 @@
  * including time spent reconnecting. A missing or zero-duration rate stays null.
  */
 export function pacingTrial(
-  preset: "fidelity" | "balanced" | undefined,
+  preset: "fidelity" | "balanced" | "saver" | undefined,
   drawTimes: readonly number[],
   start: number,
   end: number,

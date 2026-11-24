@@ -16,6 +16,7 @@ import { delayTransport } from "../../scripts/lib/delay-transport";
 import { createGpuLoad } from "../pace-model/gpu-load";
 import type { Calibration, Segment } from "../pace-model/probe";
 import { type GpuLoadMode, gpuLoadLoop } from "./gpu-load-loop";
+import { presentationTrace } from "./presentation-trace";
 import { probe } from "./probe";
 
 interface Mounted {
@@ -28,6 +29,7 @@ interface Mounted {
   firstFrameAt: number | null;
   fallbackAt: number | null;
   calibration: Calibration | null;
+  presentation: ReturnType<typeof presentationTrace>;
 }
 
 let mounted: Mounted | null = null;
@@ -59,7 +61,7 @@ const api = {
     endpoint: RenderStreamEndpoint;
     core: RenderStreamCore;
     creditWindow?: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
-    pacing?: "fidelity" | "balanced";
+    pacing?: "fidelity" | "balanced" | "saver";
     oneWayMs?: number;
     gpuLoadHz?: number;
     gpuLoadMode?: GpuLoadMode;
@@ -90,6 +92,7 @@ const api = {
       firstFrameAt: null,
       fallbackAt: null,
       calibration: null,
+      presentation: presentationTrace(),
     };
     mounted = session;
     try {
@@ -184,10 +187,14 @@ const api = {
               ),
             }
           : {}),
+        pacingObserver: session.presentation.observer,
         applyOn: o.applyOn,
         onStatus: (s) => {
           statuses.push({ ...s, t: performance.now(), mount });
-          if (s.kind === "streaming" && !s.firstFrame) loadStreaming();
+          if (s.kind === "streaming" && !s.firstFrame) {
+            session.presentation.connection();
+            loadStreaming();
+          }
           if (s.kind === "connecting" && heapAtStart[mount] === undefined) {
             const heap = client?.stats().heapBytes ?? 0;
             if (heap > 0) heapAtStart[mount] = heap;
@@ -235,6 +242,7 @@ const api = {
           firstFrameAt: mounted.firstFrameAt,
           fallbackAt: mounted.fallbackAt,
           calibration: mounted.calibration,
+          presentation: mounted.presentation.rows(),
         }
       : null;
   },

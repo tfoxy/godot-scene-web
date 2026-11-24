@@ -40,6 +40,7 @@ import {
   type ApplyOn,
   type CreditStage,
   type LoopClock,
+  type PacingObserver,
   type RenderStreamStats,
   type RenderStreamStatus,
   StreamLoop,
@@ -112,10 +113,13 @@ export interface RenderStreamClientOptions {
    * /18 and later, else 2, with a quiet reconnect to fidelity if more than half of the last
    * 32 eligible credit cycles were starved (at any session grant).
    * Samples begin after the first drawn frame and exclude cycles overlapping payload work.
+   * `saver` presents at a display divisor with headroom, using fidelity credit.
    * Fallback survives reconnects until `setPacing` or a different endpoint resets it. Omitted:
    * preserve the existing credit-knob behaviour. Mutually exclusive with either explicit knob;
    * invalid values or combinations throw `TypeError`. Change at runtime with `setPacing`. */
   pacing?: RenderStreamPacing;
+  /** @internal Observe pacing without controlling presentation or credit. */
+  pacingObserver?: PacingObserver;
   /** The hello's credit stage, the ack the host's credit waits on; default `applied`.
    * `submitted` returns credit at a draw for every transaction folded into it. Mutually
    * exclusive with `pacing`; an explicit value also prevents `setPacing`. Fixed per connection. */
@@ -179,7 +183,8 @@ export interface RenderStreamClientOptions {
    * document, or `wake()`. Transactions are still applied and acked as they arrive,
    * so the host's rate is unchanged (with `creditStage: "submitted"` and credit window 1, the host
    * is paced by the presented frames, as it always is at that stage). A core built without the
-   * motion measure never engages the cap. */
+   * motion measure never engages the cap. Under saver, an engaged cap skips every other saver
+   * slot; `off` leaves saver pacing unchanged. */
   frameCap?: RenderStreamFrameCap;
   /** Warm GPU particles once to a representative frame and hold them. Default false.
    * CPU particles stay live. Frozen one-shots retire on the next apply/present after their
@@ -454,6 +459,25 @@ class Client implements RenderStreamClient {
   /** The document the wake listeners are on (null: none, the cap is off). */
   private wakeDoc: Document | null = null;
   private readonly onInput = () => this.loop?.wake();
+  private visibilityDoc: Document | null = null;
+  private readonly onVisibility = () => {
+    if (this.visibilityDoc?.visibilityState === "visible")
+      this.loop?.resetSaver();
+  };
+
+  private listenVisibility(): void {
+    const want =
+      this.pacing === "saver" && !this.disposed
+        ? this.o.canvas.ownerDocument
+        : null;
+    if (want === this.visibilityDoc) return;
+    this.visibilityDoc?.removeEventListener(
+      "visibilitychange",
+      this.onVisibility,
+    );
+    want?.addEventListener("visibilitychange", this.onVisibility);
+    this.visibilityDoc = want;
+  }
 
   constructor(
     private readonly o: RenderStreamClientOptions,
@@ -476,6 +500,7 @@ class Client implements RenderStreamClient {
     this.damageRedraw = o.damageRedraw ?? false;
     this.frameCapBounds = o.frameCapBounds;
     this.listenInput();
+    this.listenVisibility();
   }
 
   setPacing(pacing: RenderStreamPacing): void {
@@ -486,6 +511,7 @@ class Client implements RenderStreamClient {
         "render-stream client: setPacing conflicts with explicit credit knobs",
       );
     this.pacing = pacing;
+    this.listenVisibility();
     this.loop?.setPacing(pacing);
   }
 
@@ -607,6 +633,11 @@ class Client implements RenderStreamClient {
     return (
       this.loop?.stats() ?? {
         ...EMPTY_STATS,
+        saverDivisor: null,
+        saverDisplayHz: null,
+        saverMissedSlotShare: null,
+        saverStaleSlotShare: null,
+        saverCapacityHz: null,
         pacing: this.pacing,
         pacingFallback: false,
         creditStage:
@@ -680,6 +711,7 @@ class Client implements RenderStreamClient {
     if (this.disposed) return;
     this.disposed = true;
     this.listenInput();
+    this.listenVisibility();
     this.loadAbort?.abort();
     this.loadAbort = null;
     const canvas = this.o.canvas;
@@ -782,6 +814,7 @@ class Client implements RenderStreamClient {
       creditWindow: this.o.creditWindow,
       creditStage: this.o.creditStage,
       pacing: this.pacing ?? undefined,
+      pacingObserver: this.o.pacingObserver,
       applyOn: this.o.applyOn,
       resourceHoldMs: this.o.resourceHoldMs,
       ext: this.ext,

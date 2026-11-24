@@ -16,6 +16,7 @@ from collections import Counter
 from contextlib import redirect_stdout
 import io
 import json
+import shlex
 from pathlib import Path
 import tempfile
 import unittest
@@ -119,6 +120,62 @@ def host_metrics(sent, draws, seconds):
     }
 
 
+def distribution(values):
+    values = [v for v in values if v is not None]
+    return {"p50": quantile(values, 0.5), "p95": quantile(values, 0.95),
+            "mean": sum(values) / len(values) if values else None}
+
+
+def host_settings(leg):
+    env = leg / "host/env.txt"
+    settings = dict(line.split("=", 1) for line in env.read_text().splitlines() if "=" in line) if env.exists() else {}
+    host = settings.get("GRC_HOST_FPS")
+    for name in ("argv.txt", "host-argv.txt", "command.txt", "argv.json"):
+        path = leg / "host" / name
+        if path.exists():
+            argv = read_json(path) if path.suffix == ".json" else shlex.split(path.read_text())
+            if isinstance(argv, list) and "--max-fps" in argv:
+                host = argv[argv.index("--max-fps") + 1]
+                break
+    # Older proofs used bench-live-scale's fixed 60 fps host.
+    publish = settings.get("GRC_PUBLISH_FPS", "")
+    return {"host_fps": int(host) if host is not None else 60,
+            "publish_fps": int(publish) if publish.isdecimal() else None}
+
+
+def saver_metrics(leg, pacing):
+    path = leg / "rx/saver-trace.jsonl"
+    trace = jsonl(path) if path.exists() else None
+    start, end = pacing.get("page_window_start_ms"), pacing.get("page_window_end_ms")
+    def in_window(t):
+        return t is not None and start is not None and end is not None and start <= t < end
+    slots = [r for r in trace or [] if r.get("kind") == "slot"]
+    # Capacity measurement presents every callback. Report paced slots separately from warmup.
+    steady = {}
+    for row in slots:
+        if row["k"] >= 2:
+            steady.setdefault(row.get("connection", 0), row["t"])
+    paced = [r for r in slots if r["k"] >= 2 and in_window(r["t"])]
+    draws = {}
+    for row in trace or []:
+        if row.get("kind") != "seq" or not in_window(row.get("presentMs")):
+            continue
+        connection = row.get("connection", 0)
+        if pacing.get("preset") == "saver" and row["presentMs"] < steady.get(connection, float("inf")):
+            continue
+        key = (connection, row["presentMs"])
+        if key not in draws or row["seq"] > draws[key]["seq"]:
+            draws[key] = row
+    return {
+        "present_arrival_wait_ms": distribution([subtract(r.get("presentMs"), r.get("arrivalMs")) for r in draws.values()]),
+        "fresh_slot_share": ratio(sum(not r["missed"] and not r["stale"] for r in paced), len(paced)),
+        "stale_slot_share": ratio(sum(r["stale"] for r in paced), len(paced)),
+        "missed_slot_share": ratio(sum(r["missed"] for r in paced), len(paced)),
+        "final_k": (pacing.get("saver_summary") or {}).get("k"),
+        "saver_warmup_slots": sum(r["k"] < 2 and in_window(r["t"]) for r in slots) if trace is not None else None,
+    }
+
+
 def summarize(leg, report):
     pacing = report["pacing"]
     start = pacing["host_window_start_us"]
@@ -138,12 +195,14 @@ def summarize(leg, report):
                  {c["connection"] for t in timeline for c in t.get("connections", [])})
     seconds = measured_seconds
     rate_source = None
-    counts, groups, opens, closes = {}, {}, {}, {}
+    counts, groups, opens, closes, byte_counts = {}, {}, {}, {}, {}
     if taps and seconds > 0:
         for cid, records in taps.items():
             opens[cid] = next((r["t_us"] for r in records if r.get("event") == "open"), None)
             closes[cid] = next((r["t_us"] for r in records if r.get("event") == "close"), None)
             groups[cid] = submitted_draws(records, start, end)
+            sends = [r["sent"] for r in records if start <= r["t_us"] < end and r.get("sent")]
+            byte_counts[cid] = sum(r["bytes"] for r in sends) if all("bytes" in r for r in sends) else None
             counts[cid] = sum(1 for r in records if start <= r["t_us"] < end and r.get("sent"))
         rate_source = "tap/client-window"
     elif len(timeline) >= 2:
@@ -184,6 +243,10 @@ def summarize(leg, report):
     shares = [s["starvedCycleShare"] for s in per_second if s.get("starvedCycleShare") is not None]
     return {
         "preset": pacing["preset"],
+        **host_settings(leg),
+        **saver_metrics(leg, pacing),
+        "bytes_per_s": ratio(sum(byte_counts.values()), measured_seconds)
+            if ids and all(byte_counts.get(cid) is not None for cid in ids) else None,
         "gpu_load_mode": pacing.get("gpu_load", {}).get("mode", "always"),
         "scene": scene_profile(leg),
         "label": leg.name,
@@ -229,25 +292,30 @@ def summarize(leg, report):
 
 def collect(out):
     cells = {}
+    all_rows = []
     for path in sorted(out.rglob("client-device.json")):
         report = read_json(path)
         pacing = report.get("pacing")
         if not pacing:
             continue
-        leg = path.parent.parent  # <leg>/rx/client-device.json
-        row = summarize(leg, report)
-        key = (pacing["gpu_load"]["target_hz"], pacing["one_way_ms"], row["scene"]["profile"], row["gpu_load_mode"])
+        row = summarize(path.parent.parent, report)
+        base = (pacing["gpu_load"]["target_hz"], pacing["one_way_ms"], row["scene"]["profile"], row["gpu_load_mode"])
+        key = (*base, row["host_fps"], row["publish_fps"])
         cells.setdefault(key, []).append(row)
+        all_rows.append((base, row))
     result = []
-    for (load, delay, profile, mode), rows in sorted(cells.items()):
-        baseline = next((r for r in rows if r["label"] == "fidelity"), None)
+    for (load, delay, profile, mode, host, publish), rows in sorted(cells.items(), key=lambda item: tuple("" if v is None else str(v) for v in item[0])):
+        baseline = next((r for base, r in all_rows if base == (load, delay, profile, mode)
+                         and r["host_fps"] == host and r["publish_fps"] is None
+                         and r["preset"] == "fidelity" and not r["label"].endswith("-rep")), None)
         for row in rows:
             row["draws_vs_fidelity"] = ratio(row["draws_per_s"], baseline["draws_per_s"]) if baseline else None
             row["staleness_delta_ms"] = {
                 q: subtract(row["staleness_submitted_ms"][q], baseline["staleness_submitted_ms"][q]) if baseline else None
                 for q in ("p50", "p95", "mean")
             }
-        result.append({"load_hz": load, "one_way_ms": delay, "scene_profile": profile, "gpu_load_mode": mode, "rows": rows})
+        result.append({"load_hz": load, "one_way_ms": delay, "scene_profile": profile, "gpu_load_mode": mode,
+                       "host_fps": host, "publish_fps": publish, "rows": rows})
     return {"schema": "render-stream-pacing-proof/1", "cells": result}
 
 
@@ -255,13 +323,13 @@ def tables(result, by_connection=False):
     def f(value):
         return "-" if value is None else f"{value:.3f}"
     for cell in result["cells"]:
-        print(f"\nScene {cell['scene_profile']}; load {cell['load_hz']} Hz ({cell['gpu_load_mode']}); one-way {cell['one_way_ms']} ms (added RTT {2 * cell['one_way_ms']} ms)")
+        print(f"\nHost {cell.get('host_fps', 60)} fps; publish {cell.get('publish_fps')}; scene {cell['scene_profile']}; load {cell['load_hz']} Hz ({cell['gpu_load_mode']}); one-way {cell['one_way_ms']} ms (added RTT {2 * cell['one_way_ms']} ms)")
         columns = ["preset"] + (["connection"] if by_connection else []) + [
             "sends/s host", "draws/s host", "draws/s client", "sends/draw host",
             "client draws/fidelity", "age p50/p95/mean ms", "age delta p50/p95/mean ms",
             "stutter share", "starved share min/median/max", "w_eff share (connection-seconds)",
             "srtt p50 ms", "fold count:draws", "balanced fallback mount/first ms",
-            "balanced trial/after draws/s", "trial/after window s", "open2-open1 ms"]
+            "balanced trial/after draws/s", "trial/after window s", "open2-open1 ms", "bytes/s", "present-arrival p50/p95 ms", "fresh/stale/missed slots", "final k"]
         print("| " + " | ".join(columns) + " |")
         print("|" + "---|" * len(columns))
         for row in cell["rows"]:
@@ -281,11 +349,15 @@ def tables(result, by_connection=False):
                     f"{f(row['fallback_at_mount_ms'])}/{f(row['fallback_at_first_frame_ms'])}",
                     "/".join(f((row[phase] or {}).get("draws_per_s")) for phase in ("trial", "after_fallback")),
                     "/".join(f((row[phase] or {}).get("window_s")) for phase in ("trial", "after_fallback")),
-                    f(row["second_connection_open_after_first_ms"]),
+                    f(row["second_connection_open_after_first_ms"]), f(row["bytes_per_s"]),
+                    "/".join(f(row["present_arrival_wait_ms"][q]) for q in ("p50", "p95")),
+                    "/".join(f(row[key]) for key in ("fresh_slot_share", "stale_slot_share", "missed_slot_share")),
+                    f(row["final_k"]),
                 ]) + " |")
         for row in cell["rows"]:
             print(f"Scene env ({row['label']}): " + json.dumps(row["scene"]["rs_scale_env"], sort_keys=True))
         print("Age and host draws: measured-window submitted ACK groups across all connections, newest seq ACK minus send (host clock).")
+        print("Wait and saver slot shares use the page window and exclude saver capacity warmup; age has no hold correction.")
         print("Age includes return one-way delay, constant per RTT cell. Folds = submitted seqs per draw; JSON includes per-connection metrics.")
         print("Client draws: mount recorder over the full measured window, including connections before fallback.")
         print("Window/srtt: measured-window 1 Hz samples of open connections (tap open/close). Fallback clocks: mount / first frame.")
@@ -297,6 +369,80 @@ def tables(result, by_connection=False):
 
 
 class SummaryTests(unittest.TestCase):
+    def test_uncapped_publish_settings_share_a_cell(self):
+        scratch = Path(__file__).resolve().parents[4] / ".local"
+        scratch.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=scratch) as tmp:
+            root = Path(tmp)
+            for label, setting in [("omitted", None), ("empty", ""), ("explicit", "uncapped")]:
+                leg = root / label
+                (leg / "host").mkdir(parents=True)
+                (leg / "rx").mkdir()
+                (leg / "host/env.txt").write_text(f"GRC_PUBLISH_FPS={setting}\n" if setting is not None else "")
+                (leg / "rx/client-device.json").write_text(json.dumps({"pacing": {
+                    "preset": "saver", "gpu_load": {"target_hz": None}, "one_way_ms": 0,
+                    "host_window_start_us": 1000000, "host_window_end_us": 3000000,
+                }}))
+            result = collect(root)
+            self.assertEqual(len(result["cells"]), 1)
+            cell = result["cells"][0]
+            self.assertIsNone(cell["publish_fps"])
+            self.assertEqual(len(cell["rows"]), 3)
+            self.assertTrue(all(row["publish_fps"] is None for row in cell["rows"]))
+
+    def test_saver_trace_axes_and_bytes(self):
+        scratch = Path(__file__).resolve().parents[4] / ".local"
+        scratch.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=scratch) as tmp:
+            root = Path(tmp)
+            for label, host, publish, preset in [("F60", 60, None, "fidelity"), ("F144", 144, None, "fidelity"),
+                                                   ("Saver", 60, None, "saver"), ("Sunaligned", 60, 30, "saver")]:
+                leg = root / label
+                (leg / "host/tap").mkdir(parents=True)
+                (leg / "rx").mkdir()
+                (leg / "host/argv.txt").write_text(f"godot --headless --max-fps {host}")
+                (leg / "host/env.txt").write_text(f"GRC_PUBLISH_FPS={publish}\n" if publish else "")
+                pacing = {"preset": preset, "gpu_load": {"target_hz": None}, "one_way_ms": 0,
+                          "host_window_start_us": 1000000, "host_window_end_us": 3000000,
+                          "page_window_start_ms": 1000, "page_window_end_ms": 3000,
+                          "draws_per_s": 30, "saver_summary": {"k": 2 if preset == "saver" else None}}
+                (leg / "rx/client-device.json").write_text(json.dumps({"pacing": pacing}))
+                slots = [{"kind": "slot", "t": t, "k": k, "missed": missed, "stale": stale}
+                         for t, k, missed, stale in [(1100, 1, True, False), (1500, 2, False, False),
+                                                    (1700, 2, False, True), (1900, 2, True, False), (3000, 2, True, False)]]
+                seqs = [{"kind": "seq", "seq": seq, "arrivalMs": arrival, "presentMs": present}
+                        for seq, arrival, present in [(1, 1200, 1300), (2, 1460, 1500), (3, 1480, 1500)]]
+                (leg / "rx/saver-trace.jsonl").write_text("\n".join(map(json.dumps, slots + seqs)))
+                taps = [{"t_us": 1500000, "sent": {"seq": 2, "bytes": 80}},
+                        {"t_us": 1600000, "sent": {"seq": 3, "bytes": 120}}]
+                (leg / "host/tap/live-1.jsonl").write_text("\n".join(map(json.dumps, taps)))
+            result = collect(root)
+            self.assertEqual(len(result["cells"]), 3)
+            rows = {r["label"]: r for c in result["cells"] for r in c["rows"]}
+            saver = rows["Saver"]
+            self.assertEqual(saver["present_arrival_wait_ms"], {"p50": 20, "p95": 20, "mean": 20})
+            self.assertEqual([saver[k] for k in ("fresh_slot_share", "stale_slot_share", "missed_slot_share")], [1/3]*3)
+            self.assertEqual(saver["final_k"], 2)
+            self.assertEqual(saver["saver_warmup_slots"], 1)
+            self.assertEqual(saver["bytes_per_s"], 100)
+            self.assertEqual(rows["F144"]["host_fps"], 144)
+            self.assertEqual(rows["Sunaligned"]["publish_fps"], 30)
+            self.assertNotIn("hold_corrected_age_ms", saver)
+            # Missing trace and unknown send sizes must stay unavailable.
+            leg = root / "Saver"
+            (leg / "rx/saver-trace.jsonl").unlink()
+            (leg / "host/tap/live-1.jsonl").write_text(json.dumps({"t_us": 1500000, "sent": {"seq": 1}}))
+            report = read_json(leg / "rx/client-device.json")
+            missing = summarize(leg, report)
+            self.assertIsNone(missing["missed_slot_share"])
+            self.assertIsNone(missing["present_arrival_wait_ms"]["p50"])
+            self.assertIsNone(missing["bytes_per_s"])
+            output = io.StringIO()
+            with redirect_stdout(output):
+                tables(result)
+            self.assertIn("present-arrival", output.getvalue())
+            self.assertIn("bytes/s", output.getvalue())
+
     def test_fixture(self):
         scratch = Path(__file__).resolve().parents[4] / ".local"
         scratch.mkdir(exist_ok=True)
