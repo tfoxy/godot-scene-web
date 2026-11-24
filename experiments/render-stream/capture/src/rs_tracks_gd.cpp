@@ -441,6 +441,10 @@ Value m_bind(Instance *self, const Args &a) {
     s.last_error = "track-already-bound";
     return boolean(false);
   }
+  if (kind == rs::tracks::kKindAudio) {
+    s.last_error = "track-kind-bound";
+    return boolean(false);
+  }
   if (!rs::tracks::kind_name_ok(kind)) {
     s.last_error = "track-kind-invalid";
     return boolean(false);

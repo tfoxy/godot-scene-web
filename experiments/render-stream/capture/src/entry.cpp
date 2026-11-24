@@ -2256,6 +2256,12 @@ void refresh_live_tracks() {
     }
     extras.carriers.push_back(std::move(ct));
   }
+  if (auto *audio = g_live.tracks->audio_hub()) {
+    const auto path = path_join(g_state.evidence_dir, "live-audio.json");
+    const auto tmp = path + ".tmp";
+    if (!write_file(tmp, audio->json()) || !grc::rs::replace_file(tmp, path))
+      log_line("could not refresh " + path);
+  }
   const std::string path = path_join(g_state.evidence_dir, "live-tracks.json");
   const std::string tmp = path + ".tmp";
   if (!write_file(tmp, g_live.tracks->json(extras)) || !grc::rs::replace_file(tmp, path)) {
@@ -2271,6 +2277,9 @@ bool tracks_configure(std::string *why) {
   if (!rs::tracks::parse_kinds(grc::rs::env("GRC_LIVE_TRACKS"), &g_live.track_config.kinds, why)) {
     return false;
   }
+  const bool audio_granted = std::find(g_live.track_config.kinds.begin(), g_live.track_config.kinds.end(),
+      rs::tracks::kKindAudio) != g_live.track_config.kinds.end();
+  if (!audio::configure(audio_granted, &g_live.track_config.audio, why)) return false;
   const bool on = !g_live.track_config.kinds.empty();
   rs::tracks::Sabotage sabotage = rs::tracks::Sabotage::None;
   const bool track_sabotage = rs::tracks::parse_sabotage(g_live.listener_sabotage, &sabotage);
@@ -3751,6 +3760,10 @@ void stream_start() {
       // matched after every view subprotocol, admitted from the
       // track pool. Off: neither member is touched (T3).
       server_config.track_subprotocols = {rs::tracks::kTrackSubprotocolV1};
+      if (std::find(g_live.track_config.kinds.begin(), g_live.track_config.kinds.end(),
+                    rs::tracks::kKindAudio) != g_live.track_config.kinds.end()) {
+        server_config.track_subprotocols.push_back(rs::tracks::kAudioSubprotocolV1);
+      }
       server_config.max_tracks = static_cast<std::size_t>(g_live.max_tracks);
     }
     g_live.http_coding_on = !g_live.http_codings.empty();
@@ -4065,6 +4078,7 @@ void live_close_begin() {
   if (g_live.tracks != nullptr) {
     // TRK1 (Q5): a track that opened during the linger ends before the carriers stop.
     g_live.tracks->close_all(1001, "stream-ended");
+    g_live.tracks->stop_audio();
   }
 }
 

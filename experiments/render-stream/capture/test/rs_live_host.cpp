@@ -22,6 +22,8 @@
 //   --items=N         benchmark rectangle count (default 1024)
 //   --frames=N        stop after N callbacks (default 0: until signal)
 //                     benchmark summaries also write PATH.timeline.jsonl once per second
+//   --audio           arm an empty synthetic audio source (grants audio when --tracks is absent)
+//   --audio-demo      arm synthetic samples, voice/cue/take events and a subscribed lane
 //   --port=N          0 (default) binds an ephemeral port
 //   --token=VALUE     a bearer session: VALUE is required on /6 upgrades and on GETs, and in a
 //                     /7 hello's `token`
@@ -32,6 +34,7 @@
 //                     loads the net module (--net-module=PATH, else beside this binary) and
 //                     binds UDP --wt-port=N (default 0, ephemeral) with a self-signed certificate
 //   --tap-dir=DIR     the hub's tap (rs_live.h LiveConfig::tap_dir; absolute)
+//   --audio-commands=FILE with --audio-demo: appended start/stop/pair/cue lines drive the source
 //   --evidence-dir=DIR where wt writes live-cert-sha256, and live-carriers.json at stop
 //   every other name in --carriers is an in-memory
 //   consumer carrier (rs_mem_carrier.h) registered through grc_carrier_register, found with
@@ -96,6 +99,8 @@
 #include "rs2_golden_states.h"
 #include "rs2_snapshot.h"
 #include <dlfcn.h>
+#include <atomic>
+#include <fstream>
 
 #include "rs_carrier_ext.h"
 #include "rs_carrier_set.h"
@@ -105,6 +110,7 @@
 #include "rs_live.h"
 #include "rs_track_caps.h"
 #include "rs_tracks.h"
+#include "rs_sha256.h"
 #include "rs_payload_rest.h"
 #include "rs_publish.h"
 #include "rs_resource_store.h"
@@ -130,6 +136,10 @@ class FixedSource : public grc::live::ResourceSource {
   }
   // --big-resource-mib: a GRT1 body of `mib` MiB of texture-like texels, coded zstd at rest and
   // held in a ServedResources exactly as the capture holds a texture body, under kBigHash.
+  void hold_audio() {
+    audio_ = std::make_shared<const std::vector<std::uint8_t>>(grc::audio::Hub::synthetic_wav());
+    audio_hash_ = grc::sha256_hex(audio_->data(), audio_->size());
+  }
   void hold_big(std::size_t mib) {
     const std::size_t data = mib << 20;
     std::vector<std::uint8_t> b = {'G', 'R', 'T', '1', '\r', '\n', 0x1a, '\n', 2, 0, 0, 0, '{', '}'};
@@ -155,8 +165,10 @@ class FixedSource : public grc::live::ResourceSource {
     std::vector<grc::rs::ServeEvent> events;
     big_->pin({&map}, 1, &events);
   }
+  std::atomic<std::uint64_t> audio_hits{0};
   std::shared_ptr<const std::vector<std::uint8_t>> lookup(std::string_view hash) override {
     if (hash == kHash) return body_;
+    if (audio_ && hash == audio_hash_) { ++audio_hits; return audio_; }
     return big_ != nullptr ? big_->lookup(hash) : nullptr;
   }
   std::shared_ptr<const std::vector<std::uint8_t>> lookup_coded(std::string_view hash,
@@ -164,20 +176,22 @@ class FixedSource : public grc::live::ResourceSource {
     return big_ != nullptr ? big_->lookup_coded(hash, coding) : nullptr;
   }
   bool contains(std::string_view hash) override {
-    return hash == kHash || (big_ != nullptr && big_->contains(hash));
+    return hash == kHash || (audio_ && hash == audio_hash_) || (big_ != nullptr && big_->contains(hash));
   }
   grc::live::ResourceBody lookup_body(std::string_view hash, grc::live::Coding accepted) override {
-    if (hash != kHash && big_ != nullptr) return big_->lookup_body(hash, accepted);
+    if (hash != kHash && hash != audio_hash_ && big_ != nullptr) return big_->lookup_body(hash, accepted);
     return ResourceSource::lookup_body(hash, accepted);
   }
   bool lookup_coded_body(std::string_view hash, grc::live::Coding coding, grc::live::ResourceBody *out) override {
-    if (hash != kHash && big_ != nullptr) return big_->lookup_coded_body(hash, coding, out);
+    if (hash != kHash && hash != audio_hash_ && big_ != nullptr) return big_->lookup_coded_body(hash, coding, out);
     return ResourceSource::lookup_coded_body(hash, coding, out);
   }
 
  private:
   static constexpr std::string_view kBigHash = "2222222222222222222222222222222222222222222222222222222222222222";
   std::shared_ptr<const std::vector<std::uint8_t>> body_;
+  std::shared_ptr<const std::vector<std::uint8_t>> audio_;
+  std::string audio_hash_;
   std::unique_ptr<grc::rs::ServedResources> big_;
 };
 
@@ -311,6 +325,12 @@ int main(int argc, char **argv) {
   // TRK1
   std::string track_kinds_text;
   bool tracks_flag = false;
+  bool audio_source = false;
+  bool audio_demo = false;
+  std::string audio_commands;
+  std::size_t audio_command_count = 0;
+  std::uint32_t audio_voice = 0;
+  std::uint64_t audio_hits_recorded = 0;
   unsigned long max_tracks = 4;
   unsigned long track_rate = 1000;
   unsigned long track_keepalive_ms = 1000;
@@ -387,6 +407,13 @@ int main(int argc, char **argv) {
       track_formats = v;
     } else if (const char *v = value_of("--track-down-formats")) {
       track_down_formats = v;
+    } else if (const char *v = value_of("--audio-commands")) {
+      audio_commands = v;
+    } else if (arg == "--audio-demo") {
+      audio_demo = true;
+      audio_source = true;
+    } else if (arg == "--audio") {
+      audio_source = true;
     } else if (arg == "--track-echo") {
       track_echo = true;
     } else if (const char *v = value_of("--track-caps")) {
@@ -486,12 +513,28 @@ int main(int argc, char **argv) {
   }
   // TRK1: the grant, its knobs (entry.cpp's ranges) and the credentials, before anything listens.
   grc::rs::tracks::TrackConfig track_config;
+  if (!tracks_flag) {
+    const char *env = std::getenv("GRC_LIVE_TRACKS");
+    if (env) { track_kinds_text = env; tracks_flag = true; }
+  }
+  if (audio_source && !tracks_flag) { tracks_flag = true; track_kinds_text = "audio"; }
   if (tracks_flag) {
     std::string why;
     if (!grc::rs::tracks::parse_kinds(track_kinds_text.c_str(), &track_config.kinds, &why)) {
       std::fprintf(stderr, "rs_live_host: %s\n", why.c_str());
       return 2;
     }
+  }
+  const bool audio_granted = std::find(track_config.kinds.begin(), track_config.kinds.end(),
+      grc::rs::tracks::kKindAudio) != track_config.kinds.end();
+  std::string audio_error;
+  if (!grc::audio::configure(audio_granted, &track_config.audio, &audio_error)) {
+    std::fprintf(stderr, "rs_live_host: %s\n", audio_error.c_str()); return 2;
+  }
+  track_config.audio_source_armed = audio_source;
+  track_config.audio_synthetic_demo = audio_demo;
+  if (!audio_commands.empty() && (!audio_demo || !audio_granted)) {
+    std::fprintf(stderr, "rs_live_host: --audio-commands needs --audio-demo and the audio grant\n"); return 2;
   }
   const bool tracks_on = !track_config.kinds.empty();
   if (is_track_sabotage && !tracks_on) {
@@ -555,6 +598,7 @@ int main(int argc, char **argv) {
       track_config.credentials[kind] = credential;
     }
     server_config.track_subprotocols = {grc::rs::tracks::kTrackSubprotocolV1};
+    if (audio_granted) server_config.track_subprotocols.push_back(grc::rs::tracks::kAudioSubprotocolV1);
     server_config.max_tracks = max_tracks;
   }
   server_config.subprotocols = {kSubprotocolV7, "render-stream.6"};
@@ -581,6 +625,7 @@ int main(int argc, char **argv) {
 
   FixedSource source;
   if (big_resource_mib > 0) source.hold_big(big_resource_mib);
+  if (audio_demo) source.hold_audio();
   grc::live::CarrierServices services;
   services.auth_token = token;
   services.allowed_origins = server_config.allowed_origins;
@@ -601,7 +646,8 @@ int main(int argc, char **argv) {
   services.config["expose"] = expose == grc::live::Expose::Lan ? "lan" : "loopback";
   services.config["wt_cert"] = "self";
   if (!evidence_dir.empty()) services.config["evidence_dir"] = evidence_dir;
-  if (tracks_on) services.config["track_subprotocols"] = grc::rs::tracks::kTrackSubprotocolV1;
+  if (tracks_on) services.config["track_subprotocols"] = std::string(grc::rs::tracks::kTrackSubprotocolV1) +
+      (audio_granted ? std::string(",") + grc::rs::tracks::kAudioSubprotocolV1 : "");
   // CAR6: declared before the set, so its report runs after the set destroyed every carrier.
   struct ExtStats {
     std::string name;
@@ -680,7 +726,7 @@ int main(int argc, char **argv) {
       vt.destroy(vt.self);
     };
     refused_case("bad-version", [](grc_carrier_v1 *v) { v->abi_version = 2; }, "badver");
-    refused_case("short-size", [](grc_carrier_v1 *v) { v->size = sizeof(grc_carrier_v1) - 8; }, "short");
+    refused_case("short-size", [](grc_carrier_v1 *v) { v->size = GRC_CARRIER_V1_MIN_SIZE - 8; }, "short");
     refused_case("null-entry", [](grc_carrier_v1 *v) { v->queued_bytes = nullptr; }, "nullentry");
     refused_case("bad-name", [](grc_carrier_v1 *) {}, "Bad_Name");
     refused_case("reserved-ws", [](grc_carrier_v1 *) {}, "ws");
@@ -800,6 +846,16 @@ int main(int argc, char **argv) {
       }
       extras.carriers.push_back(ct);
     }
+    if (auto *audio = tracks->audio_hub()) {
+      const auto hits = source.audio_hits.load();
+      if (hits > audio_hits_recorded) {
+        const auto wav = grc::audio::Hub::synthetic_wav();
+        const auto hash = grc::sha256_hex(wav.data(), wav.size());
+        for (; audio_hits_recorded < hits; ++audio_hits_recorded) audio->asset_served(hash, "wav", wav.size());
+      }
+      const std::string path = evidence_dir + "/live-audio.json";
+      if (grc::write_file(path + ".tmp", audio->json())) grc::rs::replace_file(path + ".tmp", path);
+    }
     const std::string path = evidence_dir + "/live-tracks.json";
     const std::string tmp = path + ".tmp";
     if (grc::write_file(tmp, tracks->json(extras))) std::rename(tmp.c_str(), path.c_str());
@@ -809,6 +865,7 @@ int main(int argc, char **argv) {
         track_config, transport, [](const std::string &line) { print(line); });
     if (track_receiver != "none") {
       for (const std::string &kind : track_config.kinds) {
+        if (kind == grc::rs::tracks::kKindAudio) continue;
         std::string why;
         if (!tracks->bind(kind, &receiver, &why)) {
           std::fprintf(stderr, "rs_live_host: bind %s: %s\n", kind.c_str(), why.c_str());
@@ -904,6 +961,23 @@ int main(int argc, char **argv) {
 
   const auto track_tick = [&]() {
     if (tracks == nullptr) return;
+    // Test-only source control: consume each appended line once, in file order. No game state.
+    if (!audio_commands.empty()) {
+      std::ifstream input(audio_commands);
+      std::string command;
+      std::size_t line = 0;
+      while (std::getline(input, command)) {
+        if (++line <= audio_command_count) continue;
+        auto *audio = tracks->audio_hub();
+        if (command == "start") audio_voice = audio->start(1);
+        else if (command == "stop") { audio->stop(audio_voice); audio_voice = 0; }
+        else if (command == "cue") audio->synthetic_cue();
+        else if (command == "pair") { const auto voice = audio->start(1); audio->stop(voice); }
+        else { std::fprintf(stderr, "rs_live_host: invalid audio command\n"); g_stop = 1; break; }
+        audio_command_count = line;
+        print("RS_AUDIO_COMMAND " + std::to_string(line));
+      }
+    }
     tracks->tick(now_ns());
     if (tracks->take_changed()) write_tracks_json();
   };
@@ -958,6 +1032,7 @@ int main(int argc, char **argv) {
   drain();
   hub.close_open(frame);
   if (tracks != nullptr) tracks->close_all(1001, "stream-ended");
+  if (tracks != nullptr) tracks->stop_audio();
   transport.stop();
   if (tracks != nullptr) {
     tracks->take_changed();

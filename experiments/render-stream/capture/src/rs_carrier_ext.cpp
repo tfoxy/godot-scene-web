@@ -19,12 +19,12 @@ int CarrierRegistry::add(const grc_carrier_v1 *carrier, std::string *why) {
   if (carrier == nullptr) {
     reason = "carrier-abi: null carrier";
   } else if (carrier->abi_version != GRC_CARRIER_ABI_VERSION ||
-             carrier->size < sizeof(grc_carrier_v1)) {
+             carrier->size < GRC_CARRIER_V1_MIN_SIZE) {
     // Nothing past abi_version and size is read from a struct whose size is not accepted.
     reason = "carrier-abi: abi_version " + std::to_string(carrier->abi_version) + " size " +
              std::to_string(carrier->size) + " (want version " +
              std::to_string(GRC_CARRIER_ABI_VERSION) + ", size >= " +
-             std::to_string(sizeof(grc_carrier_v1)) + ")";
+             std::to_string(GRC_CARRIER_V1_MIN_SIZE) + ")";
   } else {
     if (carrier->name != nullptr) {
       // Bounded: a name longer than 16 bytes is malformed whatever follows it.
@@ -53,7 +53,8 @@ int CarrierRegistry::add(const grc_carrier_v1 *carrier, std::string *why) {
     RegisteredCarrier r;
     r.index = static_cast<std::uint8_t>(next_index_++);
     r.name = name;
-    std::memcpy(&r.vtable, carrier, sizeof(grc_carrier_v1));
+    std::memcpy(&r.vtable, carrier, GRC_CARRIER_V1_MIN_SIZE);
+    if (carrier->size >= sizeof(grc_carrier_v1)) r.vtable.send_media = carrier->send_media;
     r.vtable.size = sizeof(grc_carrier_v1);  // only v1's fields were copied
     index = r.index;
     carriers_.push_back(std::move(r));

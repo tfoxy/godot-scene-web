@@ -278,7 +278,7 @@ static_assert(sizeof(grc_buf) == 24, "grc_buf layout");
 static_assert(sizeof(grc_carrier_host_v1) == 128, "grc_carrier_host_v1 layout");
 static_assert(offsetof(grc_carrier_host_v1, admit_subprotocol) == 112, "grc_carrier_host_v1 layout");
 static_assert(offsetof(grc_carrier_host_v1, lookup_coded) == 120, "grc_carrier_host_v1 layout");
-static_assert(sizeof(grc_carrier_v1) == 88, "grc_carrier_v1 layout");
+static_assert(GRC_CARRIER_V1_MIN_SIZE == 88, "grc_carrier_v1 layout");
 static_assert(sizeof(grc_net_wt_info_v1) == 184, "grc_net_wt_info_v1 layout");
 static_assert(offsetof(grc_net_wt_info_v1, port) == 72, "grc_net_wt_info_v1 layout");
 static_assert(offsetof(grc_net_wt_info_v1, sessions_refused) == 160, "grc_net_wt_info_v1 layout");

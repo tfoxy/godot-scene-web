@@ -512,7 +512,7 @@ void test_start_failure() {
   bad.vt.abi_version = 2;
   check(AbiCarrier::adopt(&bad.vt, &error) == nullptr, "adopt: abi_version 2 refused");
   Fake small("small");
-  small.vt.size = sizeof(grc_carrier_v1) - 8;
+  small.vt.size = GRC_CARRIER_V1_MIN_SIZE - 8;
   check(AbiCarrier::adopt(&small.vt, &error) == nullptr, "adopt: short struct refused");
   Fake upper("Upper");
   check(AbiCarrier::adopt(&upper.vt, &error) == nullptr, "adopt: malformed name refused");
@@ -605,6 +605,12 @@ void test_ws_shares_admission() {
   ev = wait_events(set, 1, 2000);
   check(ev.size() == 1 && ev[0].kind == Event::Closed && ev[0].conn == conn, "ws: Closed");
   check(set.admitted() == 0, "ws: the slot returned at Closed");
+  fd = connect_upgrade(wsp->port(), &status);
+  ev = wait_events(set, 1, 2000);
+  check(status == 101 && ev.size() == 1 && ev[0].conn > conn, "ws: closed local id never reused");
+  check(!set.send_media(conn, 0, 0, 1, 0, {'o','l','d'}), "ws: stale local cannot send to reconnect");
+  grc::rs::socket_close(fd);
+  wait_events(set, 1, 2000);
   check(set.carriers_json().find("\"name\":\"ws\",\"index\":0,\"status\":\"listening\",\"error\":null,"
                                  "\"address\":\"127.0.0.1\",\"port\":" +
                                  std::to_string(wsp->port()) +
@@ -819,7 +825,49 @@ void test_split_stop() {
 
 }  // namespace
 
+int media_send(void *self, std::uint32_t local, std::uint8_t cls, std::uint32_t group,
+    std::uint32_t flags, std::uint64_t deadline, grc_buf message) {
+  check(cls == 3 && group == 1 && flags == 0 && deadline == 123, "ABI media metadata survives");
+  return Fake::send_binary(self, local, message);
+}
+void test_audio_media_abi() {
+  std::string error;
+  for (std::size_t tail = 0; tail < sizeof(void *); ++tail) {
+    Fake old("legacy"); old.vt.size = GRC_CARRIER_V1_MIN_SIZE + tail; old.vt.send_media = &media_send;
+    auto carrier = AbiCarrier::adopt(&old.vt, &error);
+    check(carrier && !carrier->media_threaded(), "ABI prefix accepted without reading partial optional pointer");
+  }
+  Fake modern("modern"); modern.vt.send_media = &media_send;
+  CarrierSet set(1, CarrierServices());
+  check(set.add(2, adopt(modern), &error) && set.start(&error), "media carrier starts");
+  check(modern.connect(1), "media connection admitted");
+  const auto conn = grc::live::carrier_conn(2, 1);
+  check(set.media_threaded(conn), "ABI optional media present");
+  check(set.send_media(conn, 3, 1, 0, 123, {1,2,3}), "ABI media send accepted");
+  check(set.carrier(2)->media_threaded(), "ABI media tail retained");
+  auto *abi = dynamic_cast<AbiCarrier *>(set.carrier(2));
+  check(abi && abi->outstanding_buffers() == 0, "media buffer released once");
+  set.stop();
+}
+
+void test_audio_offer() {
+  Fake wt("wt"), ext("ext");
+  CarrierServices services;
+  services.config["track_subprotocols"] = "render-stream-track.1,render-stream-audio.1";
+  CarrierSet set(1, services, 1);
+  std::string error;
+  check(set.add(1, adopt(wt), &error) && set.add(2, adopt(ext), &error), "audio carrier setup");
+  check(set.start(&error), "audio carriers start");
+  check(std::string(wt.host->config(wt.host->host, "track_subprotocols")) == "render-stream-track.1",
+        "wt without audio carriage never offers audio");
+  check(std::string(ext.host->config(ext.host->host, "track_subprotocols")) == services.config["track_subprotocols"],
+        "consumer carrier sees the granted audio subprotocol");
+  set.stop();
+}
+
 int main() {
+  test_audio_media_abi();
+  test_audio_offer();
   test_split_stop();
   test_routing_and_sabotage();
   test_admission_and_sabotage();

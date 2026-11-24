@@ -250,6 +250,13 @@ std::vector<Event> WsCarrier::take_events() {
   return events;
 }
 
+bool WsCarrier::media_threaded() const { return true; }
+bool WsCarrier::send_media(std::uint32_t local, std::uint8_t, std::uint32_t,
+    std::uint32_t flags, std::uint64_t, std::vector<std::uint8_t> message) {
+  if (flags & 1) return server_.send_text(local, std::string(message.begin(), message.end()));
+  return server_.send_binary(local, std::move(message));
+}
+
 bool WsCarrier::send_binary(std::uint32_t local, std::vector<std::uint8_t> message) {
   return server_.send_binary(local, std::move(message));
 }
@@ -300,6 +307,11 @@ struct AbiCarrier::Thunks {
     if (c->ctx_ == nullptr || key == nullptr) return nullptr;
     const auto &map = c->ctx_->services().config;
     const auto it = map.find(key);
+    // The current net module serves generic tracks only. Audio carriage is a separate feature.
+    if (it != map.end() && c->name_ == "wt" && std::strcmp(key, "track_subprotocols") == 0 &&
+        comma_list_has(map, "track_subprotocols", "render-stream-audio.1")) {
+      return "render-stream-track.1";
+    }
     return it == map.end() ? nullptr : it->second.c_str();
   }
 
@@ -568,10 +580,10 @@ std::unique_ptr<AbiCarrier> AbiCarrier::adopt(const grc_carrier_v1 *vt, std::str
     *error = "carrier-abi: null carrier";
     return nullptr;
   }
-  if (vt->abi_version != GRC_CARRIER_ABI_VERSION || vt->size < sizeof(grc_carrier_v1)) {
+  if (vt->abi_version != GRC_CARRIER_ABI_VERSION || vt->size < GRC_CARRIER_V1_MIN_SIZE) {
     *error = "carrier-abi: abi_version " + std::to_string(vt->abi_version) + " size " +
              std::to_string(vt->size) + " (want version 1, size >= " +
-             std::to_string(sizeof(grc_carrier_v1)) + ")";
+             std::to_string(GRC_CARRIER_V1_MIN_SIZE) + ")";
     return nullptr;
   }
   if (vt->name == nullptr || !carrier_name_ok(vt->name)) {
@@ -587,7 +599,9 @@ std::unique_ptr<AbiCarrier> AbiCarrier::adopt(const grc_carrier_v1 *vt, std::str
   return std::unique_ptr<AbiCarrier>(new AbiCarrier(*vt));
 }
 
-AbiCarrier::AbiCarrier(const grc_carrier_v1 &vt) : vt_(vt), name_(vt.name) {
+AbiCarrier::AbiCarrier(const grc_carrier_v1 &vt) : name_(vt.name) {
+  std::memcpy(&vt_, &vt, GRC_CARRIER_V1_MIN_SIZE);
+  if (vt.size >= sizeof(grc_carrier_v1)) vt_.send_media = vt.send_media;
   vt_.size = sizeof(grc_carrier_v1);  // only v1's fields were copied
   host_.abi_version = GRC_CARRIER_ABI_VERSION;
   host_.size = sizeof(grc_carrier_host_v1);
@@ -684,6 +698,15 @@ std::vector<Event> AbiCarrier::take_events() {
   return events;
 }
 
+bool AbiCarrier::media_threaded() const { return vt_.send_media != nullptr; }
+bool AbiCarrier::send_media(std::uint32_t local, std::uint8_t cls, std::uint32_t group,
+    std::uint32_t flags, std::uint64_t deadline_us, std::vector<std::uint8_t> message) {
+  if (!vt_.send_media) return false;
+  auto *owner = new VectorOwner(std::move(message));
+  grc_buf buf{owner->bytes.data(), owner->bytes.size(), ledger_add(static_cast<BufOwner *>(owner))};
+  return vt_.send_media(vt_.self, local, cls, group, flags, deadline_us, buf) != 0;
+}
+
 bool AbiCarrier::send_binary(std::uint32_t local, std::vector<std::uint8_t> message) {
   if (!started_) return false;
   auto *owner = new VectorOwner(std::move(message));
@@ -772,8 +795,8 @@ struct CarrierSet::Slot final : CarrierContext {
   // Main thread only.
   std::uint64_t sessions = 0;
   std::uint64_t resource_gets = 0;
-  std::uint64_t bytes_sent = 0;
-  std::uint64_t messages_sent = 0;
+  std::atomic<std::uint64_t> bytes_sent{0};
+  std::atomic<std::uint64_t> messages_sent{0};
 };
 
 CarrierSet::CarrierSet(std::size_t max_connections, CarrierServices services, std::size_t max_tracks)
@@ -943,6 +966,20 @@ std::uint64_t CarrierSet::queued_bytes(std::uint32_t conn) const {
 std::uint64_t CarrierSet::max_queued_bytes(std::uint32_t conn) const {
   const Slot *slot = route(conn);
   return slot != nullptr ? slot->carrier->max_queued_bytes(carrier_local(conn)) : 0;
+}
+
+bool CarrierSet::media_threaded(std::uint32_t conn) const {
+  const Slot *slot = route(conn);
+  return slot && slot->carrier->media_threaded();
+}
+bool CarrierSet::send_media(std::uint32_t conn, std::uint8_t cls, std::uint32_t group,
+    std::uint32_t flags, std::uint64_t deadline_us, std::vector<std::uint8_t> message) {
+  Slot *slot = route(conn);
+  if (!slot) return false;
+  const auto n = message.size();
+  const bool ok = slot->carrier->send_media(carrier_local(conn), cls, group, flags, deadline_us, std::move(message));
+  if (ok) { slot->bytes_sent += n; ++slot->messages_sent; }
+  return ok;
 }
 
 Carrier *CarrierSet::carrier(std::uint8_t index) const {

@@ -11,9 +11,9 @@
  * working against every later capture that speaks v1.
  *
  * Versioning. Every struct starts with `abi_version` and `size`. A reader accepts a struct when
- * `abi_version == GRC_CARRIER_ABI_VERSION && size >= sizeof(<its v1 struct>)`, so a v1 struct may
- * grow at its end without a new version; a writer sets `size = sizeof(struct)`. A reader never
- * reads past the `size` it was given.
+ * `abi_version == GRC_CARRIER_ABI_VERSION` and size covers the mandatory v1 prefix. Optional
+ * members may grow at the end without a new version; a writer sets `size = sizeof(struct)`.
+ * A reader never reads past the `size` it was given.
  *
  * Strings are UTF-8 `(pointer, length)` pairs, never NUL-terminated unless the field says so. A
  * pointer handed to a callback is valid only for the duration of that call; copy what you keep.
@@ -194,13 +194,23 @@ typedef struct grc_carrier_v1 {
   uint64_t (*max_queued_bytes)(void *self, uint32_t local);
   /* Frees `self`; called once, after stop() (or instead of start() when live never started). */
   void (*destroy)(void *self);
+  /* Optional tail: read only when size covers this member. Any thread, never blocks.
+   * cls: 0 control (flags bit 0 TEXT), 2 take (group = stream), 3 lane (group = lane).
+   * flags bit 1 END_GROUP; deadline_us: 0 or capture-clock lane expiry. Same ownership
+   * as send_*. Offering this also makes queued_bytes thread-safe, and requires local ids
+   * never to be reused within start()..stop(). Older carriers use the frame callback. */
+  int (*send_media)(void *self, uint32_t local, uint8_t cls, uint32_t group, uint32_t flags,
+                    uint64_t deadline_us, grc_buf message);
 } grc_carrier_v1;
+
+/* Original v1 prefix; optional tails must not raise the registration minimum. */
+#define GRC_CARRIER_V1_MIN_SIZE offsetof(grc_carrier_v1, send_media)
 
 /* The capture's exported registration entry point.
  * Registers a consumer carrier before live starts. The capture copies *carrier (its
  * v1 fields) and returns its index (2..255, in registration order), or -1 -- the carrier then
  * stays its caller's, untouched -- when the struct's abi_version is not GRC_CARRIER_ABI_VERSION
- * or its size is below sizeof(grc_carrier_v1) (`carrier-abi`), an entry point is NULL
+ * or its size is below GRC_CARRIER_V1_MIN_SIZE (`carrier-abi`), an entry point is NULL
  * (`carrier-abi`), the name is malformed (`carrier-name`), "ws" or "wt" (`carrier-reserved`) or
  * registered already (`carrier-taken`), every index is used (`carrier-full`), or live has
  * already started (`carrier-late`). The capture logs the reason. Any thread.

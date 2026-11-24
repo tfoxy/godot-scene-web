@@ -1,13 +1,40 @@
 #include "rs_audio_wire.h"
 #include "rs_sha256.h"
 #include <algorithm>
-#include <charconv>
+#include <cerrno>
+#include <cstdlib>
+#include <iomanip>
+#include <locale>
+#include <locale.h>
+#include <sstream>
 #include <cmath>
 #include <stdexcept>
+#if defined(__APPLE__)
+#include <xlocale.h>
+#endif
 
 namespace grc::audio {
 namespace {
 void check(bool ok) { if (!ok) throw std::invalid_argument("audio-protocol"); }
+bool roundtrips(const std::string &token, float value) {
+#if defined(_WIN32)
+  static _locale_t locale = _create_locale(LC_NUMERIC, "C");
+#else
+  static locale_t locale = newlocale(LC_NUMERIC_MASK, "C", nullptr);
+#endif
+  if (!locale) std::abort();
+  char *end = nullptr;
+  errno = 0;
+  // Parse at float precision to avoid double rounding. A nonzero finite subnormal
+  // is valid even when the libc conversion reports ERANGE (iostreams reject it).
+#if defined(_WIN32)
+  const float parsed = _strtof_l(token.c_str(), &end, locale);
+#else
+  const float parsed = strtof_l(token.c_str(), &end, locale);
+#endif
+  return end == token.c_str() + token.size() && end != token.c_str() &&
+      (errno == 0 || errno == ERANGE) && std::isfinite(parsed) && parsed != 0 && parsed == value;
+}
 bool whitespace(std::uint32_t c) {
   return (c >= 9 && c <= 13) || c == 32 || c == 0x85 || c == 0xa0 || c == 0x1680 ||
       (c >= 0x2000 && c <= 0x200a) || c == 0x2028 || c == 0x2029 || c == 0x202f || c == 0x205f || c == 0x3000;
@@ -67,10 +94,33 @@ Bytes unhex(std::string_view s, std::size_t size) {
 std::string float_r(float value) {
   check(std::isfinite(value));
   if (value == 0) return std::signbit(value) ? "-0" : "0";
-  char buffer[64];
-  const auto result = std::to_chars(buffer, buffer + sizeof(buffer), std::fabs(value), std::chars_format::scientific);
-  check(result.ec == std::errc{});
-  const std::string raw(buffer, result.ptr);
+  std::string raw;
+  bool found = false;
+  for (int precision = 0; precision < 9 && !found; ++precision) {
+    std::ostringstream output;
+    output.imbue(std::locale::classic());
+    output << std::scientific << std::setprecision(precision) << std::fabs(value);
+    const auto rounded = output.str();
+    const auto exponent_at = rounded.find('e');
+    const int exponent = std::stoi(rounded.substr(exponent_at + 1)) - precision;
+    std::string coefficient = rounded.substr(0, exponent_at);
+    coefficient.erase(std::remove(coefficient.begin(), coefficient.end(), '.'), coefficient.end());
+    // At powers of two the round-trip interval is asymmetric. The nearest rounded
+    // decimal can be outside it while its adjacent decimal of the same width is inside.
+    for (int adjustment : {0, 1, -1}) {
+      const auto number = std::stoll(coefficient) + adjustment;
+      if (number <= 0) continue;
+      const auto digits = std::to_string(number);
+      const auto candidate = digits + "e" + std::to_string(exponent);
+      if (roundtrips(candidate, std::fabs(value))) {
+        raw = digits.substr(0, 1) + "." + digits.substr(1) + "e" +
+            std::to_string(exponent + static_cast<int>(digits.size()) - 1);
+        found = true;
+        break;
+      }
+    }
+  }
+  check(found);
   const auto e = raw.find('e');
   const int k = std::stoi(raw.substr(e + 1));
   std::string digits = raw.substr(0, e);

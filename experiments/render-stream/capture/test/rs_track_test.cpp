@@ -31,6 +31,7 @@
 #include <sstream>
 #include <vector>
 
+#include "rs_audio_sender.h"
 #include "rs_json_lite.h"
 #include "rs_track_caps.h"
 #include "rs_tracks.h"
@@ -1006,7 +1007,6 @@ void test_parse_kinds() {
       {" ", "tracks-invalid: empty item in GRC_LIVE_TRACKS"},
       {"Input", "tracks-invalid: malformed kind in GRC_LIVE_TRACKS"},
       {"in put", "tracks-invalid: malformed kind in GRC_LIVE_TRACKS"},
-      {"audio", "tracks-reserved: audio"},
       {"input,clipboard", "tracks-reserved: clipboard"},
       {"metadata", "tracks-reserved: metadata"},
       {"data", "tracks-reserved: data"},
@@ -1018,7 +1018,7 @@ void test_parse_kinds() {
     check(!tr::parse_kinds(c.text, &kinds, &error) && error == c.error && kinds.empty(),
           std::string("kinds: '") + c.text + "' -> " + c.error + " (got " + error + ")");
   }
-  check(tr::kind_reserved("audio") && !tr::kind_reserved("input"), "kind_reserved");
+  check(!tr::kind_reserved("audio") && !tr::kind_reserved("input"), "kind_reserved");
 }
 
 void test_utf8() {
@@ -1264,7 +1264,67 @@ void test_cap_hub() {
   check(shared.t.texts[2].back() == TrackHub::error_json("track-unauthorized", "wrong"), "shared: a capability is wrong");
 }
 
+void test_audio_handshake() {
+  std::vector<std::string> kinds;
+  std::string error;
+  check(tr::parse_kinds("audio", &kinds, &error) && kinds == std::vector<std::string>{"audio"}, "audio grant alone");
+  check(tr::parse_kinds("input,audio", &kinds, &error) && kinds.size() == 2, "audio grant with input");
+  auto config = base_config();
+  config.kinds = {"input", "audio"};
+  config.credentials["audio"] = std::string(64, 'd');
+  const std::string text = "{\"type\":\"track-hello\",\"protocol\":\"render-stream-audio/1\",\"kind\":\"audio\","
+      "\"formats\":[\"gsw-audio/1\"],\"credential\":\"" + config.credentials["audio"] + "\"}";
+  H dormant(config);
+  dormant.open(1, kS, tr::kAudioSubprotocolV1);
+  dormant.text(1, text, kS);
+  check(refused(dormant, 1, 1013, "track-no-receiver", ""), "audio needs an armed source");
+  check(!dormant.hub->bind("audio", &dormant.r, &error) && error == "track-kind-bound", "audio script bind reserved even dormant");
+  config.audio_source_armed = true;
+  H armed(config);
+  armed.open(1, kS, tr::kAudioSubprotocolV1);
+  const auto before_ready = grc::audio::now_us();
+  armed.text(1, text, kS);
+  const auto after_ready = grc::audio::now_us();
+  check(armed.hub->open_tracks() == 1 && armed.t.texts[1].size() == 2, "audio ready and empty snapshot");
+  grc::rs::json_lite::JValue ready;
+  const bool parsed_ready = grc::rs::json_lite::Reader(armed.t.texts[1][0]).parse(&ready);
+  const auto *audio = parsed_ready ? ready.get("audio") : nullptr;
+  const auto *clock = audio ? audio->get("clock_us") : nullptr;
+  const auto ready_us = clock ? std::stoull(clock->text) : 0;
+  check(clock && ready_us >= before_ready && ready_us <= after_ready, "audio capture clock at ready hand-off in microseconds");
+  check(armed.t.texts[1][1].find("\"voices\":[]") != std::string::npos, "empty audio voice snapshot");
+  check(armed.r.opens.empty(), "audio never reaches a script receiver");
+  armed.hub->close_all(1001, "stream-ended");
+  check(armed.hub->kind_stats("audio")->closed == 1, "audio closes counted once");
+  armed.peer_closed(1, 1001, "stream-ended", 2*kS);
+  check(armed.hub->kind_stats("audio")->closed == 1, "audio carrier close does not duplicate");
+  armed.open(2, 2*kS, tr::kAudioSubprotocolV1);
+  check(armed.last_close(2).second == "stream-ended", "late audio open after stream end");
+}
+
+void test_audio_evidence_cadence() {
+  auto config = base_config();
+  config.kinds = {"input", "audio"};
+  H h(config);
+  h.hub->tick(kS);
+  check(!h.hub->take_changed(), "audio evidence stays dormant without sockets");
+  h.track(1, hello(), kS);
+  h.hub->take_changed();
+  h.hub->tick(2*kS);
+  check(!h.hub->take_changed(), "input-only socket does not start audio evidence cadence");
+  h.open(2, 2*kS, tr::kAudioSubprotocolV1);
+  h.hub->tick(2*kS);
+  check(h.hub->take_changed(), "audio socket refreshes counters without a track state change");
+  check(!h.hub->take_changed(), "audio evidence cadence is at most once per second");
+  h.peer_closed(2, 1006, "peer closed", 2*kS);
+  check(h.hub->take_changed(), "audio removal refreshes final counters even before hello");
+  h.hub->tick(3*kS);
+  check(!h.hub->take_changed(), "audio cadence stops after its last socket closes");
+}
+
 int main() {
+  test_audio_evidence_cadence();
+  test_audio_handshake();
   test_claims();
   test_hello_grammar();
   test_check_order();

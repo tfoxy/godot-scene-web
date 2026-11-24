@@ -86,6 +86,10 @@ void registry_rules() {
   std::string why;
   grc_carrier_v1 va = fake(&a, "mine");
   check(r.add(&va, &why) == 2, "registry: the first consumer carrier is index 2");
+  grc_carrier_v1 legacy = fake(&a, "legacy");
+  legacy.size = GRC_CARRIER_V1_MIN_SIZE;
+  grc::live::CarrierRegistry legacy_registry;
+  check(legacy_registry.add(&legacy, &why) == 2, "registry: original v1 size remains accepted");
   grc_carrier_v1 vb = fake(&b, "other-1");
   check(r.add(&vb, &why) == 3, "registry: the next is index 3 (registration order)");
   check(r.has("mine") && r.has("other-1") && !r.has("nope"), "registry: has() by name");
@@ -100,7 +104,7 @@ void registry_rules() {
   v.abi_version = 2;
   refused(v, "carrier-abi", "abi_version 2");
   v = fake(&a, "x");
-  v.size = sizeof(grc_carrier_v1) - 1;
+  v.size = GRC_CARRIER_V1_MIN_SIZE - 1;
   refused(v, "carrier-abi", "a size below sizeof(grc_carrier_v1)");
   v = fake(&a, "x");
   v.size = sizeof(grc_carrier_v1) + 64;  // a v1 struct that grew at its end: accepted

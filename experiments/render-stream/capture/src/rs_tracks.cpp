@@ -101,7 +101,7 @@ struct Hello {
 };
 
 // False with *detail naming the first rule broken (a short [a-z0-9-] hint, never input bytes).
-bool parse_hello(const std::string &text, Hello *out, std::string *detail) {
+bool parse_hello(const std::string &text, bool audio, Hello *out, std::string *detail) {
   JValue root;
   if (!Reader(text).parse(&root)) {
     *detail = "json";
@@ -117,16 +117,32 @@ bool parse_hello(const std::string &text, Hello *out, std::string *detail) {
     return false;
   }
   const JValue *protocol = root.get("protocol");
-  if (protocol == nullptr || protocol->kind != JValue::String || protocol->text != kTrackProtocolV1) {
+  if (protocol == nullptr || protocol->kind != JValue::String || protocol->text != (audio ? kAudioProtocolV1 : kTrackProtocolV1)) {
     *detail = "protocol";
     return false;
   }
   const JValue *kind = root.get("kind");
-  if (kind == nullptr || kind->kind != JValue::String || !kind_ok(kind->text)) {
+  if (kind == nullptr || kind->kind != JValue::String || !kind_ok(kind->text) ||
+      (audio && kind->text != kKindAudio)) {
     *detail = "kind";
     return false;
   }
   out->kind = kind->text;
+  if (audio) {
+    if (const JValue *a = root.get("audio")) {
+      const JValue *codecs = a->get("codecs");
+      const JValue *samples = a->get("sample_codecs");
+      const auto strings = [](const JValue *v) {
+        return v && v->kind == JValue::Array && std::all_of(v->items.begin(), v->items.end(),
+            [](const JValue &x) { return x.kind == JValue::String; });
+      };
+      if (a->kind != JValue::Object || !strings(codecs) || !strings(samples) ||
+          std::none_of(codecs->items.begin(), codecs->items.end(),
+              [](const JValue &x) { return x.text == "pcm16"; })) {
+        *detail = "audio"; return false;
+      }
+    }
+  }
   if (!format_list(root.get("formats"), false, &out->formats)) {
     *detail = "formats";
     return false;
@@ -228,7 +244,7 @@ bool format_list_ok(const std::vector<std::string> &formats, bool allow_empty) {
 }
 
 bool kind_reserved(std::string_view kind) {
-  return kind == "audio" || kind == "clipboard" || kind == "metadata" || kind == "data";
+  return kind == "clipboard" || kind == "metadata" || kind == "data";
 }
 
 bool parse_sabotage(std::string_view text, Sabotage *out) {
@@ -306,7 +322,7 @@ bool parse_kinds(const char *text, std::vector<std::string> *kinds, std::string 
       kinds->clear();
       return false;
     }
-    if (item != kKindInput) {
+    if (item != kKindInput && item != kKindAudio) {
       *error = "tracks-invalid: unknown kind " + item;
       kinds->clear();
       return false;
@@ -396,6 +412,8 @@ bool write_secret_file(const std::string &path, const std::string &text) {
 // ----------------------------------------------------------------------------- the hub
 
 struct TrackHub::Conn {
+  bool audio = false;
+  std::uint64_t audio_messages_out = 0, audio_bytes_out = 0;
   std::uint32_t conn = 0;
   std::string carrier;
   std::string origin;
@@ -417,13 +435,29 @@ struct TrackHub::Conn {
   std::uint64_t tap_bytes = 0;
 };
 
+// This receiver is owned by the capture; it is never exposed to script bind().
+class TrackHub::AudioReceiver final : public TrackReceiver {
+ public:
+  std::vector<std::string> formats() const override { return {"gsw-audio/1"}; }
+  std::vector<std::string> down_formats() const override { return {}; }
+  void opened(const TrackInfo &) override {}
+  void message(std::uint32_t, const std::string &) override {}
+  void closed(std::uint32_t, std::uint16_t, const std::string &) override {}
+};
+
 TrackHub::TrackHub(TrackConfig config, rs2::LiveTransport &transport, Log log)
     : config_(std::move(config)), transport_(transport), log_(std::move(log)) {
   for (const std::string &kind : config_.kinds) kinds_[kind];
+  if (kinds_.count(kKindAudio)) audio_ = std::make_unique<audio::Hub>(config_.audio, transport_, config_.audio_synthetic_demo, config_.audio_source_armed);
+  if (kinds_.count(kKindAudio) && config_.audio_source_armed) {
+    audio_receiver_ = std::make_unique<AudioReceiver>();
+    receivers_[kKindAudio] = audio_receiver_.get();
+  }
   if (!config_.tap_dir.empty()) make_directories(config_.tap_dir);
 }
 
 TrackHub::~TrackHub() {
+  stop_audio();
   for (auto &entry : conns_) close_tap(*entry.second);
 }
 
@@ -449,7 +483,8 @@ TrackHub::Conn *TrackHub::find_source(std::uint32_t source) {
 bool TrackHub::claims(const live::Event &e) const {
   switch (e.kind) {
     case live::Event::Opened:
-      return e.subprotocol == kTrackSubprotocolV1;
+      return e.subprotocol == kTrackSubprotocolV1 ||
+             (e.subprotocol == kAudioSubprotocolV1 && kinds_.count(kKindAudio));
     case live::Event::Text:
     case live::Event::Closed:
       return conns_.count(e.conn) != 0;
@@ -479,7 +514,9 @@ void TrackHub::count_refused(const std::string &kind, const std::string &key) {
 
 bool TrackHub::text_out(Conn &c, std::string text) {
   c.last_tx_ns = now_ns_;
-  const bool ok = transport_.send_text(c.conn, std::move(text));
+  const bool ok = c.audio ? audio_->sender().text(c.conn, std::move(text)) :
+      transport_.send_text(c.conn, std::move(text));
+  if (c.audio) audio_drain();
   if (!ok) {
     KindStats *s = stats(c.info.kind);
     if (s != nullptr) ++s->faults["send-failed"];
@@ -533,7 +570,9 @@ void TrackHub::on_event(const live::Event &e, std::uint64_t now_ns) {
   switch (e.kind) {
     case live::Event::Opened: {
       auto c = std::make_unique<Conn>();
+      c->audio = e.subprotocol == kAudioSubprotocolV1;
       c->conn = e.conn;
+      if (c->audio) audio_->sender().add(e.conn, e.carrier);
       c->carrier = e.carrier;
       c->origin = e.origin;
       c->opened_ns = now_ns;
@@ -582,6 +621,7 @@ void TrackHub::on_event(const live::Event &e, std::uint64_t now_ns) {
       }
       Conn *again = find(e.conn);
       if (again != nullptr) close_tap(*again);
+      if (c->audio) { audio_drain(); audio_->removed(e.conn); changed_ = true; }
       conns_.erase(e.conn);
       return;
     }
@@ -598,7 +638,7 @@ void TrackHub::on_hello(Conn &c, const std::string &text, std::uint64_t now_ns) 
   }
   Hello hello;
   std::string detail;
-  if (!parse_hello(text, &hello, &detail)) {
+  if (!parse_hello(text, c.audio, &hello, &detail)) {
     refuse(c, 1002, "track-protocol", detail);
     return;
   }
@@ -621,7 +661,8 @@ void TrackHub::on_hello(Conn &c, const std::string &text, std::uint64_t now_ns) 
     c.tap_hello = std::move(line);
   }
   // 2. The grant (GRC_LIVE_TRACKS).
-  const bool granted = std::find(config_.kinds.begin(), config_.kinds.end(), hello.kind) != config_.kinds.end();
+  const bool granted = (c.audio || hello.kind != kKindAudio) &&
+      std::find(config_.kinds.begin(), config_.kinds.end(), hello.kind) != config_.kinds.end();
   if (!granted && config_.sabotage != Sabotage::GrantIgnored) {
     refuse(c, 1008, "track-kind-refused", std::string());
     return;
@@ -680,14 +721,16 @@ void TrackHub::on_hello(Conn &c, const std::string &text, std::uint64_t now_ns) 
   c.tokens = static_cast<double>(config_.burst);
   c.refill_ns = c.last_rx_ns;
   const std::string ready =
-      "{\"type\":\"track-ready\",\"protocol\":\"" + std::string(kTrackProtocolV1) +
+      "{\"type\":\"track-ready\",\"protocol\":\"" + std::string(c.audio ? kAudioProtocolV1 : kTrackProtocolV1) +
       "\",\"source\":" + std::to_string(c.info.source) + ",\"kind\":" + json_quoted(c.info.kind) +
       ",\"format\":" + json_quoted(format) +
       ",\"down_format\":" + (down_format.empty() ? std::string("null") : json_quoted(down_format)) +
       ",\"keepalive_ms\":" + std::to_string(config_.keepalive_ms) +
       ",\"max_message_bytes\":" + std::to_string(config_.max_message_bytes) +
       ",\"rate\":{\"messages_per_second\":" + std::to_string(config_.rate_per_s) +
-      ",\"burst\":" + std::to_string(config_.burst) + "}}";
+      ",\"burst\":" + std::to_string(config_.burst) + "}" +
+      (c.audio ? ",\"audio\":{\"clock_us\":" + std::to_string(now_ns_ / 1000) +
+          audio_->ready() : "") + "}";
   text_out(c, ready);
   c.tap_second_ns = c.last_rx_ns;
   tap(c, "{\"event\":\"ready\",\"source\":" + std::to_string(c.info.source) + ",\"format\":" +
@@ -702,6 +745,7 @@ void TrackHub::on_hello(Conn &c, const std::string &text, std::uint64_t now_ns) 
        (c.info.subject.empty() ? std::string() : " subject=" + c.info.subject));
   // Q4: opened() only after track-ready was queued.
   const TrackInfo info = c.info;
+  if (c.audio) { audio_->opened(c.conn); audio_drain(); }
   receiver->opened(info);
 }
 
@@ -736,8 +780,13 @@ void TrackHub::on_payload(Conn &c, const live::Event &e, std::uint64_t now_ns) {
     ++s->messages_in;
     s->bytes_in += e.text.size();
   }
-  // T14: handed over verbatim, never parsed or logged.
-  c.receiver->message(c.info.source, e.text);
+  // Input texts are delivered verbatim; audio owns its payload grammar.
+  if (c.audio) {
+    if (!audio_->message(c.conn, e.text)) host_close(c.conn, 1002, "audio-protocol", std::string(), true);
+    audio_drain();
+  } else {
+    c.receiver->message(c.info.source, e.text);
+  }
 }
 
 void TrackHub::refuse(Conn &c, std::uint16_t code, const std::string &reason, const std::string &detail) {
@@ -754,9 +803,8 @@ void TrackHub::refuse(Conn &c, std::uint16_t code, const std::string &reason, co
                ",\"code\":" + std::to_string(code) + "}");
   }
   c.phase = Conn::Phase::Closing;
-  const std::uint32_t conn = c.conn;
-  transport_.send_text(conn, error_json(reason, detail));
-  transport_.close(conn, code, reason);
+  text_out(c, error_json(reason, detail));
+  transport_close(c, code, reason);
 }
 
 void TrackHub::report_closed(std::uint32_t conn, std::uint16_t code, const std::string &reason) {
@@ -787,14 +835,47 @@ void TrackHub::host_close(std::uint32_t conn, std::uint16_t code, const std::str
   log_("live: track close source=" + std::to_string(c->info.source) + " code=" + std::to_string(code) +
        " reason=" + reason + " messages=" + std::to_string(c->messages_in));
   c->phase = Conn::Phase::Closing;
-  if (notify) transport_.send_text(conn, error_json(reason, detail));
-  transport_.close(conn, code, reason);
+  if (notify) text_out(*c, error_json(reason, detail));
+  transport_close(*c, code, reason);
   changed_ = true;
   report_closed(conn, code, reason);
 }
 
+void TrackHub::transport_close(Conn &c, std::uint16_t code, const std::string &reason) {
+  if (c.audio) { audio_->sender().close(c.conn, code, reason); audio_drain(); }
+  else transport_.close(c.conn, code, reason);
+}
+void TrackHub::audio_drain() {
+  if (!audio_) return;
+  audio_->sender().frame();
+  for (auto &[id, c] : conns_) {
+    if (!c->audio) continue;
+    const auto current = audio_->sender().stats(id);
+    if (auto *s = stats(c->info.kind)) {
+      s->messages_out += current.payload_messages - c->audio_messages_out;
+      s->bytes_out += current.payload_bytes - c->audio_bytes_out;
+    }
+    c->audio_messages_out = current.payload_messages; c->audio_bytes_out = current.payload_bytes;
+  }
+  for (const auto &close : audio_->sender().take_closes()) {
+    Conn *c = find(close.conn);
+    if (!c) continue;
+    if (c->phase == Conn::Phase::Open) {
+      if (auto *s = stats(c->info.kind)) ++s->closes[close.reason];
+      c->phase = Conn::Phase::Closing;
+      report_closed(close.conn, close.code, close.reason);
+      changed_ = true;
+    }
+    transport_.close(close.conn, close.code, close.reason);
+  }
+}
+void TrackHub::stop_audio() {
+  if (audio_) { audio_->shutdown(); audio_drain(); }
+}
+
 void TrackHub::tick(std::uint64_t now_ns) {
   now_ns_ = now_ns;
+  audio_drain();
   const std::uint64_t keepalive_ns = static_cast<std::uint64_t>(config_.keepalive_ms) * kNsPerMs;
   const std::uint64_t hello_ns = config_.hello_timeout_ms * kNsPerMs;
   std::vector<std::uint32_t> ids;
@@ -827,6 +908,7 @@ bool TrackHub::bind(const std::string &kind, TrackReceiver *receiver, std::strin
     if (error != nullptr) *error = why;
     return false;
   };
+  if (kind == kKindAudio) return fail("track-kind-bound");
   if (receiver == nullptr || !kind_ok(kind)) return fail("track-kind-invalid");
   if (!formats_valid(receiver->formats(), false) || !formats_valid(receiver->down_formats(), true)) {
     return fail("track-formats-invalid");
@@ -888,6 +970,12 @@ void TrackHub::close_all(std::uint16_t code, const std::string &reason) {
 }
 
 bool TrackHub::take_changed() {
+  // Audio has live counters even when its sockets stay open. With no audio socket,
+  // change/stop snapshots suffice and there is no periodic evidence work.
+  if (audio_ && now_ns_ >= audio_evidence_ns_ + kNsPerS &&
+      std::any_of(conns_.begin(), conns_.end(), [](const auto &entry) { return entry.second->audio; })) {
+    changed_ = true; audio_evidence_ns_ = now_ns_;
+  }
   const bool was = changed_;
   changed_ = false;
   return was;

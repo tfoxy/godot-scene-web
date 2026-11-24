@@ -1593,6 +1593,10 @@ struct Server::Impl {
       rs::set_nonblocking(fd);
       rs::set_tcp_nodelay(fd);
 
+      if (next_id == 0) {  // Exhaustion is permanent; never wrap onto an earlier connection.
+        rs::socket_close(fd);
+        continue;
+      }
       Conn c;
       c.fd = fd;
       c.id = next_id++;

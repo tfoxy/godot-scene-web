@@ -21,8 +21,9 @@
 // mutex-guarded vector its host callbacks append to). take_events() drains them in index order.
 // Per-connection order holds; there is no cross-carrier order, and the hub needs none.
 //
-// Threading: add(), start(), stop(), take_events() and every LiveTransport call run on the main
-// thread. C ABI host callbacks run on any thread and touch only their own carrier's queue and
+// Threading: add(), start(), stop(), take_events() and ordinary LiveTransport calls run on the main
+// thread. send_media and queued_bytes may also run on rs-audio for an opted-in carrier.
+// The audio sender is joined before stop(). C ABI host callbacks run on any thread and touch only their own carrier's queue and
 // fault counters, under that carrier's mutex; no lock is held across a call into a carrier.
 #ifndef GRC_RS_CARRIER_SET_H
 #define GRC_RS_CARRIER_SET_H
@@ -41,6 +42,7 @@
 #include <vector>
 
 #include "grc_carrier.h"
+#include "rs_audio_sender.h"
 #include "rs_live.h"
 #include "rs_ws.h"
 
@@ -156,6 +158,9 @@ class Carrier {
   virtual std::uint64_t queued_bytes(std::uint32_t local) const = 0;
   virtual std::uint64_t max_queued_bytes(std::uint32_t local) const = 0;
   virtual CarrierInfo info() const = 0;
+  virtual bool media_threaded() const { return false; }
+  virtual bool send_media(std::uint32_t, std::uint8_t, std::uint32_t, std::uint32_t,
+                          std::uint64_t, std::vector<std::uint8_t>) { return false; }
 };
 
 // The built-in `ws` carrier: rs_ws's live::Server, whose ServerConfig::admission becomes the
@@ -174,6 +179,9 @@ class WsCarrier final : public Carrier {
   std::uint64_t queued_bytes(std::uint32_t local) const override;
   std::uint64_t max_queued_bytes(std::uint32_t local) const override;
   CarrierInfo info() const override;
+  bool media_threaded() const override;
+  bool send_media(std::uint32_t local, std::uint8_t cls, std::uint32_t group,
+                  std::uint32_t flags, std::uint64_t deadline_us, std::vector<std::uint8_t> message) override;
   std::uint16_t port() const;  // the bound port once started
   Server::TlsStats tls_stats() const { return server_.tls_stats(); }  // CAR4
 
@@ -192,7 +200,7 @@ class WsCarrier final : public Carrier {
 // mutex-guarded queue; messages cross by ownership transfer (the hub's vector, no copy).
 class AbiCarrier final : public Carrier {
  public:
-  // Accepts `vtable` when its abi_version is 1, its size at least sizeof(grc_carrier_v1), its
+  // Accepts `vtable` when its abi_version is 1, its size at least GRC_CARRIER_V1_MIN_SIZE, its
   // name carrier_name_ok() and every function pointer non-null; else returns null with *error.
   // The struct is copied.
   static std::unique_ptr<AbiCarrier> adopt(const grc_carrier_v1 *vtable, std::string *error);
@@ -207,6 +215,9 @@ class AbiCarrier final : public Carrier {
   std::uint64_t queued_bytes(std::uint32_t local) const override;
   std::uint64_t max_queued_bytes(std::uint32_t local) const override;
   CarrierInfo info() const override;
+  bool media_threaded() const override;
+  bool send_media(std::uint32_t local, std::uint8_t cls, std::uint32_t group,
+                  std::uint32_t flags, std::uint64_t deadline_us, std::vector<std::uint8_t> message) override;
   // Host grc_bufs handed out and not yet released (sends and lookups): the owner ledger's size.
   std::int64_t outstanding_buffers() const;
   // Callbacks that arrived after stop() returned (ignored; each is also a `callback-after-stop`
@@ -253,7 +264,7 @@ class AbiCarrier final : public Carrier {
   std::atomic<std::uint64_t> late_{0};
 };
 
-class CarrierSet final : public rs2::LiveTransport {
+class CarrierSet final : public rs2::LiveTransport, public audio::MediaTransport {
  public:
   // Test-only sabotages: each must fail rs_carrier_set_test.
   enum class Sabotage {
@@ -296,6 +307,9 @@ class CarrierSet final : public rs2::LiveTransport {
   std::uint64_t queued_bytes(std::uint32_t conn) const override;
   std::uint64_t max_queued_bytes(std::uint32_t conn) const override;
 
+  bool media_threaded(std::uint32_t conn) const override;
+  bool send_media(std::uint32_t conn, std::uint8_t cls, std::uint32_t group,
+                  std::uint32_t flags, std::uint64_t deadline_us, std::vector<std::uint8_t> message) override;
   Carrier *carrier(std::uint8_t index) const;  // null when absent
   bool started(std::uint8_t index) const;      // added and started successfully
   std::size_t admitted() const;                // slots held right now (the D6 total)

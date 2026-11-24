@@ -69,10 +69,8 @@ include(cmake/tests.cmake)
 if(GRC_LINUX_LIBCXX)
   include(cmake/linux-libcxx.cmake)
 endif()
-# Pure audio wire judge; deliberately not linked into the live capture yet.
-# Source-tree golden data is not part of the Windows bundle; floating-point
-# to_chars is unavailable at the supported macOS deployment targets.
-if(NOT GRC_WINDOWS AND NOT GRC_MACOS)
+# Pure audio wire judge. Source-tree golden data is not part of the Windows bundle.
+if(NOT GRC_WINDOWS)
 add_executable(rs_audio_wire_test test/rs_audio_wire_test.cpp src/rs_audio_wire.cpp src/rs_sha256.cpp)
 target_include_directories(rs_audio_wire_test PRIVATE src)
 target_link_libraries(rs_audio_wire_test PRIVATE grc_warnings)
@@ -80,7 +78,7 @@ target_compile_definitions(rs_audio_wire_test PRIVATE
   GRC_AUDIO_VECTORS="${CMAKE_CURRENT_SOURCE_DIR}/../protocol/audio-vectors.json")
 grc_add_test(NAME rs_audio_wire COMMAND rs_audio_wire_test)
 else()
-  grc_linux_only("rs_audio_wire_test" "Windows omits source-tree goldens; supported macOS targets lack floating-point to_chars.")
+  grc_linux_only("rs_audio_wire_test" "Windows omits source-tree goldens.")
 endif()
 
 if(GRC_MACOS)
@@ -392,7 +390,7 @@ endif()
 # close_all -- plus the four test-only sabotages, each of which must fail its check.
 # Linux-only: POSIX socket helpers and source-tree golden data.
 if(NOT GRC_WINDOWS)
-add_executable(rs_track_test test/rs_track_test.cpp src/rs_tracks.cpp src/rs_track_caps.cpp src/rs_ws.cpp
+add_executable(rs_track_test test/rs_track_test.cpp src/rs_audio_hub.cpp src/rs_audio_sender.cpp src/rs_audio_wire.cpp src/rs_tracks.cpp src/rs_track_caps.cpp src/rs_ws.cpp
   src/rs_sha1.cpp src/rs_sha256.cpp src/report.cpp)
 target_include_directories(rs_track_test PRIVATE src)
 # TRK5: the capability golden vectors, shared with scripts/test/self-test-track-caps.ts.
@@ -617,6 +615,9 @@ add_executable(rs_live_host
   src/rs_expose.cpp
   src/rs_net_module.cpp
   test/rs_mem_carrier.cpp
+  src/rs_audio_hub.cpp
+  src/rs_audio_sender.cpp
+  src/rs_audio_wire.cpp
   src/rs_tracks.cpp
   src/rs_track_caps.cpp
   src/rs_sha256.cpp
@@ -1176,6 +1177,13 @@ add_executable(rs_tweens_gd_test test/rs_tweens_gd_test.cpp src/rs_capture_gd.cp
 target_include_directories(rs_tweens_gd_test PRIVATE src vendor)
 target_link_libraries(rs_tweens_gd_test PRIVATE grc_warnings)
 grc_add_test(NAME rs_tweens_gd COMMAND rs_tweens_gd_test)
+
+# Audio sender scheduling and capture-owned state, with a deterministic transport clock.
+add_executable(rs_audio_test test/rs_audio_test.cpp src/rs_audio_hub.cpp src/rs_audio_sender.cpp
+  src/rs_audio_wire.cpp src/rs_sha256.cpp src/report.cpp)
+target_include_directories(rs_audio_test PRIVATE src)
+target_link_libraries(rs_audio_test PRIVATE grc_warnings grc_platform Threads::Threads)
+grc_add_test(NAME rs_audio COMMAND rs_audio_test)
 
 # Collect the Windows manifest after every test target and golden definition exists.
 if(NOT GRC_WINDOWS)

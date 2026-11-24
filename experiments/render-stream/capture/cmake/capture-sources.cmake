@@ -33,6 +33,9 @@ set(GRC_CAPTURE_SOURCES
   src/rs_tweens.cpp
   src/rs_tweens_host.cpp
   src/rs_hints.cpp
+  src/rs_audio_hub.cpp
+  src/rs_audio_sender.cpp
+  src/rs_audio_wire.cpp
   src/rs_tracks.cpp
   src/rs_track_caps.cpp
   src/rs_tracks_gd.cpp

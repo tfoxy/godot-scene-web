@@ -16,6 +16,10 @@
 // Every opened() gets exactly one closed() (T8), whatever ends the track; a refused hello gets
 // neither.
 //
+// Audio uses its own subprotocol, render-stream-audio.1, and the same ordered handshake checks.
+// Its receiver belongs to the capture; script bind("audio") always refuses track-kind-bound.
+// Audio payloads follow the audio spec instead of the generic opaque payload phase.
+//
 // Threading: main thread only, no locks. Receivers are called synchronously from on_event(),
 // tick(), close(), unbind() and close_all(); a receiver may call send() and close() from inside a
 // callback (the hub looks its connection up again after every callback).
@@ -33,6 +37,8 @@
 #include <string_view>
 #include <vector>
 
+#include "rs_audio_config.h"
+#include "rs_audio_hub.h"
 #include "rs_live.h"
 #include "rs_ws.h"
 
@@ -43,9 +49,12 @@ namespace tracks {
 inline constexpr const char *kTrackSubprotocolV1 = "render-stream-track.1";
 inline constexpr const char *kTrackProtocolV1 = "render-stream-track/1";
 
-// The kinds `/1` serves (T4): `input`. Reserved names refuse the arm as `tracks-reserved`.
+// Granted kinds: input and audio. Other reserved names refuse the arm.
 inline constexpr const char *kKindInput = "input";
-bool kind_reserved(std::string_view kind);  // audio, clipboard, metadata, data
+inline constexpr const char *kKindAudio = "audio";
+inline constexpr const char *kAudioSubprotocolV1 = "render-stream-audio.1";
+inline constexpr const char *kAudioProtocolV1 = "render-stream-audio/1";
+bool kind_reserved(std::string_view kind);  // clipboard, metadata, data
 
 // Test-only sabotages (TRK1 "Sabotages", GRC_SABOTAGE=track-*): each must fail its
 // self-test-tracks.ts predicate.
@@ -100,6 +109,9 @@ bool write_secret_file(const std::string &path, const std::string &text);
 enum class CapsMode { Shared, Hmac };
 
 struct TrackConfig {
+  audio::Config audio;
+  bool audio_synthetic_demo = false;
+  bool audio_source_armed = false;  // Capture-owned source; script receivers cannot bind audio.
   std::vector<std::string> kinds;                  // GRC_LIVE_TRACKS, validated
   std::map<std::string, std::string> credentials;  // kind -> 64 lowercase hex (Shared only)
   CapsMode caps = CapsMode::Shared;
@@ -190,6 +202,8 @@ class TrackHub {
 
   // True once since the last call when a track opened or closed (live-tracks.json is due).
   bool take_changed();
+  audio::Hub *audio_hub() { return audio_.get(); }
+  void stop_audio();
   std::size_t open_tracks() const;
   // Bound kinds' formats, for status and tests.
   bool bound(const std::string &kind) const { return receivers_.count(kind) != 0; }
@@ -227,6 +241,12 @@ class TrackHub {
 
  private:
   struct Conn;
+  void audio_drain();
+  std::uint64_t audio_evidence_ns_ = 0;
+  void transport_close(Conn &c, std::uint16_t code, const std::string &reason);
+  std::unique_ptr<audio::Hub> audio_;
+  class AudioReceiver;
+  std::unique_ptr<AudioReceiver> audio_receiver_;
   Conn *find(std::uint32_t conn);
   std::int64_t wall_now_s() const;  // TRK5: capability `exp` checks
   Conn *find_source(std::uint32_t source);

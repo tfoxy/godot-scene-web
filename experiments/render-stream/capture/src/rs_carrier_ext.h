@@ -44,7 +44,7 @@ struct RegisteredCarrier {
 class CarrierRegistry {
  public:
   // grc_carrier_register's body: the carrier's index (2..255), or -1 with *why set to a typed
-  // reason: `carrier-abi` (null struct, wrong abi_version, size below sizeof(grc_carrier_v1), or
+  // reason: `carrier-abi` (null struct, wrong abi_version, size below GRC_CARRIER_V1_MIN_SIZE, or
   // a null entry point), `carrier-name` (not [a-z0-9-]{1,16}), `carrier-reserved` ("ws", "wt"),
   // `carrier-taken` (registered already), `carrier-full` (every index in 2..255 used) or
   // `carrier-late` (live already started).
