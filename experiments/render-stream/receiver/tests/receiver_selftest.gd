@@ -36,13 +36,23 @@ var _checked: int = 0
 
 
 func _init() -> void:
+	_run_checks.call_deferred()
+
+
+func _run_checks() -> void:
 	_check_scripts()
 	_check_fetcher_coding()
+	_check_resource_base()
+	_check_tapped()
 	_check_folded_full()
 	_check_row_log()
 	_check_cache_budget()
 	_check_native_queries()
 	_check_protocol_helpers()
+	_check_json_descriptor()
+	_check_view_tapped()
+	_check_view_tap_presentation()
+	_check_live_hello_versions()
 	var golden2: String = OS.get_environment("RS_SELFTEST_GOLDEN_DIR").strip_edges()
 	if golden2 == "":
 		golden2 = ProjectSettings.globalize_path("res://").path_join("../protocol/golden-2").simplify_path()
@@ -398,3 +408,321 @@ func _check_protocol_helpers() -> void:
 				_fail("shared client vector %s: wrong error" % vector["name"])
 		elif output != vector["output"]:
 			_fail("shared client vector %s: wrong output" % vector["name"])
+
+
+func _check_resource_base() -> void:
+	for value: Array in [
+		["http://example.test", "http", "example.test", 80, "/resources/sha256/"],
+		["https://example.test", "https", "example.test", 443, "/resources/sha256/"],
+		["https://example.test:8443/prefix", "https", "example.test", 8443, "/prefix/resources/sha256/"],
+		["http://[::1]:8080/prefix", "http", "::1", 8080, "/prefix/resources/sha256/"],
+	]:
+		var fetcher := RsResourceFetcher.new("", 0, "/resources/sha256/", 1000, 0)
+		_checked += 1
+		var base: String = value[0]
+		if fetcher.configure_base(base) != OK or [fetcher.scheme, fetcher.host, fetcher.port, fetcher.path_prefix] != value.slice(1):
+			_fail("resourceBase HTTPClient adaptation: " + base)
+	for base: String in ["ws://example.test", "https://example.test:0", "https://example.test:65536", "/relative"]:
+		var fetcher := RsResourceFetcher.new("", 0, "/resources/sha256/", 1000, 0)
+		_checked += 1
+		if fetcher.configure_base(base) == OK:
+			_fail("resourceBase accepted invalid HTTPClient address")
+		if fetcher.host != "" or fetcher.port != 0:
+			_fail("resourceBase failure changed the fetcher")
+
+
+class TapCore extends RefCounted:
+	var point := PackedFloat64Array()
+
+	func to_game(_x: float, _y: float) -> PackedFloat64Array:
+		return point
+
+
+func _check_tapped() -> void:
+	var client := RsLiveClient.new()
+	var core := TapCore.new()
+	var events: Array[Dictionary] = []
+	client.tapped.connect(func(screen: Vector2, item: int, game: Vector2) -> void:
+		events.append({"screen": screen, "item": item, "game": game})
+	)
+	_checked += 1
+	client.tap(Vector2(2, 3), core)
+	if not events.is_empty():
+		_fail("an empty coordinate mapping emitted tapped")
+	_checked += 1
+	core.point = PackedFloat64Array([7, 10, 20])
+	client.tap(Vector2(2, 3), core)
+	if events != [{"screen": Vector2(2, 3), "item": 7, "game": Vector2(10, 20)}]:
+		_fail("tapped did not carry the mapped point and item")
+	_checked += 1
+	core.point = PackedFloat64Array([-1, 2, 3])
+	client.tap(Vector2(2, 3), core)
+	if events.size() != 2 or events[1]["item"] != -1:
+		_fail("a bare point must emit tapped with item -1")
+
+
+## Packs receive JSON numbers as FLOATs; the native boundary must accept and normalize them.
+func _check_json_descriptor() -> void:
+	var client := RsLiveClient.new()
+	client.origin = "http://127.0.0.1:5190"
+	var descriptor: Dictionary = JSON.parse_string('{"url":"/rs","resourceBase":"","token":null,"protocol":19,"presentation":[640,360]}')
+	_checked += 1
+	if typeof(descriptor["protocol"]) != TYPE_FLOAT:
+		_fail("JSON descriptor fixture must exercise Godot FLOAT numbers")
+	var result: Error = client.connect_descriptor(descriptor)
+	_checked += 1
+	if result != OK or client.descriptor != JSON.parse_string('{"url":"ws://127.0.0.1:5190/rs","resourceBase":"http://127.0.0.1:5190","token":null,"protocol":19,"presentation":[640,360]}'):
+		_fail("JSON-parsed descriptor failed to resolve: " + client.last_error)
+	_checked += 1
+	var hello: Variant = JSON.parse_string(client._descriptor_hello)
+	if not hello is Dictionary:
+		_fail("JSON-parsed descriptor failed to construct hello")
+		return
+	var hello_dict: Dictionary = hello
+	if hello_dict.get("protocol") != "render-stream/19" or hello_dict.get("credit_window") != 2:
+		_fail("JSON-parsed descriptor failed to construct hello")
+	if client.peer != null:
+		client.peer.close()
+
+
+class InputView extends "res://receiver.gd":
+	func _ready() -> void:
+		set_process(false)
+
+
+## Leave the real _begin_apply HTTP transaction open without starting a network request.
+class HeldHttpFetcher extends RsResourceFetcher:
+	func poll() -> bool:
+		return false
+
+
+## Re-encode the /6 query fixture after changing its session and custom hit rects.
+func _tap_meta(value: Variant) -> Variant:
+	if value is Dictionary:
+		var dict: Dictionary = value
+		for key: String in dict:
+			dict[key] = _tap_meta(dict[key])
+	elif value is Array:
+		var array: Array = value
+		for index: int in array.size():
+			array[index] = _tap_meta(array[index])
+	elif RsWire.is_int(value):
+		return RsWire.as_int(value)
+	return value
+
+
+func _tap_record(record: Dictionary) -> PackedByteArray:
+	var meta: Dictionary = _tap_meta(record["meta"])
+	var text: PackedByteArray = JSON.stringify(meta, "", false).to_utf8_buffer()
+	var bytes := PackedByteArray()
+	bytes.resize(8)
+	bytes.encode_u32(4, text.size())
+	bytes.append_array(text)
+	var blocks: Array = record["blocks"]
+	var count := PackedByteArray()
+	count.resize(4)
+	count.encode_u32(0, blocks.size())
+	bytes.append_array(count)
+	for index: int in blocks.size():
+		var values: Array = blocks[index]
+		var kind: String = meta["blocks"][index]["type"]
+		var width: int = 8 if kind == "f64" else 4
+		var block := PackedByteArray()
+		block.resize(4 + values.size() * width)
+		block.encode_u32(0, values.size() * width)
+		for at: int in values.size():
+			var value: float = values[at]
+			if kind == "f64":
+				block.encode_double(4 + at * width, value)
+			elif kind == "i32":
+				block.encode_s32(4 + at * width, RsWire.as_int(values[at]))
+			else:
+				block.encode_float(4 + at * width, value)
+		bytes.append_array(block)
+	bytes.encode_u32(0, bytes.size() - 4)
+	return bytes
+
+
+## Localized input must use the host's presentation transform, even in a smaller receiver.
+func _check_view_tap_presentation() -> void:
+	var path: String = ProjectSettings.globalize_path("res://../protocol/golden-6/full.decoded.json")
+	var fixture: Dictionary = JSON.parse_string(FileAccess.get_file_as_string(path))
+	var session: Dictionary = fixture["records"][0]
+	var viewport: Dictionary = session["meta"]["viewport"]
+	viewport["logical_size"] = [1920, 1080]
+	viewport["presentation_size"] = [960, 540]
+	viewport["host_window_size"] = [960, 540]
+	viewport["root_size_policy"] = "presentation"
+	viewport["stretch"] = {"mode": "canvas_items", "aspect": "keep", "scale_mode": "fractional"}
+	session["blocks"][2] = [0, 0, 1920, 1080]
+	session["blocks"][3] = [0.5, 0, 0, 0.5, 0, 0]
+	var transaction: Dictionary = fixture["records"][1]
+	var items: Array = transaction["meta"]["items"]
+	for index: int in items.size():
+		transaction["meta"]["items"][index]["custom_rect"] = true
+		var floats: Array = transaction["blocks"][0]
+		# Only item 1 covers logical (120, 30); the faulty (80, 20) misses it.
+		floats[18 * index + 14] = 110 if index == 0 else 1000
+		floats[18 * index + 15] = 20
+		floats[18 * index + 16] = 20
+		floats[18 * index + 17] = 20
+	var view := InputView.new()
+	root.add_child(view)
+	var saved_size: Vector2i = root.size
+	root.size = Vector2i(640, 360)
+	var applier := RsRustApplier.new(RID(), RID())
+	var accepted: Dictionary = applier.accept_session(_tap_record(session), 0, 6)
+	var applied: Dictionary = applier.accept(_tap_record(transaction), 0)
+	var session_errors: PackedStringArray = accepted["errors"]
+	var apply_errors: PackedStringArray = applied["errors"]
+	_checked += 1
+	if not session_errors.is_empty() or not apply_errors.is_empty():
+		_fail("tap presentation fixture rejected: %s / %s" % [accepted["errors"], applied["errors"]])
+	else:
+		view.set("_applier", applier)
+		view.set("_last_applied_frame", 1)
+		var blocks: Array = accepted["record"]["blocks"]
+		view._adopt_presentation(viewport, blocks)
+		var native: Object = applier.get("_core")
+		native.call("set_hit_filters", PackedInt32Array([1, 2, 3, 4, 5]), PackedByteArray([1, 1, 1, 1, 1]))
+		var events: Array[Dictionary] = []
+		view.live_client().tapped.connect(func(screen: Vector2, item: int, game: Vector2) -> void:
+			events.append({"screen": screen, "item": item, "game": game})
+		)
+		# Godot localizes receiver pixels (40, 10) to logical coordinates before dispatch.
+		var local: Vector2 = root.get_final_transform().affine_inverse() * Vector2(40, 10)
+		_checked += 1
+		if not local.is_equal_approx(Vector2(120, 30)):
+			_fail("tap fixture receiver transform did not localize (40, 10) to (120, 30): %s" % local)
+		for touch: bool in [true, false]:
+			var event: InputEvent
+			if touch:
+				var release := InputEventScreenTouch.new()
+				release.position = local
+				event = release
+			else:
+				var release := InputEventMouseButton.new()
+				release.position = local
+				release.button_index = MOUSE_BUTTON_LEFT
+				event = release
+			view._unhandled_input(event)
+			_checked += 1
+			var tapped: Dictionary = events.back() if not events.is_empty() else {}
+			var screen: Vector2 = tapped.get("screen", Vector2.ZERO)
+			var game: Vector2 = tapped.get("game", Vector2.ZERO)
+			if events.size() != (1 if touch else 2) or tapped.get("item") != 1 or not screen.is_equal_approx(Vector2(60, 15)) or not game.is_equal_approx(Vector2(60, 15)):
+				_fail("tap with different host/receiver presentations: %s" % str(events))
+		# Accept another state, then hold its resource GETs while frame 1 remains on screen.
+		transaction["meta"]["seq"] = 2
+		transaction["meta"]["frame"] = 2
+		applied = applier.accept(_tap_record(transaction), 0)
+		apply_errors = applied["errors"]
+		var fetcher := HeldHttpFetcher.new("127.0.0.1", 9, "/resources/sha256/", 1000, 60000)
+		view.set("_fetcher", fetcher)
+		view.set("_wire_version", 6)
+		var next_meta: Dictionary = transaction["meta"]
+		view._begin_apply({"seq": 2}, next_meta, {})
+		var pending: Dictionary = view.get("_pending_apply")
+		_checked += 1
+		if not apply_errors.is_empty() or pending.is_empty() or fetcher.done():
+			_fail("tap fixture did not leave an HTTP apply pending")
+		var before: int = events.size()
+		var touch := InputEventScreenTouch.new()
+		touch.position = local
+		view._unhandled_input(touch)
+		var mouse := InputEventMouseButton.new()
+		mouse.position = local
+		mouse.button_index = MOUSE_BUTTON_LEFT
+		view._unhandled_input(mouse)
+		_checked += 1
+		if events.size() != before:
+			_fail("pending HTTP apply emitted %d taps" % (events.size() - before))
+		fetcher.cancel()
+	root.content_scale_mode = Window.CONTENT_SCALE_MODE_DISABLED
+	root.content_scale_size = Vector2i.ZERO
+	root.size = saved_size
+	view.free()
+
+
+## Touch input and its synthesized mouse event describe one physical release.
+func _check_view_tapped() -> void:
+	var view := InputView.new()
+	root.add_child(view)
+	var client: RsLiveClient = view.live_client()
+	var core := TapCore.new()
+	core.point = PackedFloat64Array([7, 10, 20])
+	var applier := RsRustApplier.new(RID(), RID())
+	applier.set("_core", core)
+	view.set("_applier", applier)
+	var events: Array[int] = []
+	client.tapped.connect(func(_screen: Vector2, item: int, _game: Vector2) -> void:
+		events.append(item)
+	)
+	var touch := InputEventScreenTouch.new()
+	touch.position = Vector2(2, 3)
+	touch.pressed = false
+	view._unhandled_input(touch)
+	_checked += 1
+	if not events.is_empty():
+		_fail("touch before first presented frame emitted tapped")
+	events.clear()
+	var early_mouse := InputEventMouseButton.new()
+	early_mouse.position = touch.position
+	early_mouse.button_index = MOUSE_BUTTON_LEFT
+	view._unhandled_input(early_mouse)
+	_checked += 1
+	if not events.is_empty():
+		_fail("mouse before first presented frame emitted tapped")
+	events.clear()
+	view.set("_last_applied_frame", 1)
+	view._unhandled_input(touch)
+	var mouse := InputEventMouseButton.new()
+	mouse.position = touch.position
+	mouse.button_index = MOUSE_BUTTON_LEFT
+	mouse.pressed = false
+	mouse.device = InputEvent.DEVICE_ID_EMULATION
+	view._unhandled_input(mouse)
+	_checked += 1
+	if events != [7]:
+		_fail("one touch plus emulated mouse must emit one tapped (got %d)" % events.size())
+	mouse.device = 0
+	view._unhandled_input(mouse)
+	_checked += 1
+	if events != [7, 7]:
+		_fail("a real left mouse release must still emit one tapped (got %d total)" % events.size())
+	view.free()
+
+
+## Every native live allow-list entry offers and announces the same protocol version.
+func _check_live_hello_versions() -> void:
+	var saved: Dictionary = {}
+	for key: String in ["RS_RECEIVER_PROTOCOL", "RS_RECEIVER_CREDIT_WINDOW", "RS_RECEIVER_LIVE_CODING", "RS_RECEIVER_MANIFEST_SHA256"]:
+		saved[key] = OS.get_environment(key) if OS.has_environment(key) else null
+		OS.unset_environment(key)
+	var view := InputView.new()
+	var client: RsLiveClient = view.live_client()
+	for version: int in range(6, 20):
+		OS.set_environment("RS_RECEIVER_PROTOCOL", str(version))
+		_checked += 1
+		if not view._parse_wire_env():
+			_fail("live allow-list refused protocol %d" % version)
+			continue
+		var opened: Error = client.open("ws://127.0.0.1:1/rs", 16777216, "", version)
+		_checked += 1
+		if opened != OK or client.peer.supported_protocols != PackedStringArray(["render-stream.%d" % version]):
+			_fail("live subprotocol disagrees with protocol %d" % version)
+		var hello: Dictionary
+		if version >= 16:
+			hello = JSON.parse_string(client.protocol_call("client_hello", JSON.stringify(view._native_hello_facts())))
+		else:
+			hello = view._legacy_live_hello()
+		_checked += 1
+		if hello.get("protocol") != "render-stream/%d" % version:
+			_fail("live hello for /%d sent %s" % [version, str(hello.get("protocol"))])
+		client.peer.close()
+	view.free()
+	for key: String in saved:
+		if saved[key] == null:
+			OS.unset_environment(key)
+		else:
+			OS.set_environment(key, str(saved[key]))

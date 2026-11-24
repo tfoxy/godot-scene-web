@@ -69,6 +69,7 @@ const SUSPEND_GAP_MS: int = 1000
 
 var host: String = ""
 var port: int = 0
+var scheme: String = "http"
 var path_prefix: String = "/resources/sha256/"
 var timeout_ms: int = 10000
 var delay_ms: int = 0
@@ -239,7 +240,8 @@ func _issue() -> void:
 		_client.close()
 	_client = HTTPClient.new()
 	_client.read_chunk_size = READ_CHUNK
-	var err: Error = _client.connect_to_host(host, port)
+	var tls: TLSOptions = TLSOptions.client() if scheme == "https" else null
+	var err: Error = _client.connect_to_host(host, port, tls)
 	_connects += 1
 	if err != OK:
 		_fail("connect_to_host(%s:%d): %s" % [host, port, error_string(err)])
@@ -459,7 +461,7 @@ func _web_issue() -> void:
 	_issue_frame = Engine.get_process_frames()
 	var hash: String = _current["hash"]
 	var authority: String = ("[%s]" % host if host.contains(":") else host) + ":%d" % port
-	_js_abort = _js.call("start", "http://" + authority + path_prefix + hash, auth_token, _generation, _js_done)
+	_js_abort = _js.call("start", scheme + "://" + authority + path_prefix + hash, auth_token, _generation, _js_done)
 	_phase = "requesting"
 
 
@@ -512,3 +514,23 @@ func _on_web_done(args: Array) -> void:
 	results.append(_current)
 	_current = {}
 	_next()
+
+
+## Adapt an absolute resourceBase to HTTPClient's host/port/path/TLS interface.
+## This is called before start(); Rust has already resolved the descriptor's relative URLs.
+func configure_base(base: String) -> Error:
+	var pattern: RegEx = RegEx.create_from_string("^(https?)://(\\[[^\\]]+\\]|[^/:?#]+)(?::([0-9]+))?([^?#]*)$")
+	var matched: RegExMatch = pattern.search(base)
+	if matched == null:
+		return ERR_INVALID_PARAMETER
+	var next_scheme: String = matched.get_string(1)
+	var next_port: int = 443 if next_scheme == "https" else 80
+	if matched.get_string(3) != "":
+		next_port = matched.get_string(3).to_int()
+	if next_port < 1 or next_port > 65535:
+		return ERR_INVALID_PARAMETER
+	scheme = next_scheme
+	host = matched.get_string(2).trim_prefix("[").trim_suffix("]")
+	port = next_port
+	path_prefix = matched.get_string(4) + path_prefix
+	return OK

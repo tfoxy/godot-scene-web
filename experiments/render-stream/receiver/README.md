@@ -6,7 +6,7 @@ payloads the stream names (inline resource records, a content-addressed cache di
 capture's store directory, or HTTP GETs on the host). It replays the stream onto its own
 `RenderingServer` and writes `applied.json`. It has no autoload and no file from `fixtures/`. The
 bytes are the specs under [`../protocol/`](../protocol/); the receiver speaks `render-stream/6`
-through `/13` (live: the subprotocol it offers; file mode: whatever magic the recording carries).
+through `/19` (live: the subprotocol it offers; file mode: whatever magic the recording carries).
 
 Decoding, validation, resolution and the apply itself run in the shared Rust core (`../rs-core`,
 through `../rs-core-capi`), loaded as a GDExtension adapter from `ext/`. The GDScript in this
@@ -200,3 +200,55 @@ transaction as needed (`RS_RECEIVER_WEB_STORE=lazy`, the default) or staged up f
 `RS_RECEIVER_OUT`'s directory is PUT to `RS_RECEIVER_EVIDENCE_URL` before the page exits.
 `RS_RECEIVER_CACHE_DIR` is refused on the web (the browser's HTTP cache is the cache).
 `RS_RECEIVER_WEB_FETCH` is `fetch` (default) or `httpclient` (Godot's web `HTTPClient`).
+
+## Descriptor-driven native view
+
+A client pack can use the same receiver scene with a descriptor instead of `RS_RECEIVER_URL`.
+Keep the existing evidence and cache configuration (`RS_RECEIVER_OUT` and, for HTTP resources,
+`RS_RECEIVER_CACHE_DIR`). Configure the client before adding the receiver to the scene tree:
+
+```gdscript
+var view: Node = preload("res://main.tscn").instantiate()
+var client: RsLiveClient = view.call("live_client")
+client.origin = "https://example.test/"
+client.tapped.connect(_on_tapped)
+var error: Error = client.connect_descriptor(descriptor)
+if error == OK:
+    add_child(view)
+else:
+    view.free()
+```
+
+`connect_descriptor(d: Dictionary) -> Error` takes `{url, resourceBase, token, protocol,
+presentation: [width, height]}`. Set `origin` first to resolve host-relative URLs. `token` is
+`null` or 64 lowercase hex digits; `protocol` is 16 through 19. `presentation` is optional and
+defaults to 640×360. The shared Rust helpers validate and resolve the descriptor, construct the
+hello and encode acknowledgements. The view supplies its actual credit stage and buffer size
+before the first poll, uses the existing window of 2, and never requests `client_tweens`.
+Descriptor URLs use a strict subset: an HTTP(S) `origin` with an ASCII hostname, IPv4 or
+bracketed IPv6; an absolute WS(S) socket URL or a host-relative `/path`; and an absolute HTTP(S),
+host-relative or empty `resourceBase`. Queries, fragments, dot segments, percent escapes,
+userinfo, non-ASCII hosts, other schemes and protocol-relative `//host` addresses are refused
+with distinct error codes. Page-relative paths and origins with a non-root path are also refused.
+
+`RS_RECEIVER_CREDIT_WINDOW` accepts 1 through 8 on /18 and /19, and 1 or 2 below /18.
+
+The socket offers exactly the descriptor's version. Native Godot sends no Origin header. The
+token goes in the hello and in `Authorization: Bearer` on resource GETs; it is never logged.
+Resources use `resourceBase + session.resources.http_path + sha256`, with the resource origin
+independent of the socket origin. Native resource bases are HTTP(S) origins or path prefixes
+without query strings or fragments. HTTPS uses Godot's normal certificate validation. Textures
+are requested as `decoded`, GPU formats as `none`. Viewport/proxy texture samples are currently
+counted as unsupported and skipped by the native planner; announced tweens are validated and
+accepted without evaluation.
+
+The view forwards touch releases and real left mouse releases (ignoring mouse events emulated from touches) to
+`tapped(screen_pos: Vector2, item: int, game_pos: Vector2)` on its live client. Positions are
+host presentation pixels (the view maps localized input through the session's host final transform,
+independent of the receiver window's size),
+and `game_pos` comes from `RsCore.to_game`. Taps are suppressed before the first frame is applied
+on each session and while an apply is waiting for HTTP resources: the picker reads the latest
+accepted state, which may not yet be on screen. An empty mapping emits **nothing**; a valid mapping
+with no picked item emits `item = -1`. `RsCore.hit_test(x, y)` returns the GUI tree pick with
+mouse filters, and `RsCore.to_game(x, y)` returns a `PackedFloat64Array` containing
+`[item_or_minus_one, game_x, game_y]`, or an empty array when the mapping is unavailable.

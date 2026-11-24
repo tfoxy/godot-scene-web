@@ -591,7 +591,7 @@ var _previous_unsupported_list: Array = []
 func _ready() -> void:
 	set_process(false)
 	var mode: String = RsConfig.get_env("RS_RECEIVER_MODE").strip_edges()
-	if mode == "live":
+	if mode == "live" or (_client != null and not _client.descriptor.is_empty()):
 		_ready_live()
 		return
 	if mode != "" and mode != "file":
@@ -1223,6 +1223,7 @@ func _web_mark(name: String) -> void:
 ## The session record (accept_record()'s result): viewport size check, then clear colour, canvas
 ## 1, its transform and cull mask. Returns false (after failing the replay) on any error.
 func _begin_session(accepted: Dictionary) -> bool:
+	_last_applied_frame = -1
 	var errors: PackedStringArray = accepted["errors"]
 	if errors.size() > 0:
 		_fail_with_error(null, errors[0])
@@ -1281,13 +1282,13 @@ func _begin_session(accepted: Dictionary) -> bool:
 	if _live and fetch == "http":
 		var http_path: Variant = resources_meta["http_path"]
 		var origin: Dictionary = _url_origin(_url)
-		if http_path == null or origin.is_empty():
+		if http_path == null or (origin.is_empty() and (_client == null or _client.resource_base.is_empty())):
 			_fail(null, "resource-unavailable", "fetch http with http_path %s on %s" % [JSON.stringify(http_path), _url])
 			return false
 		if _fetcher != null:
 			_fetcher.cancel()
-		var origin_host: String = origin["host"]
-		var origin_port: int = origin["port"]
+		var origin_host: String = origin.get("host", "")
+		var origin_port: int = origin.get("port", 0)
 		# G2e sabotage wrong-http-token: the WebSocket upgrade above already used the correct
 		# _token (RsLiveClient.open was called before this session was even received); only the
 		# HTTP fetcher's copy is corrupted, so "correct on the upgrade, wrong on GET" holds.
@@ -1295,6 +1296,10 @@ func _begin_session(accepted: Dictionary) -> bool:
 		if _sabotage == "wrong-http-token" and fetch_token != "":
 			fetch_token += "-wrong"
 		_fetcher = RsResourceFetcher.new(origin_host, origin_port, str(http_path), _fetch_timeout_ms, _fetch_delay_ms, fetch_token, _web_fetch)
+		if _client != null and not _client.resource_base.is_empty():
+			if _fetcher.configure_base(_client.resource_base) != OK:
+				_fail(null, "resource-unavailable", "descriptor resourceBase must be an HTTP(S) origin or path prefix")
+				return false
 		_fetcher.accept_encoding = _accept_encoding
 	var blocks: Array = record["blocks"]
 	_applier.sabotage = _sabotage
@@ -1310,9 +1315,13 @@ func _begin_session(accepted: Dictionary) -> bool:
 ## session carries the same declaration). A /5 or older session has no presentation keys: its
 ## stretch is still adopted, the checks are skipped.
 var _presentation_done: bool = false
+## Picking consumes host presentation pixels, independent of this receiver window's size.
+var _host_final_xform: Transform2D = Transform2D.IDENTITY
 
 
 func _adopt_presentation(session_viewport: Dictionary, blocks: Array) -> void:
+	var host_final: PackedFloat32Array = blocks[3]
+	_host_final_xform = Transform2D(Vector2(host_final[0], host_final[1]), Vector2(host_final[2], host_final[3]), Vector2(host_final[4], host_final[5]))
 	if _presentation_done:
 		return
 	_presentation_done = true
@@ -1653,6 +1662,7 @@ func _finish() -> void:
 
 
 func _ready_live() -> void:
+	var has_descriptor: bool = _client != null and not _client.descriptor.is_empty()
 	_live = true
 	_data_received_bytes = 0
 	_out_path = RsConfig.get_env("RS_RECEIVER_OUT")
@@ -1665,12 +1675,12 @@ func _ready_live() -> void:
 			_log("error: %s is a file-mode variable; live mode uses RS_RECEIVER_URL and RS_RECEIVER_SHOT_WINDOWS" % variable)
 			_quit(EXIT_USAGE)
 			return
-	_url = RsConfig.get_env("RS_RECEIVER_URL").strip_edges()
+	_url = _client.url if has_descriptor else RsConfig.get_env("RS_RECEIVER_URL").strip_edges()
 	# RS_RECEIVER_ALLOW_LAN=1 accepts ws://<IPv4>:<port>/..., the
 	# gate 8 lan leg's host address; the default stays loopback only.
 	var allow_lan: bool = RsConfig.get_env("RS_RECEIVER_ALLOW_LAN").strip_edges() == "1"
 	var lan_url: RegEx = RegEx.create_from_string("^ws://[0-9]{1,3}(\\.[0-9]{1,3}){3}:[0-9]+/")
-	if not (_url.begins_with("ws://127.0.0.1:") or _url.begins_with("ws://[::1]:") or (allow_lan and lan_url.search(_url) != null)):
+	if not has_descriptor and not (_url.begins_with("ws://127.0.0.1:") or _url.begins_with("ws://[::1]:") or (allow_lan and lan_url.search(_url) != null)):
 		_log("error: RS_RECEIVER_URL must be ws://127.0.0.1:<port>/... or ws://[::1]:<port>/... (loopback only, unless RS_RECEIVER_ALLOW_LAN=1 for ws://<IPv4>:<port>/; got %s)" % JSON.stringify(_url))
 		_quit(EXIT_USAGE)
 		return
@@ -1754,12 +1764,14 @@ func _ready_live() -> void:
 			_log("error: RS_RECEIVER_TOKEN_FILE %s does not hold 64 lowercase hex (a /7 hello token)" % JSON.stringify(token_file))
 			_quit(EXIT_USAGE)
 			return
+	if has_descriptor:
+		_token = str(_client.descriptor["token"]) if _client.descriptor["token"] != null else ""
 	var inbound: int = _positive_env("RS_RECEIVER_INBOUND_BYTES", DEFAULT_INBOUND_BYTES)
 	var timeout_ms: int = _positive_env("RS_RECEIVER_CONNECT_TIMEOUT", DEFAULT_CONNECT_TIMEOUT_MS)
 	if inbound < 0 or timeout_ms < 0:
 		_quit(EXIT_USAGE)
 		return
-	_inbound_bytes = inbound
+	_inbound_bytes = _client.inbound_buffer_bytes if has_descriptor else inbound
 	_connect_timeout_ms = timeout_ms
 	var stage: String = RsConfig.get_env("RS_RECEIVER_CREDIT_STAGE").strip_edges()
 	if stage == "":
@@ -1832,8 +1844,12 @@ func _ready_live() -> void:
 	_new_applier()
 	if _perf != null:
 		_perf.enable_render_time_measurement(get_viewport().get_viewport_rid())
-	_client = RsLiveClient.new()
-	var opened: Error = _client.open(_url, _inbound_bytes, _token, _wire_version)
+	var opened: Error = OK
+	if has_descriptor:
+		_client.queue_descriptor_hello(_native_hello_facts())
+	else:
+		_client = RsLiveClient.new()
+		opened = _client.open(_url, _inbound_bytes, _token, _wire_version)
 	if opened != OK:
 		_fail(null, "live-connect-failed", "connect_to_url(%s): %s" % [_url, error_string(opened)])
 		return
@@ -1852,7 +1868,7 @@ func _ready_live() -> void:
 ## RS_RECEIVER_CREDIT_WINDOW (1 or 2, /7 only) and RS_RECEIVER_MANIFEST_SHA256 (64 lowercase hex,
 ## checked at /7). Logs and returns false when one is malformed (a usage error).
 func _parse_wire_env() -> bool:
-	var protocol_text: String = RsConfig.get_env("RS_RECEIVER_PROTOCOL").strip_edges()
+	var protocol_text: String = str(_client.version) if _client != null and not _client.descriptor.is_empty() else RsConfig.get_env("RS_RECEIVER_PROTOCOL").strip_edges()
 	if protocol_text == "":
 		protocol_text = "7" if RsConfig.is_web() else "6"
 	if not ["6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19"].has(protocol_text):
@@ -1866,8 +1882,9 @@ func _parse_wire_env() -> bool:
 	_credit_window = 2 if _wire_version >= 7 else 1
 	var window_text: String = RsConfig.get_env("RS_RECEIVER_CREDIT_WINDOW").strip_edges()
 	if window_text != "":
-		if window_text != "1" and window_text != "2":
-			_log("error: RS_RECEIVER_CREDIT_WINDOW must be 1 or 2 (got %s)" % JSON.stringify(window_text))
+		var max_window: int = 8 if _wire_version >= 18 else 2
+		if not window_text.is_valid_int() or window_text.to_int() < 1 or window_text.to_int() > max_window:
+			_log("error: RS_RECEIVER_CREDIT_WINDOW must be in 1..%d (got %s)" % [max_window, JSON.stringify(window_text)])
 			return false
 		if _wire_version < 7 and window_text != "1":
 			_log("error: RS_RECEIVER_CREDIT_WINDOW %s needs RS_RECEIVER_PROTOCOL=7 (render-stream/6 has no window)" % window_text)
@@ -2001,6 +2018,21 @@ func _window_of(step: int) -> Dictionary:
 	return {}
 
 
+## The pre-/16 hello used by the live connection, kept separate from transport setup.
+func _legacy_live_hello() -> Dictionary:
+	if _wire_version >= 11:
+		var hello_protocol: String = "render-stream/%d" % _wire_version
+		var hello_v11: Dictionary = RsLiveClient.hello_v9(_hello_v7(), _texture_encodings, _gpu_formats, hello_protocol)
+		if _live_coding != "":
+			hello_v11["live_coding"] = _live_coding
+		return hello_v11
+	if _wire_version >= 9:
+		return RsLiveClient.hello_v9(_hello_v7(), _texture_encodings, _gpu_formats, "render-stream/%d" % _wire_version)
+	if _wire_version >= 7:
+		return _hello_v7()
+	return RsLiveClient.hello("gate1-receiver-%s" % DisplayServer.get_name(), _credit_stage, _inbound_bytes)
+
+
 func _process_live() -> void:
 	if _finished:
 		return
@@ -2018,37 +2050,15 @@ func _process_live() -> void:
 				if _conn_index == 1:
 					_web_mark("rs-socket-open")
 				if _wire_version >= 16:
-					var presentation: Vector2i = DisplayServer.window_get_size() if DisplayServer.get_name() != "headless" else Vector2i(640, 360)
-					var facts: Dictionary = {
-						"protocol": _wire_version, "creditWindow": _credit_window, "creditStage": _credit_stage,
-						"token": null if _token == "" else _token, "backing": [presentation.x, presentation.y],
-						"css": [presentation.x, presentation.y], "dprMilli": 1000, "gpuFormats": "none",
-						"receiver": "godot-receiver", "receiverKind": "native", "inboundBufferBytes": _inbound_bytes,
-						"manifestSha256": null if _manifest_sha256 == "" else _manifest_sha256, "liveCoding": _live_coding,
-						"itemMeta": {"fields": ["mouse_filter"], "groups": [], "meta_keys": []},
-					}
 					_applier.coding_open(_live_coding, _inbound_bytes)
 					_coding_on = true
-					_client.peer.send_text(_client.protocol_call("client_hello", JSON.stringify(facts)))
-				elif _wire_version >= 11:
-					# W11d: /10's hello under render-stream/11, W11t's live_coding last (golden-11's
-					# control hello); the connection's decoder opens with the same offer.
-					# PM5: /12's hello is /11's under render-stream/12; W13d: /13's is /12's under
-					# render-stream/13; /15's is /13's under render-stream/15.
-					var hello_protocol: String = RsLiveClient.PROTOCOL_V15 if _wire_version >= 15 else (RsLiveClient.PROTOCOL_V13 if _wire_version >= 13 else (RsLiveClient.PROTOCOL_V12 if _wire_version >= 12 else RsLiveClient.PROTOCOL_V11))
-					var hello_v11: Dictionary = RsLiveClient.hello_v9(_hello_v7(), _texture_encodings, _gpu_formats, hello_protocol)
-					if _live_coding != "":
-						hello_v11["live_coding"] = _live_coding
-					_applier.coding_open(_live_coding, _inbound_bytes)
-					_coding_on = true
-					_send(hello_v11)
-				elif _wire_version >= 9:
-					# CG1: /10's hello is /9's under protocol render-stream/10.
-					_send(RsLiveClient.hello_v9(_hello_v7(), _texture_encodings, _gpu_formats, "render-stream/%d" % _wire_version))
-				elif _wire_version >= 7:
-					_send(_hello_v7())
+					if _client.descriptor.is_empty():
+						_client.peer.send_text(_client.protocol_call("client_hello", JSON.stringify(_native_hello_facts())))
 				else:
-					_send(RsLiveClient.hello("gate1-receiver-%s" % DisplayServer.get_name(), _credit_stage, _inbound_bytes))
+					if _wire_version >= 11:
+						_applier.coding_open(_live_coding, _inbound_bytes)
+						_coding_on = true
+					_send(_legacy_live_hello())
 				_log("connected to %s as connection %d (subprotocol %s); hello sent" % [_url, _conn_index, _client.peer.get_selected_protocol()])
 			elif Time.get_ticks_msec() > _deadline_msec:
 				_fail(null, "live-connect-failed", "no open connection to %s (state %d, close code %d)" % [_url, state, _client.close_code()])
@@ -2060,7 +2070,7 @@ func _process_live() -> void:
 				# second gets 503), so it retries until the connect timeout.
 				var reconnect: Dictionary = _reconnect_record
 				reconnect["connect_attempts"] = RsWire.as_int(reconnect["connect_attempts"]) + 1
-				var opened: Error = _client.open(_url, _inbound_bytes, _token, _wire_version)
+				var opened: Error = _reopen_live_client()
 				if opened != OK:
 					_fail(null, "live-connect-failed", "connect_to_url(%s): %s" % [_url, error_string(opened)])
 			return
@@ -2239,7 +2249,7 @@ func _start_next_connection() -> void:
 	_streams.append(_stream_report)
 	_closing_by_receiver = false
 	_reconnecting = true
-	var opened: Error = _client.open(_url, _inbound_bytes, _token, _wire_version)
+	var opened: Error = _reopen_live_client()
 	if opened != OK:
 		_fail(null, "live-connect-failed", "connect_to_url(%s): %s" % [_url, error_string(opened)])
 		return
@@ -3341,19 +3351,43 @@ func _log(text: String) -> void:
 	print("[receiver] " + text)
 
 
-## The receiver view forwards pointer releases through the shared core's presentation mapping.
+## The core queries accepted state: suppress input until applied and during resource fetches.
 func _unhandled_input(event: InputEvent) -> void:
-	if _client == null or _applier == null:
+	if _client == null or _applier == null or _last_applied_frame < 0 or not _pending_apply.is_empty():
 		return
 	if event is InputEventScreenTouch:
 		var touch: InputEventScreenTouch = event
 		if not touch.pressed:
-			_client.tap(touch.position, _applier)
+			_client.tap(_host_final_xform * touch.position, _applier)
 	elif event is InputEventMouseButton:
 		var mouse: InputEventMouseButton = event
-		if mouse.button_index == MOUSE_BUTTON_LEFT and not mouse.pressed:
-			_client.tap(mouse.position, _applier)
+		if mouse.device != InputEvent.DEVICE_ID_EMULATION and mouse.button_index == MOUSE_BUTTON_LEFT and not mouse.pressed:
+			_client.tap(_host_final_xform * mouse.position, _applier)
 
 
 func live_client() -> RsLiveClient:
+	if _client == null:
+		_client = RsLiveClient.new()
 	return _client
+
+
+func _native_hello_facts() -> Dictionary:
+	var presentation: Vector2i = DisplayServer.window_get_size() if DisplayServer.get_name() != "headless" else Vector2i(640, 360)
+	if _client != null and _client.descriptor.has("presentation"):
+		var size: Array = _client.descriptor["presentation"]
+		presentation = Vector2i(RsWire.as_int(size[0]), RsWire.as_int(size[1]))
+	return {
+		"protocol": _wire_version, "creditWindow": _credit_window, "creditStage": _credit_stage,
+		"token": null if _token == "" else _token, "backing": [presentation.x, presentation.y],
+		"css": [presentation.x, presentation.y], "dprMilli": 1000, "gpuFormats": "none",
+		"receiver": "godot-receiver", "receiverKind": "native", "inboundBufferBytes": _inbound_bytes,
+		"manifestSha256": null if _manifest_sha256 == "" else _manifest_sha256, "liveCoding": _live_coding,
+		"itemMeta": {"fields": ["mouse_filter"], "groups": [], "meta_keys": []},
+	}
+
+
+func _reopen_live_client() -> Error:
+	var opened: Error = _client.open(_url, _inbound_bytes, _token, _wire_version)
+	if opened == OK and not _client.descriptor.is_empty():
+		_client.queue_descriptor_hello(_native_hello_facts())
+	return opened

@@ -69,7 +69,7 @@ var _descriptor_hello: String = ""
 var peer: WebSocketPeer = null
 var url: String = ""
 var inbound_buffer_bytes: int = 0
-## 6 to 13 or 15: the subprotocol offered and the hello sent (RS_RECEIVER_PROTOCOL).
+## 6 through 19: the subprotocol offered and the hello sent (RS_RECEIVER_PROTOCOL).
 var version: int = 6
 
 
@@ -85,6 +85,7 @@ var version: int = 6
 ## travels in the hello (hello_v7), and a null or wrong one is answered with error `unauthorized`
 ## and close 1008 after the upgrade (render-stream-7.md, G7n).
 func open(target_url: String, inbound_bytes: int, token: String = "", wire_version: int = 6) -> Error:
+	_descriptor_hello = ""
 	url = target_url
 	inbound_buffer_bytes = inbound_bytes
 	version = wire_version
@@ -317,3 +318,8 @@ func send_ack(stream_id: String, seq: int, stage: String, t_us: int) -> Error:
 func host_error(text: String) -> Dictionary:
 	var parsed: Dictionary = JSON.parse_string(protocol_call("parse_host_error", text))
 	return parsed
+
+
+## Replace the queued descriptor hello with the view's actual platform facts before polling.
+func queue_descriptor_hello(facts: Dictionary) -> void:
+	_descriptor_hello = protocol_call("client_hello", JSON.stringify(facts))
