@@ -29,6 +29,8 @@ class JsonWriter {
   JsonWriter &null();
   // Prints with %.9g, which round-trips a float32 exactly.
   JsonWriter &float32(float value);
+  // Prints with %.17g, preserving bound methods that return double.
+  JsonWriter &float64(double value);
   // The IEEE-754 bit pattern of a float32, as "0x........".
   JsonWriter &float32_bits(float value);
   JsonWriter &hex(uint64_t value);

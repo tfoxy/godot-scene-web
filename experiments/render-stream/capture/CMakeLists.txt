@@ -1164,6 +1164,14 @@ target_link_libraries(rs_tweens_gd_test PRIVATE grc_warnings)
 grc_add_test(NAME rs_tweens_gd COMMAND rs_tweens_gd_test)
 
 # Collect the Windows manifest after every test target and golden definition exists.
+if(NOT GRC_WINDOWS)
+add_executable(audio_driver_probe_test test/audio_driver_probe_test.cpp src/audio_driver_probe.cpp)
+target_include_directories(audio_driver_probe_test PRIVATE src vendor)
+target_link_libraries(audio_driver_probe_test PRIVATE grc_warnings grc_platform)
+grc_add_test(NAME audio_driver_probe COMMAND audio_driver_probe_test
+  ${CMAKE_CURRENT_SOURCE_DIR}/../calibration/abi/godot-4.5.1-audio-driver.json)
+endif()
+
 if(GRC_WINDOWS)
   include(cmake/windows-bundle.cmake)
 endif()

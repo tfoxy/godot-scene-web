@@ -156,6 +156,22 @@ JsonWriter &JsonWriter::float32(float value) {
   return *this;
 }
 
+JsonWriter &JsonWriter::float64(double value) {
+  separator();
+  char buf[48];
+  std::snprintf(buf, sizeof(buf), "%.17g", value);
+  // A non-finite float has no JSON spelling; record it as a string instead of
+  // emitting invalid JSON.
+  if (std::strstr(buf, "inf") != nullptr || std::strstr(buf, "nan") != nullptr) {
+    out_ += '"';
+    out_ += buf;
+    out_ += '"';
+  } else {
+    out_ += buf;
+  }
+  return *this;
+}
+
 JsonWriter &JsonWriter::float32_bits(float value) {
   uint32_t bits = 0;
   std::memcpy(&bits, &value, sizeof(bits));

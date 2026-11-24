@@ -204,6 +204,7 @@
 #include <unordered_set>
 #include <vector>
 
+#include "audio_driver_probe.h"
 #include "calib.h"
 #include "calib_live.h"
 #include "hooks.h"
@@ -7163,6 +7164,7 @@ void rearm_kept_release() {
 void on_shutdown() {
   g_root_finalized = true;  // SceneTree::finalize deletes root before shutdown_func runs.
   log_line("shutdown: root-finalized");
+  audio::shutdown();
   g_api->shutdown([] {
     api_teardown_finish_blocking();
     stream_finish(rs2::EndReason::Shutdown);
@@ -7336,6 +7338,7 @@ void initialize(void * /*userdata*/, GDExtensionInitializationLevel level) {
            " arm_defer_frames=" + std::to_string(g_state.defer_arm_frames) +
            " stream=" + (g_stream.path.empty() ? std::string("<off>") : g_stream.path) +
            " live=" + (g_live.listen.empty() ? std::string("<off>") : g_live.listen));
+  audio::initialize(g_state.evidence_dir);
   attempt("scene-init");
 }
 
@@ -7343,6 +7346,7 @@ void deinitialize(void * /*userdata*/, GDExtensionInitializationLevel level) {
   if (level != GDEXTENSION_INITIALIZATION_SCENE) {
     return;
   }
+  audio::shutdown();
   g_api->shutdown([] {
     api_teardown_finish_blocking();
     // The shutdown callback normally gets here first; this is the backstop for an

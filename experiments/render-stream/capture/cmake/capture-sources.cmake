@@ -1,4 +1,7 @@
 set(GRC_CAPTURE_SOURCES
+  src/audio_driver_probe.cpp
+  src/audio_driver_hook.cpp
+  src/audio_driver_log.cpp
   src/rs_platform_posix.cpp
   src/calib.cpp
   src/calib_fingerprint_posix.cpp

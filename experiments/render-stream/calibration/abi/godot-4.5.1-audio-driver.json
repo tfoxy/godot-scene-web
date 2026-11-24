@@ -1,0 +1,235 @@
+{
+  "schema": "render-stream-audio-driver-abi/1",
+  "version": "4.5.1.stable.official",
+  "header_sha256": "ed6446c5150c5e582f03b23d34fe33b3f8a6c950ac5ba3c39aff4c5891a2a887",
+  "slots": [
+    {
+      "name": "get_name",
+      "pure": true,
+      "override": true,
+      "abstract_placeholder": true
+    },
+    {
+      "name": "init",
+      "pure": true,
+      "override": true,
+      "abstract_placeholder": true
+    },
+    {
+      "name": "start",
+      "pure": true,
+      "override": true,
+      "abstract_placeholder": true
+    },
+    {
+      "name": "get_mix_rate",
+      "pure": true,
+      "override": true,
+      "abstract_placeholder": true
+    },
+    {
+      "name": "get_input_mix_rate",
+      "pure": false,
+      "override": false,
+      "abstract_placeholder": false
+    },
+    {
+      "name": "get_speaker_mode",
+      "pure": true,
+      "override": true,
+      "abstract_placeholder": true
+    },
+    {
+      "name": "get_latency",
+      "pure": false,
+      "override": false,
+      "abstract_placeholder": false
+    },
+    {
+      "name": "lock",
+      "pure": true,
+      "override": true,
+      "abstract_placeholder": true
+    },
+    {
+      "name": "unlock",
+      "pure": true,
+      "override": true,
+      "abstract_placeholder": true
+    },
+    {
+      "name": "finish",
+      "pure": true,
+      "override": true,
+      "abstract_placeholder": true
+    },
+    {
+      "name": "get_output_device_list",
+      "pure": false,
+      "override": false,
+      "abstract_placeholder": false
+    },
+    {
+      "name": "get_output_device",
+      "pure": false,
+      "override": false,
+      "abstract_placeholder": false
+    },
+    {
+      "name": "set_output_device",
+      "pure": false,
+      "override": false,
+      "abstract_placeholder": false
+    },
+    {
+      "name": "input_start",
+      "pure": false,
+      "override": false,
+      "abstract_placeholder": false
+    },
+    {
+      "name": "input_stop",
+      "pure": false,
+      "override": false,
+      "abstract_placeholder": false
+    },
+    {
+      "name": "get_input_device_list",
+      "pure": false,
+      "override": false,
+      "abstract_placeholder": false
+    },
+    {
+      "name": "get_input_device",
+      "pure": false,
+      "override": false,
+      "abstract_placeholder": false
+    },
+    {
+      "name": "set_input_device",
+      "pure": false,
+      "override": false,
+      "abstract_placeholder": false
+    },
+    {
+      "name": "is_stream_registered_as_sample",
+      "pure": false,
+      "override": false,
+      "abstract_placeholder": false
+    },
+    {
+      "name": "register_sample",
+      "pure": false,
+      "override": false,
+      "abstract_placeholder": false
+    },
+    {
+      "name": "unregister_sample",
+      "pure": false,
+      "override": false,
+      "abstract_placeholder": false
+    },
+    {
+      "name": "start_sample_playback",
+      "pure": false,
+      "override": false,
+      "abstract_placeholder": false
+    },
+    {
+      "name": "stop_sample_playback",
+      "pure": false,
+      "override": false,
+      "abstract_placeholder": false
+    },
+    {
+      "name": "set_sample_playback_pause",
+      "pure": false,
+      "override": false,
+      "abstract_placeholder": false
+    },
+    {
+      "name": "is_sample_playback_active",
+      "pure": false,
+      "override": false,
+      "abstract_placeholder": false
+    },
+    {
+      "name": "get_sample_playback_position",
+      "pure": false,
+      "override": false,
+      "abstract_placeholder": false
+    },
+    {
+      "name": "update_sample_playback_pitch_scale",
+      "pure": false,
+      "override": false,
+      "abstract_placeholder": false
+    },
+    {
+      "name": "set_sample_playback_bus_volumes_linear",
+      "pure": false,
+      "override": false,
+      "abstract_placeholder": false
+    },
+    {
+      "name": "set_sample_bus_count",
+      "pure": false,
+      "override": false,
+      "abstract_placeholder": false
+    },
+    {
+      "name": "remove_sample_bus",
+      "pure": false,
+      "override": false,
+      "abstract_placeholder": false
+    },
+    {
+      "name": "add_sample_bus",
+      "pure": false,
+      "override": false,
+      "abstract_placeholder": false
+    },
+    {
+      "name": "move_sample_bus",
+      "pure": false,
+      "override": false,
+      "abstract_placeholder": false
+    },
+    {
+      "name": "set_sample_bus_send",
+      "pure": false,
+      "override": false,
+      "abstract_placeholder": false
+    },
+    {
+      "name": "set_sample_bus_volume_db",
+      "pure": false,
+      "override": false,
+      "abstract_placeholder": false
+    },
+    {
+      "name": "set_sample_bus_solo",
+      "pure": false,
+      "override": false,
+      "abstract_placeholder": false
+    },
+    {
+      "name": "set_sample_bus_mute",
+      "pure": false,
+      "override": false,
+      "abstract_placeholder": false
+    },
+    {
+      "name": "destructor",
+      "pure": false,
+      "override": true,
+      "abstract_placeholder": true
+    },
+    {
+      "name": "deleting_destructor",
+      "pure": false,
+      "override": true,
+      "abstract_placeholder": true
+    }
+  ]
+}

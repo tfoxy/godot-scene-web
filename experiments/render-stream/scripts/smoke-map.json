@@ -1442,6 +1442,16 @@
         "g7live:g7-k@*",
         "g7live:g7-lc@*"
       ]
+    },
+    {
+      "why": "Audio seam spike (G1): the GRC_AUDIO probe/log fixture, its runner and its checker reach only the capture build (the audio_driver_probe ctest) and the pure self-tests; with GRC_AUDIO unset every other run is unchanged",
+      "paths": [
+        "experiments/render-stream/fixtures/audio-seam/**",
+        "experiments/render-stream/scripts/run-audio-seam.sh",
+        "experiments/render-stream/scripts/check-audio-seam.py"
+      ],
+      "reach": ["pure", "capture-build"],
+      "exclusive": true
     }
   ]
 }
