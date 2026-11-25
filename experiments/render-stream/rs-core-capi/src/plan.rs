@@ -714,6 +714,7 @@ struct Counters {
     pt_created: i64,
     pt_freed: i64,
     pt_setters: i64,
+    pt_trails_skipped: i64,
     pt_seed_sets: i64,
     pt_material_sets: i64,
     pt_draw_pass_sets: i64,
@@ -3071,11 +3072,17 @@ impl Planner {
             if last.as_ref().map(|l| l.trails) != Some(e.trails)
                 || !lf.is_some_and(|l| l.trail_length.to_bits() == f.trail_length.to_bits())
             {
-                ops.op(Op::ParticlesSetTrails, 1);
-                ops.rid(rid);
-                ops.b(e.trails);
-                ops.f(f.trail_length);
-                n += 1;
+                // RD rejects these lengths even when trails are disabled. Keep the observed
+                // state as the diff baseline, but do not send a setter the renderer ignores.
+                if f.trail_length < 0.01 - 1e-5 {
+                    c.pt_trails_skipped += 1;
+                } else {
+                    ops.op(Op::ParticlesSetTrails, 1);
+                    ops.rid(rid);
+                    ops.b(e.trails);
+                    ops.f(f.trail_length);
+                    n += 1;
+                }
             }
             // The wire carries no poses while trails are off (PM5 rule 4) but the host keeps
             // them; the receiver keeps what it set too, so an empty list is never sent.
@@ -4575,6 +4582,9 @@ fn write_stats(
         ("particles_commands", c.particles_commands),
         ("skipped_particles_commands", c.skipped_particles_commands),
     ];
+    if c.pt_trails_skipped > 0 {
+        pt_resources.push(("trails_skipped", c.pt_trails_skipped));
+    }
     // FOG-T: only when an emitter was skipped, so every other stream's stats are unchanged.
     if c.pt_synthetic_skipped > 0 {
         pt_resources.push(("synthetic_skipped", c.pt_synthetic_skipped));
@@ -4788,5 +4798,117 @@ fn pt_align(e: &Particles) -> i64 {
         ParticlesTransformAlign::ZBillboard => 1,
         ParticlesTransformAlign::YToVelocity => 2,
         ParticlesTransformAlign::ZBillboardYToVelocity => 3,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn emitter() -> Particles {
+        Particles {
+            id: 1,
+            origin: Origin::Created,
+            status: EntryStatus::Ok,
+            reason: None,
+            version: 1,
+            mode: ParticlesMode::D2,
+            emitting: true,
+            amount: 8,
+            one_shot: false,
+            fixed_fps: 30,
+            interpolate: true,
+            fractional_delta: true,
+            local: true,
+            draw_order: ParticlesDrawOrder::Index,
+            transform_align: ParticlesTransformAlign::Disabled,
+            trails: false,
+            trail_poses: 0,
+            seed: 1,
+            restarts: 0,
+            emits: 0,
+            process_requests: 0,
+            process_material: None,
+            draw_passes: vec![],
+            subemitter: None,
+            floats: Some(ParticleFloats {
+                amount_ratio: 1.0,
+                lifetime: 1.0,
+                pre_process_time: 0.0,
+                explosiveness: 0.0,
+                randomness: 0.0,
+                speed_scale: 1.0,
+                collision_base_size: 1.0,
+                trail_length: 0.0,
+                interp_to_end: 0.0,
+                request_process_time: 0.0,
+                custom_aabb: [0.0; 6],
+                emission_transform: [0.0; 12],
+                emitter_velocity: [0.0; 3],
+                trail_poses: vec![],
+            }),
+        }
+    }
+
+    #[test]
+    fn particle_trails_skip_invalid_lengths_and_keep_state_baseline() {
+        // Each row is (trails enabled, length, emitted calls, skipped calls).
+        let cases: &[&[(bool, f32, usize, i64)]] = &[
+            &[(false, 0.0, 0, 1), (false, 0.0, 0, 0), (false, 0.3, 1, 0)],
+            &[(false, 0.3, 1, 0)],
+            &[(true, 0.0, 0, 1), (true, 0.3, 1, 0), (false, 0.3, 1, 0)],
+            &[(true, 0.3, 1, 0), (true, 0.0, 0, 1), (true, 0.3, 1, 0)],
+            &[(false, 0.00998, 0, 1), (false, 0.01 - 1e-5, 1, 0)],
+        ];
+        for steps in cases {
+            let mut planner = Planner::new();
+            let mut state = ResolvedState::empty(19);
+            state.particles.insert(1, emitter());
+            let payloads = Payloads {
+                provided: &HashMap::new(),
+                library: &HashMap::new(),
+                dynamic: &DynamicMeshes::default(),
+                multimeshes: &MmStore::default(),
+                particle_emits: &[],
+                version: 19,
+            };
+            for &(trails, length, emitted, skipped) in *steps {
+                let e = state.particles.get_mut(&1).unwrap();
+                e.trails = trails;
+                e.floats.as_mut().unwrap().trail_length = length;
+                let mut ops = OpBuf::default();
+                let mut counters = Counters::default();
+                planner.apply_particles(
+                    &state,
+                    &payloads,
+                    &mut ops,
+                    &mut counters,
+                    &BTreeSet::from([1]),
+                );
+                let expected = [
+                    Op::ParticlesSetTrails as u32,
+                    RidRef::Particles(planner.particles[&1].handle).word(),
+                    trails as u32,
+                    length.to_bits(),
+                ];
+                let calls: Vec<_> = ops
+                    .words
+                    .windows(4)
+                    .filter(|w| w[..2] == expected[..2])
+                    .collect();
+                assert_eq!(
+                    calls.len(),
+                    emitted,
+                    "trails={trails}, length={length}, steps={steps:?}",
+                );
+                if emitted == 1 {
+                    assert_eq!(calls[0], expected);
+                }
+                assert_eq!(counters.pt_trails_skipped, skipped);
+                let last = planner.particles[&1].last.as_ref().unwrap();
+                assert_eq!(last.trails, trails);
+                assert_eq!(last.floats.as_ref().unwrap().trail_length, length);
+            }
+        }
     }
 }
