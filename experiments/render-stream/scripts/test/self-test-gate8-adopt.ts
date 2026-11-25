@@ -28,6 +28,7 @@ import { fileURLToPath } from "node:url";
 import {
   canonicalState,
   censusProblems,
+  comparableAdoptStats,
   compareStates,
   type G8aExpected,
   judgeTexCurrentUnupdated,
@@ -193,6 +194,48 @@ function late(mut: (items: ResolvedItem[]) => void = () => {}): State {
 }
 
 async function main(): Promise<void> {
+  const statsA = {
+    textures: 6,
+    staged: {
+      budget_us: 4000,
+      pending: 0,
+      queued: 1,
+      queue_at_arm: 1,
+      frames_to_drain: 1,
+      max_frame_us: 2,
+      max_texture_us: 2,
+      readback_bytes: 0,
+      arm_to_first_publish_us: 2000,
+    },
+  };
+  const statsB = {
+    ...statsA,
+    staged: {
+      ...statsA.staged,
+      queued: 4,
+      queue_at_arm: 4,
+      frames_to_drain: 2,
+      max_frame_us: 4000,
+      max_texture_us: 3000,
+      readback_bytes: 131200,
+      arm_to_first_publish_us: 19000,
+    },
+  };
+  const normalized = (v: unknown) =>
+    JSON.stringify(comparableAdoptStats(v, true));
+  assert(
+    normalized(statsA) === normalized(statsB),
+    "deferred/late adoption permits different staged scheduling work and duration",
+  );
+  for (const bad of [
+    { ...statsB, textures: 5 },
+    { ...statsB, staged: { ...statsB.staged, pending: 1 } },
+    { ...statsB, staged: { ...statsB.staged, budget_us: 8000 } },
+  ])
+    assert(
+      normalized(statsA) !== normalized(bad),
+      "deferred/late adoption still compares content totals, drained work and budget",
+    );
   const expected = JSON.parse(
     await readFile(
       join(EXPERIMENT_DIR, "fixtures", "gate8-adopt", "expected.json"),

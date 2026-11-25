@@ -104,8 +104,10 @@ std::string pe_codeview_id(const uint8_t *p, size_t n, const PeHeaders &h, bool 
 }
 
 bool pe_image_sha256(const std::string &path, std::string *hex, uint64_t *bytes,
-                     uint64_t *preferred_image_base, std::string *error) {
-  hex->clear(); *bytes = 0; *preferred_image_base = 0;
+                     uint64_t *preferred_image_base, std::string *error, std::string *whole_file_hex) {
+  hex->clear();
+  if (whole_file_hex) whole_file_hex->clear();
+  *bytes = 0; *preferred_image_base = 0;
   struct Close { void operator()(FILE *p) const { std::fclose(p); } };
   std::unique_ptr<FILE, Close> file(rs::open_file(path, "rb"));
   auto fail = [&](const char *message) { *error = message; return false; };
@@ -163,13 +165,35 @@ bool pe_image_sha256(const std::string &path, std::string *hex, uint64_t *bytes,
   Sha256 digest;
   uint64_t total = 0;
   std::vector<uint8_t> buffer(1u << 20);
+  // Share file reads while retaining the distinct whole-file and ordered image digests.
+  // Out-of-order/overlapping section tables still hash in their original image order.
+  Sha256 whole;
+  uint64_t whole_cursor = 0;
+  auto whole_to = [&](uint64_t target) {
+    if (!whole_file_hex || target <= whole_cursor) return true;
+    if (::fseeko(file.get(), whole_cursor, SEEK_SET)) return false;
+    while (whole_cursor < target) {
+      const size_t chunk = std::min<uint64_t>(target - whole_cursor, buffer.size());
+      if (std::fread(buffer.data(), 1, chunk, file.get()) != chunk) return false;
+      whole.update(buffer.data(), chunk);
+      whole_cursor += chunk;
+    }
+    return true;
+  };
   auto hash = [&](uint32_t off, uint32_t size) {
+    if (!whole_to(off)) return false;
     if (::fseeko(file.get(), off, SEEK_SET)) return false;
     uint64_t remaining = size;
     while (remaining) {
       const size_t chunk = std::min<uint64_t>(remaining, buffer.size());
       if (std::fread(buffer.data(), 1, chunk, file.get()) != chunk) return false;
       digest.update(buffer.data(), chunk);
+      const uint64_t chunk_end = uint64_t(off) + size - remaining + chunk;
+      if (whole_file_hex && chunk_end > whole_cursor) {
+        const size_t fresh = chunk_end - whole_cursor;
+        whole.update(buffer.data() + chunk - fresh, fresh);
+        whole_cursor = chunk_end;
+      }
       remaining -= chunk;
     }
     total += size;
@@ -179,6 +203,8 @@ bool pe_image_sha256(const std::string &path, std::string *hex, uint64_t *bytes,
   for (const auto &s : h.sections)
     if ((s.characteristics & 0x20000000 || s.name == ".rdata") && !hash(s.raw_off, s.raw_size))
       return fail("cannot read PE section");
+  if (!whole_to(end)) return fail("cannot read PE file hash");
+  if (whole_file_hex) *whole_file_hex = sha256_hex(whole.finish());
   *hex = sha256_hex(digest.finish()); *bytes = total; *preferred_image_base = h.image_base;
   return true;
 }

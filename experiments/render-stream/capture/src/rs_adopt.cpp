@@ -9,6 +9,7 @@
 #include <set>
 #include <chrono>
 #include <cstring>
+#include <deque>
 #include <mutex>
 #include <thread>
 #include <unordered_set>
@@ -329,6 +330,7 @@ enum BindId : int {
   kCpuParticles2dGetUseLocalCoordinates,
   // G8r: lazy resource adoption (D6, D7).
   kRsTexture2dGet,
+  kRsTextureGetPath,
   kRsMeshGetSurfaceCount,
   kRsMeshGetSurface,
   kRsMeshGetCustomAabb,
@@ -458,6 +460,7 @@ const BindSpec kBinds[kBindCount] = {
     {"CPUParticles2D", "get_use_local_coordinates", 36873697LL},  // -> bool
     // Every one read-only.
     {"RenderingServer", "texture_2d_get", 4206205781LL},          // (RID) -> Image
+    {"RenderingServer", "texture_get_path", 642473191LL},        // (RID) -> String
     {"RenderingServer", "mesh_get_surface_count", 2198884583LL},  // (RID) -> int
     {"RenderingServer", "mesh_get_surface", 186674697LL},         // (RID, int) -> Dictionary
     {"RenderingServer", "mesh_get_custom_aabb", 974181306LL},     // (RID) -> AABB
@@ -1274,6 +1277,44 @@ void queue_reset() {
   g_queue_nonempty.store(false, std::memory_order_release);
 }
 
+// Main-thread admission/drain; frees may cancel from a hooked engine thread. This mutex is
+// a leaf and is never held while calling the engine, registry or mirror.
+std::mutex g_stage_mutex;
+std::deque<std::uint64_t> g_stage_queue;
+std::unordered_set<std::uint64_t> g_stage_pending;
+AdoptStageStats g_stage_stats;
+bool g_stage_on = false, g_stage_first_drain = true;
+std::uint64_t g_stage_arm_ns = 0;
+std::uint64_t (*g_stage_clock)() = nullptr;
+thread_local std::uint64_t g_stage_current = 0;
+
+std::uint64_t stage_now() { return g_stage_clock ? g_stage_clock() : now_ns(); }
+
+bool stage_queue(std::uint64_t rid) {
+  {
+    std::lock_guard<std::mutex> lock(g_stage_mutex);
+    if (!g_stage_on) return false;
+    if (g_stage_pending.insert(rid).second) {
+      g_stage_queue.push_back(rid);
+      ++g_stage_stats.queued;
+    }
+  }
+  mirror_instance().texture_stage_pending(rid);
+  return true;
+}
+
+bool stage_pending(std::uint64_t rid) {
+  std::lock_guard<std::mutex> lock(g_stage_mutex);
+  return g_stage_pending.count(rid) != 0;
+}
+
+void stage_end() {
+  std::lock_guard<std::mutex> lock(g_stage_mutex);
+  g_stage_on = false;
+  g_stage_queue.clear();
+  g_stage_pending.clear();
+}
+
 // One glyph atlas page the census found (D7): its font cache and index.
 struct FontPage {
   std::uint64_t font = 0;
@@ -1281,7 +1322,14 @@ struct FontPage {
   std::int64_t page = 0;
 };
 
+enum class CensusKind { Unknown, Font, Compressed, Canvas, Other };
+struct CensusPath {
+  std::string path;
+  CensusKind kind = CensusKind::Unknown;
+};
 struct Census {
+  std::vector<CensusPath> paths;
+  bool fonts_validated = false;
   bool built = false;
   std::vector<FontPage> pages;
   std::unordered_map<std::uint64_t, std::string> compressed;  // RID -> cache path
@@ -1692,6 +1740,8 @@ void scan_directory(void *loader, const std::string &dir, int depth, std::vector
     }
     if (*paths >= 200000) return;
     ++*paths;
+    g_census.paths.push_back({path, CensusKind::Unknown});
+    auto &entry = g_census.paths.back();
     OwnedString arg(path);
     const GDExtensionConstTypePtr args[1] = {arg.data};
     std::uint8_t cached = 0;
@@ -1705,14 +1755,18 @@ void scan_directory(void *loader, const std::string &dir, int depth, std::vector
     if (object == nullptr) {
       continue;
     }
+    entry.kind = CensusKind::Other;
     if (g_iface.object_cast_to(object, font_tag) != nullptr) {
+      entry.kind = CensusKind::Font;
       for (std::uint64_t rid : rids_of_font(object)) {
         fonts->push_back(rid);
       }
     } else if (g_iface.object_cast_to(object, ctex_tag) != nullptr) {
+      entry.kind = CensusKind::Compressed;
       g_census.compressed[get_rid(kResourceGetRid, object)] = path;
     } else if (canvas_tag != nullptr && g_iface.object_cast_to(object, canvas_tag) != nullptr) {
       // PM9: a cached CanvasTexture, by its RID and path (re-fetched at adoption).
+      entry.kind = CensusKind::Canvas;
       g_census.canvas_textures[get_rid(kResourceGetRid, object)] = path;
     }
   }
@@ -1750,6 +1804,7 @@ void build_census() {
   const std::uint64_t t0 = now_ns();
   g_census = Census();
   g_census.built = true;
+  g_census.fonts_validated = true;
   std::vector<std::uint64_t> fonts;
   add_theme_fonts(&fonts);
   std::uint32_t paths = 0;
@@ -1804,9 +1859,114 @@ void build_census() {
   g_res_stats.census_ns = now_ns() - t0;
 }
 
+// Refresh RID/path identities on demand; cached refs never survive a lookup. A freed resource
+// leaves its path in the inventory so a later load at that path can be found without a walk.
+void revalidate_census_textures() {
+  void *loader = singleton_object("ResourceLoader");
+  if (!loader) return;
+  std::unordered_map<std::uint64_t, std::string> compressed, canvas;
+  for (const auto &entry : g_census.paths) {
+    if (entry.kind != CensusKind::Compressed && entry.kind != CensusKind::Canvas) continue;
+    OwnedString path(entry.path);
+    const GDExtensionConstTypePtr args[] = {path.data};
+    std::uint8_t cached = 0;
+    ptrcall(kLoaderHasCached, loader, args, &cached);
+    if (!cached) continue;
+    RefSlot res;
+    ptrcall(kLoaderGetCachedRef, loader, args, &res.slot);
+    void *object = res.object();
+    if (!object) continue;
+    void *tag = Tags::tag(entry.kind == CensusKind::Compressed ? "CompressedTexture2D" : "CanvasTexture");
+    if (!tag || !as(object, tag)) continue;
+    const auto rid = get_rid(kResourceGetRid, object);
+    if (rid) (entry.kind == CensusKind::Compressed ? compressed : canvas)[rid] = entry.path;
+  }
+  g_census.compressed = std::move(compressed);
+  g_census.canvas_textures = std::move(canvas);
+}
+
+// A resource loaded since the census has a server path even though no texture-create hook
+// ran in lean mode. Validate the cached resource at that path by class and RID at reference time.
+bool census_compressed_at_reference(std::uint64_t rid) {
+  void *loader = singleton_object("ResourceLoader");
+  void *server = singleton_object("RenderingServer");
+  if (!loader || !server) return false;
+  std::string path;
+  const auto found = g_census.compressed.find(rid);
+  if (found != g_census.compressed.end()) path = found->second;
+  else {
+    Builtin text(GDEXTENSION_VARIANT_TYPE_STRING);
+    const GDExtensionConstTypePtr args[] = {&rid};
+    ptrcall(kRsTextureGetPath, server, args, text.ptr());
+    path = utf8_of(text.ptr());
+  }
+  if (path.empty()) return false;
+  OwnedString arg(path);
+  const GDExtensionConstTypePtr args[] = {arg.data};
+  std::uint8_t cached = 0;
+  ptrcall(kLoaderHasCached, loader, args, &cached);
+  if (!cached) return false;
+  RefSlot resource;
+  ptrcall(kLoaderGetCachedRef, loader, args, &resource.slot);
+  void *object = resource.object();
+  void *tag = Tags::tag("CompressedTexture2D");
+  if (!object || !tag || !as(object, tag) || get_rid(kResourceGetRid, object) != rid) return false;
+  g_census.compressed[rid] = path;
+  return true;
+}
+
+// Font caches can grow or disappear between arms. Resolve only when an atlas lookup needs them,
+// and retain no resource reference across arms; refresh TextServer pages before their first lookup.
+void revalidate_census_fonts() {
+  if (g_census.fonts_validated) return;
+  std::vector<std::uint64_t> fonts;
+  add_theme_fonts(&fonts);
+  void *loader = singleton_object("ResourceLoader");
+  void *font_tag = Tags::tag("Font");
+  if (loader && font_tag) {
+    for (auto &entry : g_census.paths) {
+      if (entry.kind != CensusKind::Font && entry.kind != CensusKind::Unknown) continue;
+      OwnedString path(entry.path);
+      const GDExtensionConstTypePtr args[] = {path.data};
+      std::uint8_t cached = 0;
+      ptrcall(kLoaderHasCached, loader, args, &cached);
+      if (!cached) continue;
+      RefSlot resource;
+      ptrcall(kLoaderGetCachedRef, loader, args, &resource.slot);
+      void *object = resource.object();
+      if (!object) continue;
+      if (!as(object, font_tag)) continue;
+      entry.kind = CensusKind::Font;
+      const auto rids = rids_of_font(object);
+      fonts.insert(fonts.end(), rids.begin(), rids.end());
+    }
+  }
+  std::sort(fonts.begin(), fonts.end());
+  fonts.erase(std::unique(fonts.begin(), fonts.end()), fonts.end());
+  g_census.pages.clear();
+  RefSlot ts_holder;
+  void *ts = text_server(&ts_holder);
+  if (ts) for (const auto font : fonts) {
+    Builtin sizes(GDEXTENSION_VARIANT_TYPE_ARRAY);
+    const GDExtensionConstTypePtr a1[] = {&font};
+    ptrcall(kTsFontGetSizeCacheList, ts, a1, sizes.ptr());
+    for (std::int64_t i = 0; i < array_size(sizes.ptr()); ++i) {
+      std::int32_t size[2] = {};
+      if (!array_element(sizes.ptr(), i, GDEXTENSION_VARIANT_TYPE_VECTOR2I, &size)) continue;
+      const GDExtensionConstTypePtr a2[] = {&font, size};
+      std::int64_t count = 0;
+      ptrcall(kTsFontGetTextureCount, ts, a2, &count);
+      for (std::int64_t page = 0; page < count; ++page)
+        g_census.pages.push_back({font, {size[0], size[1]}, page});
+    }
+  }
+  g_census.fonts_validated = true;
+}
+
 // The page `rid` is, confirmed through the TextServer (font_get_glyph_texture_rid of a glyph on
 // it), or false. `creation` is the dummy's copy; `*current` receives the page's current image.
 bool find_atlas_page(void *ts, std::uint64_t rid, const ImageShape &creation, RefSlot *current) {
+  revalidate_census_fonts();
   for (const FontPage &fp : g_census.pages) {
     RefSlot page_image;
     const GDExtensionConstTypePtr a3[3] = {&fp.font, fp.size, &fp.page};
@@ -1880,6 +2040,10 @@ bool adopt_canvas_texture_resource(void *canvas, std::uint64_t rid) {
   materialize_texture(diffuse);
   materialize_texture(normal);
   materialize_texture(specular);
+  if (stage_pending(diffuse) || stage_pending(normal) || stage_pending(specular)) {
+    stage_queue(rid);
+    return false;
+  }
   return hooks_adopt_canvas_texture(rid, diffuse, normal, specular, static_cast<std::int32_t>(filter),
                                     static_cast<std::int32_t>(repeat));
 }
@@ -1933,6 +2097,10 @@ void adopt_canvas_texture_registered(std::uint64_t rid, const rs::RegistryCanvas
     materialize_texture(c.diffuse);
     materialize_texture(c.normal);
     materialize_texture(c.specular);
+    if (stage_pending(c.diffuse) || stage_pending(c.normal) || stage_pending(c.specular)) {
+      stage_queue(rid);
+      return;
+    }
     adopted = hooks_adopt_canvas_texture(rid, c.diffuse, c.normal, c.specular, c.filter, c.repeat);
   }
   std::lock_guard<std::mutex> lock(g_res_mutex);
@@ -2154,6 +2322,9 @@ void adopt_texture_locked_out(std::uint64_t rid) {
       return;
     }
   }
+  // Warm hits retain their eager arm-time preparation and promotion. Only misses wait
+  // for the attached frame callback, including the main-thread Image duplication.
+  if (rid != g_stage_current && stage_queue(rid)) return;
   RegistryHoldRef hold;
   const bool held = registered_now && registry_hold(rid, &hold);
   {
@@ -2176,6 +2347,10 @@ void adopt_texture_locked_out(std::uint64_t rid) {
     void *rs_singleton = singleton_object("RenderingServer");
     if (rs_singleton != nullptr) {
       const GDExtensionConstTypePtr args[1] = {&rid};
+      // RenderingDevice::texture_get_data_async requires the render thread (Godot 4.5
+      // ERR_RENDER_THREAD_GUARD). This attached callback runs on the main thread and
+      // capture has no calibrated render-thread submission/callback lifetime path.
+      // Keep the synchronous getter here, inside the per-frame adoption budget.
       ptrcall(kRsTexture2dGet, rs_singleton, args, &creation.slot);
     }
   }
@@ -2189,6 +2364,7 @@ void adopt_texture_locked_out(std::uint64_t rid) {
     // CanvasTexture created under the hooks, and load-late is not a fidelity target (F1).
     auto record = refusal_record(rid, "no-image");
     const bool adopted_canvas = main && adopt_canvas_texture_locked_out(rid);
+    if (stage_pending(rid)) return;
     std::lock_guard<std::mutex> lock(g_res_mutex);
     if (adopted_canvas) {
       ++g_res_stats.textures;
@@ -2201,6 +2377,13 @@ void adopt_texture_locked_out(std::uint64_t rid) {
     }
     g_res_stats.lookup_ns += now_ns() - t0;
     return;
+  }
+  if (!held && !reload_source && g_stage_current == rid) {
+    const auto shape = shape_of(creation_image);
+    auto bytes = expected_data_bytes(shape.format, shape.width, shape.height, shape.mipmaps);
+    if (bytes < 0) bytes = vram_data_bytes(shape.format, shape.width, shape.height, shape.mipmaps);
+    std::lock_guard<std::mutex> lock(g_stage_mutex);
+    if (bytes > 0) g_stage_stats.readback_bytes += bytes;
   }
   if (!held && !reload_source && fault() != AdoptFault::ReloadOff) {
     RegistryTextureRecord record;
@@ -2224,7 +2407,7 @@ void adopt_texture_locked_out(std::uint64_t rid) {
   bool compressed = false;
   if (!held && !reload_source && !pristine) {
     std::lock_guard<std::mutex> lock(g_res_mutex);
-    compressed = g_census.compressed.count(rid) != 0;
+    compressed = census_compressed_at_reference(rid);
   }
   void *image = creation_image;
   rs2::AdoptedContent content = rs2::AdoptedContent::Creation;
@@ -2329,6 +2512,10 @@ void adopt_proxy_registered(std::uint64_t rid, const rs::RegistryProxy &proxy) {
       hooks_adopt_placeholder(proxy.base, frame);
     } else if (!rs::registry_is_viewport(proxy.base) && !rs::registry_proxy(proxy.base, &nested)) {
       materialize_texture(proxy.base);
+    }
+    if (stage_pending(proxy.base)) {
+      stage_queue(rid);
+      return;
     }
     hooks_adopt_proxy(rid, proxy.base, 0, frame);
   } else {
@@ -2595,6 +2782,7 @@ void adopt_emitters_reset();                  // PM7, below
 void adopt_emitters_forget(std::uint64_t rid);  // PM7, below
 
 void adopt_resources_begin(AdoptFault f, bool dummy_host) {
+  stage_end();
   adopt_emitters_reset();
   queue_reset();
   RidMap<std::unique_ptr<RefSlot>> dropped;
@@ -2616,7 +2804,7 @@ void adopt_resources_begin(AdoptFault f, bool dummy_host) {
   g_refusal_counts = RefusalCounts();
   g_refused_textures.store(0, std::memory_order_release);
   g_refused.clear();  // LAR6: every family's refusals, PM7's emitters and process materials too
-  g_census = Census();
+  g_census.fonts_validated = false;
   g_res_main = std::this_thread::get_id();
   g_res_fault.store(static_cast<int>(f), std::memory_order_release);
   g_res_dummy_host.store(dummy_host, std::memory_order_relaxed);
@@ -2958,6 +3146,7 @@ ReloadStats adopt_reload_at_arm() {
   if (adopt_binds_ready(nullptr)) {
     std::lock_guard<std::mutex> lock(g_res_mutex);
     if (!g_census.built) build_census();
+    else revalidate_census_textures();
     compressed = g_census.compressed;
     g_reload_stats.census_us = g_res_stats.census_ns / 1000;
   }
@@ -3222,6 +3411,7 @@ void adopt_resources_end() {
   // Pairs with post-increment admission reads and inflight_ready's seq_cst counter poll.
   g_res_active.store(false, std::memory_order_seq_cst);
   g_vp_live.store(false, std::memory_order_seq_cst);  // VS2: the node route ends with the stream
+  stage_end();
   node_map_disconnect();  // G8m: the SceneTree.node_added callable leaves with the stream
 }
 
@@ -3229,6 +3419,38 @@ bool adopt_resources_active() {
   return g_res_active.load(std::memory_order_seq_cst) && !hooks_offmain_standby();
 }
 
+
+void adopt_stage_begin(std::uint64_t budget_us, std::uint64_t arm_ns,
+                       std::uint64_t (*clock)()) {
+  stage_end();
+  std::lock_guard<std::mutex> lock(g_stage_mutex);
+  g_stage_stats = AdoptStageStats();
+  g_stage_stats.budget_us = budget_us;
+  g_stage_clock = clock;
+  g_stage_arm_ns = arm_ns;
+  g_stage_first_drain = true;
+  g_stage_on = true;
+}
+
+bool adopt_stage_holds_publish() {
+  std::lock_guard<std::mutex> lock(g_stage_mutex);
+  return g_stage_on && !g_stage_pending.empty();
+}
+
+void adopt_stage_published() {
+  const auto now = stage_now();
+  std::lock_guard<std::mutex> lock(g_stage_mutex);
+  if (!g_stage_on || g_stage_first_drain || !g_stage_pending.empty()) return;
+  g_stage_stats.arm_to_first_publish_us = (now - g_stage_arm_ns) / 1000;
+  g_stage_on = false;  // subsequent first references retain synchronous steady-state adoption
+}
+
+AdoptStageStats adopt_stage_stats() {
+  std::lock_guard<std::mutex> lock(g_stage_mutex);
+  auto stats = g_stage_stats;
+  stats.pending = g_stage_pending.size();
+  return stats;
+}
 
 AdoptResourceStats adopt_resource_stats() {
   std::lock_guard<std::mutex> lock(g_res_mutex);
@@ -3449,6 +3671,10 @@ void adopt_resource_freed(std::uint64_t rid) {
   if (warm_cancelled) {
     dropped_warm.body.task->drop_source();
     warm_counters().note_cancel(warm_now_ns());
+  }
+  {
+    std::lock_guard<std::mutex> lock(g_stage_mutex);
+    g_stage_pending.erase(rid);
   }
   bool cancelled = false;
   if (g_queue_nonempty.load(std::memory_order_acquire)) {
@@ -3754,6 +3980,86 @@ void mat_stat(F f) {
   f(g_mat_stats);
 }
 
+// Attachment-local snapshots. Detached setters have no value tap, so detach drops these.
+// Existing event hooks invalidate descriptors; only the attached parameter hook marks names dirty.
+struct ShaderDescriptor {
+  std::string code;
+  bool refused = false;
+  std::vector<RegistryDefaultTexture> defaults;
+};
+struct MaterialValues {
+  std::uint64_t shader = 0;
+  std::vector<std::string> names;
+  std::vector<std::shared_ptr<VariantSlot>> values;
+  std::set<std::string> dirty;
+};
+struct ServerParameter {
+  std::string name;
+  std::int32_t texture_count = 0;
+};
+std::mutex g_descriptor_mutex;
+std::uint64_t g_descriptor_epoch = 0;
+std::unordered_map<std::uint64_t, ShaderDescriptor> g_shader_descriptors;
+std::unordered_map<std::uint64_t, std::vector<ServerParameter>> g_shader_parameters;
+std::unordered_map<std::uint64_t, MaterialValues> g_material_values;
+
+bool replay_shader_descriptor(std::uint64_t rid) {
+  ShaderDescriptor descriptor;
+  {
+    std::lock_guard<std::mutex> lock(g_descriptor_mutex);
+    const auto it = g_shader_descriptors.find(rid);
+    if (it == g_shader_descriptors.end()) return false;
+    descriptor = it->second;
+  }
+  const bool adopted = descriptor.refused
+      ? hooks_adopt_shader_refused(rid, rs2::ShaderReason::ShaderAdoptInclude)
+      : hooks_adopt_shader(rid, descriptor.code);
+  if (adopted) {
+    mat_stat([&](AdoptMaterialStats &stats) {
+      ++stats.shaders;
+      if (descriptor.refused) ++stats.shaders_include_refused;
+    });
+    for (const auto &d : descriptor.defaults) {
+      hooks_adopt_default_texture(rid, d.name, d.texture, d.index);
+      mat_stat([](AdoptMaterialStats &stats) { ++stats.default_textures; });
+    }
+  }
+  return mirror_instance().knows_shader(rid);
+}
+
+// Never hold the descriptor mutex through an engine call or Variant destruction. An intervening
+// hook advances the epoch, so a read that raced a setter cannot install a stale cached value.
+template <typename Read>
+std::vector<std::shared_ptr<VariantSlot>> material_values(
+    std::uint64_t rid, std::uint64_t shader, const std::vector<std::string> &names, Read read) {
+  MaterialValues snapshot;
+  std::uint64_t epoch;
+  {
+    std::lock_guard<std::mutex> lock(g_descriptor_mutex);
+    epoch = g_descriptor_epoch;
+    const auto it = g_material_values.find(rid);
+    if (it != g_material_values.end() && it->second.shader == shader && it->second.names == names)
+      snapshot = it->second;
+  }
+  if (snapshot.values.size() != names.size()) snapshot.values.resize(names.size());
+  for (std::size_t i = 0; i < names.size(); ++i) {
+    if (!snapshot.values[i] || snapshot.dirty.count(names[i])) snapshot.values[i] = read(names[i]);
+  }
+  snapshot.shader = shader;
+  snapshot.names = names;
+  snapshot.dirty.clear();
+  MaterialValues dropped;
+  {
+    std::lock_guard<std::mutex> lock(g_descriptor_mutex);
+    if (epoch == g_descriptor_epoch) {
+      auto &cached = g_material_values[rid];
+      dropped = std::move(cached);
+      cached = snapshot;
+    }
+  }
+  return snapshot.values;
+}
+
 void adopt_instance_params(std::uint64_t item);  // G8m, below
 
 // The RS filter/repeat an item's RS state holds (CanvasItem::_refresh_texture_filter_cache,
@@ -3979,6 +4285,10 @@ bool ensure_shader(void *shader, std::uint64_t rid) {
   if (m.knows_shader(rid)) {
     return true;
   }
+  if (mat_sabotage() == AdoptMaterialSabotage::None && replay_shader_descriptor(rid)) return true;
+  ShaderDescriptor descriptor;
+  std::uint64_t epoch;
+  { std::lock_guard<std::mutex> lock(g_descriptor_mutex); epoch = g_descriptor_epoch; }
   const std::string raw = string_of(kShaderGetCode, shader);
   std::string code;
   bool refused = false;
@@ -4010,10 +4320,17 @@ bool ensure_shader(void *shader, std::uint64_t rid) {
       const std::uint64_t tex =
           texture.object() != nullptr ? get_rid(kResourceGetRid, texture.object()) : 0;
       if (tex != 0) {
+        descriptor.defaults.push_back({u.name, 0, tex});
         hooks_adopt_default_texture(rid, u.name, tex, 0);
         mat_stat([](AdoptMaterialStats &s) { ++s.default_textures; });
       }
     }
+  }
+  if (adopted && mat_sabotage() == AdoptMaterialSabotage::None) {
+    descriptor.code = code;
+    descriptor.refused = refused;
+    std::lock_guard<std::mutex> lock(g_descriptor_mutex);
+    if (epoch == g_descriptor_epoch) g_shader_descriptors[rid] = std::move(descriptor);
   }
   return m.knows_shader(rid);
 }
@@ -4058,6 +4375,8 @@ std::uint64_t ensure_cim_shader(void *cim, std::uint64_t named) {
     if (named == 0) {
       g_cim_synthetic[key] = rid;
     }
+    std::lock_guard<std::mutex> lock(g_descriptor_mutex);
+    g_shader_descriptors[rid] = {code, false, {}};
   }
   return m.knows_shader(rid) ? rid : 0;
 }
@@ -4144,8 +4463,8 @@ bool adopt_material_object(void *material, std::uint64_t rid, bool at_arm) {
   }
   const bool skip = mat_sabotage() == AdoptMaterialSabotage::SkipParams;
   std::uint64_t shader_rid = 0;
-  std::vector<std::unique_ptr<VariantSlot>> values;
   std::vector<AdoptParam> params;
+  std::vector<std::shared_ptr<VariantSlot>> cached_values;
   bool shader_material = false;
   if (as(material, g_mat_tags.shader_material) != nullptr) {
     shader_material = true;
@@ -4163,30 +4482,49 @@ bool adopt_material_object(void *material, std::uint64_t rid, bool at_arm) {
     }
     if (!skip && shader_rid != 0 && !code.empty()) {
       std::set<std::string> seen;
-      for (const UniformDecl &u : scan_uniforms(code)) {
-        if (!seen.insert(u.name).second) continue;
+      std::vector<std::string> names;
+      for (const auto &u : scan_uniforms(code))
+        if (seen.insert(u.name).second) names.push_back(u.name);
+      cached_values = material_values(rid, shader_rid, names, [&](const std::string &key) {
         auto v = std::make_unique<VariantSlot>();
-        StringName name(u.name.c_str());
-        const GDExtensionConstTypePtr args[1] = {name.ptr()};
+        StringName name(key.c_str());
+        const GDExtensionConstTypePtr args[] = {name.ptr()};
         ptrcall(kShaderMaterialGetShaderParameter, material, args, v->data);
         auto sent = server_value(std::move(v));
-        if (sent != nullptr) {
-          params.push_back({u.name, sent->data});
-          values.push_back(std::move(sent));
-        }
+        return sent ? std::shared_ptr<VariantSlot>(std::move(sent)) : std::make_shared<VariantSlot>();
+      });
+      for (std::size_t i = 0; i < names.size(); ++i) {
+        if (cached_values[i]->type() != GDEXTENSION_VARIANT_TYPE_NIL)
+          params.push_back({names[i], cached_values[i]->data});
       }
+      // The cache owns the slots through hooks_adopt_material below.
+
     }
   } else if (as(material, g_mat_tags.cim) != nullptr) {
-    shader_rid = ensure_cim_shader(material, 0);
+    {
+      std::lock_guard<std::mutex> lock(g_descriptor_mutex);
+      const auto it = g_material_values.find(rid);
+      if (it != g_material_values.end()) shader_rid = it->second.shader;
+    }
+    if (shader_rid == 0 || (!m.knows_shader(shader_rid) && !replay_shader_descriptor(shader_rid)))
+      shader_rid = ensure_cim_shader(material, 0);
+    else if ((shader_rid & kSyntheticShader) != 0)
+      // The arm cleared this index. A replay must register its synthetic identity so a later
+      // engine RID rebinds the existing shader instead of publishing a second shader.
+      g_cim_synthetic[static_cast<int>(shader_rid & ~kSyntheticShader)] = shader_rid;
     if (!skip) {
-      // The three parameters CanvasItemMaterial's constructor and setters send
-      // (canvas_item_material.cpp:199-220, :283-285).
-      values.push_back(int_variant(get_int(kCimGetParticlesAnimHFrames, material)));
-      params.push_back({"particles_anim_h_frames", values.back()->data});
-      values.push_back(int_variant(get_int(kCimGetParticlesAnimVFrames, material)));
-      params.push_back({"particles_anim_v_frames", values.back()->data});
-      values.push_back(bool_variant(get_bool(kCimGetParticlesAnimLoop, material)));
-      params.push_back({"particles_anim_loop", values.back()->data});
+      // The three parameters CanvasItemMaterial's constructor and setters send.
+      const std::vector<std::string> names = {
+          "particles_anim_h_frames", "particles_anim_v_frames", "particles_anim_loop"};
+      cached_values = material_values(rid, shader_rid, names, [&](const std::string &key) {
+        if (key == "particles_anim_loop")
+          return std::shared_ptr<VariantSlot>(bool_variant(get_bool(kCimGetParticlesAnimLoop, material)));
+        return std::shared_ptr<VariantSlot>(int_variant(get_int(
+            key == "particles_anim_h_frames" ? kCimGetParticlesAnimHFrames : kCimGetParticlesAnimVFrames,
+            material)));
+      });
+      for (std::size_t i = 0; i < names.size(); ++i)
+        params.push_back({names[i], cached_values[i]->data});
     }
   } else {
     return false;  // no recipe for this class: the hooks' unknown-material stays
@@ -4229,11 +4567,14 @@ bool adopt_shader_registered(std::uint64_t rid, const rs::RegistryShader &reg) {
 
 // A server's declared parameter names, including generated particle uniforms. This is the
 // engine's list rather than a source scanner, so arrays and preprocessed declarations survive.
-struct ServerParameter {
-  std::string name;
-  std::int32_t texture_count = 0;
-};
 std::vector<ServerParameter> server_parameters(std::uint64_t shader, void *server) {
+  std::uint64_t epoch;
+  {
+    std::lock_guard<std::mutex> lock(g_descriptor_mutex);
+    const auto it = g_shader_parameters.find(shader);
+    if (it != g_shader_parameters.end()) return it->second;
+    epoch = g_descriptor_epoch;
+  }
   Builtin list(GDEXTENSION_VARIANT_TYPE_ARRAY);
   const GDExtensionConstTypePtr args[] = {&shader};
   ptrcall(kRsShaderGetParameterList, server, args, list.ptr());
@@ -4257,6 +4598,10 @@ std::vector<ServerParameter> server_parameters(std::uint64_t shader, void *serve
     std::int32_t count = kind == GDEXTENSION_VARIANT_TYPE_OBJECT ? 1 : 0;
     result.push_back({key, count});
   }
+  {
+    std::lock_guard<std::mutex> lock(g_descriptor_mutex);
+    if (epoch == g_descriptor_epoch) g_shader_parameters[shader] = result;
+  }
   return result;
 }
 
@@ -4274,13 +4619,19 @@ bool materialize_shader(std::uint64_t rid) {
   if (std::this_thread::get_id() != g_res_main) return false;
   void *server = singleton_object("RenderingServer");
   if (server == nullptr) return false;
+  if (replay_shader_descriptor(rid)) return true;
+  ShaderDescriptor descriptor;
+  std::uint64_t epoch;
+  { std::lock_guard<std::mutex> lock(g_descriptor_mutex); epoch = g_descriptor_epoch; }
   Builtin code(GDEXTENSION_VARIANT_TYPE_STRING);
   const GDExtensionConstTypePtr args[] = {&rid};
   ptrcall(kRsShaderGetCode, server, args, code.ptr());
-  if (hooks_adopt_shader(rid, utf8_of(code.ptr()))) {
+  descriptor.code = utf8_of(code.ptr());
+  if (hooks_adopt_shader(rid, descriptor.code)) {
     mat_stat([](AdoptMaterialStats &s) { ++s.shaders; });
     // Lean descriptors retain indexed defaults whose array length has no public getter.
     for (const auto &d : reg.defaults) {
+      descriptor.defaults.push_back(d);
       hooks_adopt_default_texture(rid, d.name, d.texture, d.index);
       mat_stat([](AdoptMaterialStats &s) { ++s.default_textures; });
     }
@@ -4295,10 +4646,15 @@ bool materialize_shader(std::uint64_t rid) {
           return d.name == param.name && d.index == index;
         });
         if (retained != reg.defaults.end()) continue;
+        descriptor.defaults.push_back({param.name, static_cast<std::int32_t>(index), texture});
         hooks_adopt_default_texture(rid, param.name, texture, static_cast<std::int32_t>(index));
         mat_stat([](AdoptMaterialStats &s) { ++s.default_textures; });
       }
     }
+  }
+  if (m.knows_shader(rid)) {
+    std::lock_guard<std::mutex> lock(g_descriptor_mutex);
+    if (epoch == g_descriptor_epoch) g_shader_descriptors[rid] = std::move(descriptor);
   }
   return m.knows_shader(rid);
 }
@@ -4316,22 +4672,26 @@ bool adopt_material_registered(std::uint64_t rid, const rs::RegistryMaterial &re
     materialize_shader(reg.shader);
   }
   std::vector<AdoptParam> params;
-  std::vector<std::unique_ptr<VariantSlot>> values;
+  std::vector<std::shared_ptr<VariantSlot>> cached_values;
   if (reg.readback && !g_res_dummy_host.load(std::memory_order_relaxed) &&
       std::this_thread::get_id() != g_res_main) return false;
   if (reg.readback && !g_res_dummy_host.load(std::memory_order_relaxed) && reg.shader != 0 &&
       mat_sabotage() != AdoptMaterialSabotage::SkipParams) {
     void *server = singleton_object("RenderingServer");
     if (server == nullptr) return false;
-    for (const auto &param : server_parameters(reg.shader, server)) {
-      auto value = std::make_unique<VariantSlot>();
-      StringName name(param.name.c_str());
+    std::vector<std::string> names;
+    for (const auto &param : server_parameters(reg.shader, server)) names.push_back(param.name);
+    cached_values = material_values(rid, reg.shader, names, [&](const std::string &key) {
+      auto value = std::make_shared<VariantSlot>();
+      StringName name(key.c_str());
       const GDExtensionConstTypePtr args[] = {&rid, name.ptr()};
       ptrcall(kRsMaterialGetParam, server, args, value->data);
+      return value;
+    });
+    for (std::size_t i = 0; i < names.size(); ++i) {
       // NIL means no override. Keep the shader's default, including its default texture.
-      if (value->type() == GDEXTENSION_VARIANT_TYPE_NIL) continue;
-      params.push_back({param.name, value->data});
-      values.push_back(std::move(value));
+      if (cached_values[i]->type() != GDEXTENSION_VARIANT_TYPE_NIL)
+        params.push_back({names[i], cached_values[i]->data});
     }
   } else if (mat_sabotage() != AdoptMaterialSabotage::SkipParams) {
     params.reserve(reg.params.size());
@@ -4521,6 +4881,37 @@ void node_map_disconnect() {
   if (!g_tag_active.load(std::memory_order_seq_cst)) {
     node_map_disconnect_now();
   }
+}
+
+void adopt_materials_forget(std::uint64_t rid) {
+  std::vector<MaterialValues> dropped;
+  std::lock_guard<std::mutex> lock(g_descriptor_mutex);
+  ++g_descriptor_epoch;
+  g_shader_descriptors.erase(rid);
+  g_shader_parameters.erase(rid);
+  for (auto it = g_material_values.begin(); it != g_material_values.end();) {
+    if (it->first == rid || it->second.shader == rid) {
+      dropped.push_back(std::move(it->second));
+      it = g_material_values.erase(it);
+    } else ++it;
+  }
+}
+
+void adopt_materials_param_changed(std::uint64_t rid, const void *name) {
+  const auto key = decode_string_name(name);
+  std::lock_guard<std::mutex> lock(g_descriptor_mutex);
+  ++g_descriptor_epoch;
+  const auto it = g_material_values.find(rid);
+  if (it != g_material_values.end()) it->second.dirty.insert(key);
+}
+
+void adopt_materials_attachment_end() {
+  std::unordered_map<std::uint64_t, MaterialValues> dropped;
+  std::lock_guard<std::mutex> lock(g_descriptor_mutex);
+  ++g_descriptor_epoch;
+  g_shader_descriptors.clear();
+  g_shader_parameters.clear();
+  dropped.swap(g_material_values);
 }
 
 void adopt_materials_configure(AdoptMaterialSabotage sabotage) {
@@ -5363,6 +5754,28 @@ bool knows(Mirror &m, RefKind ref, std::uint64_t rid) {
 
 }  // namespace
 
+bool materialize_texture_replace_source(std::uint64_t rid) {
+  bool staged = false;
+  {
+    std::lock_guard<std::mutex> lock(g_stage_mutex);
+    staged = g_stage_on;
+    if (staged) {
+      g_stage_pending.erase(rid);
+      g_stage_queue.erase(std::remove(g_stage_queue.begin(), g_stage_queue.end(), rid),
+                          g_stage_queue.end());
+    }
+  }
+  if (!staged) return materialize(rid, RefKind::Texture);
+  struct RestoreCurrent {
+    std::uint64_t previous = g_stage_current;
+    ~RestoreCurrent() { g_stage_current = previous; }
+  } restore;
+  g_stage_current = rid;
+  const bool adopted = materialize(rid, RefKind::Texture);
+  if (!stage_pending(rid)) mirror_instance().texture_stage_finished(rid);
+  return adopted;
+}
+
 bool materialize(std::uint64_t rid, RefKind ref) {
   // Admission precedes all per-arm flags; a standby invocation keeps that view when nested.
   if (rid == 0) {
@@ -5466,6 +5879,45 @@ void drain_offmain() {
 
 }  // namespace
 
+namespace {
+void drain_staged_textures() {
+  std::uint64_t budget = 0;
+  {
+    std::lock_guard<std::mutex> lock(g_stage_mutex);
+    if (!g_stage_on) return;
+    if (g_stage_first_drain) g_stage_stats.queue_at_arm = g_stage_pending.size();
+    g_stage_first_drain = false;
+    if (g_stage_queue.empty()) return;
+    budget = g_stage_stats.budget_us;
+    ++g_stage_stats.frames_to_drain;
+  }
+  const auto start = stage_now();
+  auto end = start;
+  do {
+    std::uint64_t rid = 0;
+    {
+      std::lock_guard<std::mutex> lock(g_stage_mutex);
+      if (!g_stage_on || g_stage_queue.empty()) break;
+      rid = g_stage_queue.front();
+      g_stage_queue.pop_front();
+      if (g_stage_pending.erase(rid) == 0) continue;  // freed while queued
+    }
+    const auto before = stage_now();
+    g_stage_current = rid;
+    ref_texture(rid);
+    g_stage_current = 0;
+    if (!stage_pending(rid)) mirror_instance().texture_stage_finished(rid);
+    end = stage_now();
+    {
+      std::lock_guard<std::mutex> lock(g_stage_mutex);
+      g_stage_stats.max_texture_us = std::max(g_stage_stats.max_texture_us, (end - before) / 1000);
+    }
+  } while ((end - start) / 1000 < budget);  // at least one item, including an oversize one
+  std::lock_guard<std::mutex> lock(g_stage_mutex);
+  g_stage_stats.max_frame_us = std::max(g_stage_stats.max_frame_us, (end - start) / 1000);
+}
+}  // namespace
+
 void adopt_frame_drain() {
   // Gated as the drains always were: lazy adoption active (entry.cpp calls this only for a
   // GRC_ADOPT=arm stream while armed).
@@ -5474,6 +5926,9 @@ void adopt_frame_drain() {
     drain_offmain();
   }
   adopt_materials_resolve();  // LAR3's material queue
+  if (adopt_resources_active() && mirror_enabled() && std::this_thread::get_id() == g_res_main)
+    drain_staged_textures();
+  // Recovered particle draws must be visible to process-material keying before publication.
   adopt_particles_resolve();  // LAR4's process-material queue
 }
 
@@ -5925,8 +6380,11 @@ std::size_t adopt_held() {
   std::size_t n = 0;
   {
     std::lock_guard<std::mutex> lock(g_res_mutex);
-    n += g_refusal_records.size() + g_warm.size() + g_reload_sources.size() + g_reload_entries.size() + g_refused.size() + g_census.pages.size() + g_census.compressed.size() +
-         g_census.canvas_textures.size();
+    n += g_refusal_records.size() + g_warm.size() + g_reload_sources.size() + g_reload_entries.size() + g_refused.size();
+  }
+  {
+    std::lock_guard<std::mutex> lock(g_stage_mutex);
+    n += g_stage_queue.size() + g_stage_pending.size();
   }
   {
     std::lock_guard<std::mutex> lock(g_queue_mutex);
@@ -5945,8 +6403,14 @@ std::size_t adopt_held() {
   return n;
 }
 
+void adopt_process_reset() {
+  std::lock_guard<std::mutex> lock(g_res_mutex);
+  g_census = Census();
+}
+
 std::size_t adopt_release() {
   const std::size_t n = adopt_held();
+  stage_end();
   RidMap<std::unique_ptr<RefSlot>> dropped;
   RidMap<WarmEntry> dropped_warm;
   {
@@ -5962,7 +6426,6 @@ std::size_t adopt_release() {
     std::vector<RefusalRecord>().swap(g_refusal_records);
     g_refusal_records_dropped = 0;
     g_refusal_counts = RefusalCounts();
-    g_census = Census();
   }
   {
     std::lock_guard<std::mutex> lock(g_queue_mutex);

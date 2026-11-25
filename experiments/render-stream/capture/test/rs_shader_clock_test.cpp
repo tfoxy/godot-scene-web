@@ -94,13 +94,13 @@ int main(int argc, char **argv) {
   check(clock.total == 0.0 && clock.draws == 0 && clock.advanced == 0 && clock.ticks == 0,
         "attachment counters reset");
   check(clock.last_drawn == -1 && clock.start_drawn == -1 && clock.start_process_frames == -1 &&
-            clock.start_draws == 0 && clock.later_missed == 0 && !clock.draw_hooked,
-        "attachment origin and hook state reset");
+            clock.start_draws == 0 && clock.later_missed == 0,
+        "attachment origin reset");
+  check(clock.draw_hooked, "reattachment preserves process draw-hook capability");
   check(clock.rollover == 5.0, "reattachment preserves resolved rollover");
   check(clock.available == !missing_bind && clock.unavailable == unavailable,
         "reattachment preserves resolved availability and reason");
 
-  shader_clock_set_draw_hooked(true);
   shader_clock_draw(6.0);
   if (missing_bind) {
     check(clock.total == 0.0 && clock.advanced == 0, "unavailable clock never advances");

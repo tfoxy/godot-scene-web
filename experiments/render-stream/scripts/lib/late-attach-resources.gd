@@ -1,6 +1,10 @@
 extends "res://resident_probe.gd"
 ## Draw getter-backed payloads and lean descriptors created while capture is detached.
 
+var _large_textures: Array[ImageTexture] = []
+var _frame_trace: Array[Dictionary] = []
+var _previous_tick_us: int = 0
+
 var _attached_size_texture: ImageTexture
 var _detached_size_texture: ImageTexture
 var _content: Node2D
@@ -17,6 +21,11 @@ func _load_lean() -> void:
 
 
 func _process(delta: float) -> void:
+	var tick_us := Time.get_ticks_usec()
+	if _phase != "detached" and _phase != "initial-detached" and _frame_trace.size() < 240:
+		_frame_trace.append({"round": _round, "phase": _phase, "frame": _frame,
+			"t_us": tick_us, "interval_us": tick_us - _previous_tick_us})
+	_previous_tick_us = tick_us
 	if _phase == "streaming" and _attached_size_texture == null:
 		_attached_size_texture = _size_texture()
 		_write("size-attached.json", {"round": _round, "state": _api.call("state")})
@@ -35,10 +44,17 @@ func _process(delta: float) -> void:
 	super._process(delta)
 	# Leave a full detached interval for the one-shot to finish inside the renderer.
 	if _phase == "detached" and _frame == _since:
+		_save("adoption-frames-%d.json" % _round, {"frames": _frame_trace,
+			"large_texture_bytes": _large_textures.size() * 2048 * 2048 * 4})
+		_frame_trace.clear()
 		# result.json is load-wide and the next arm replaces it; preserve each arm independently.
 		var result_path := OS.get_environment("GRC_EVIDENCE_DIR").path_join("result.json")
 		var status := DirAccess.copy_absolute(result_path, _out.path_join("resource-result-%d.json" % _round))
 		_check(status == OK, "save per-arm resource result: " + str(status))
+		for filename: String in ["fingerprint.json", "calibration-check.json"]:
+			status = DirAccess.copy_absolute(OS.get_environment("GRC_EVIDENCE_DIR").path_join(filename),
+				_out.path_join("%d-%s" % [_round, filename]))
+			_check(status == OK, "save per-arm identity: " + filename)
 		if _round < 2:
 			_make_resources()
 
@@ -67,6 +83,18 @@ func _make_resources() -> void:
 		if _attached_size_texture != null:
 			_content.draw_texture_rect_region(_attached_size_texture, Rect2(460, 40, 16, 16), Rect2(0, 0, 8, 8)))
 	_canvas.add_child(_content)
+	_large_textures.clear()
+	if OS.get_environment("RS_RESIDENT_LARGE_TEXTURES") == "1":
+		for index: int in range(8):
+			var large_image := Image.create(2048, 2048, false, Image.FORMAT_RGBA8)
+			large_image.fill(Color(0.1 + index * 0.08, 0.4, 0.2, 1.0))
+			var large_texture := ImageTexture.create_from_image(large_image)
+			_large_textures.append(large_texture)
+			var large_sprite := Sprite2D.new()
+			large_sprite.texture = large_texture
+			large_sprite.scale = Vector2(0.00390625, 0.00390625)
+			large_sprite.position = Vector2(490 + index * 12, 40)
+			_content.add_child(large_sprite)
 	_resource_generation += 1
 	var image := Image.create(16, 16, false, Image.FORMAT_RGBA8)
 	image.fill(Color.YELLOW)

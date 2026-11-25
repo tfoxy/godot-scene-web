@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Rendered late-load evidence, standby counters, and resident detach/attach browser proof.
 # Uses runner-owned projects; never changes the source fixtures or capture implementation.
-# Usage: probe-capture-attach.sh --out DIR [--gsw-bundle DIR] [--cycle [--sabotage-detach]] [--resources] [--extension FILE]
+# Usage: probe-capture-attach.sh --out DIR [--gsw-bundle DIR] [--cycle [--sabotage-detach]] [--resources] [--large-textures] [--extension FILE]
 # Prerequisites: build-capture.sh. Default replay also needs receiver --import + build-rs-core-ext.sh.
 # --cycle requires --gsw-bundle (build-rs-core.sh + gate7-tool.ts gsw-bundle) and Python Pillow.
 # This is correctness evidence, not a timing A/B.
@@ -14,6 +14,7 @@ BUNDLE=""
 CYCLE=0
 SABOTAGE_DETACH=0
 RESOURCES=0
+LARGE_TEXTURES=0
 PROBE_CALIBRATION=""
 PROBE_EXTENSION=""
 while [ "$#" -gt 0 ]; do
@@ -24,6 +25,7 @@ while [ "$#" -gt 0 ]; do
 	--extension) PROBE_EXTENSION="$(realpath "$2")"; shift 2 ;;
 	--cycle) CYCLE=1; shift ;;
 	--resources) RESOURCES=1; CYCLE=1; shift ;;
+	--large-textures) LARGE_TEXTURES=1; RESOURCES=1; CYCLE=1; shift ;;
 	--sabotage-detach) SABOTAGE_DETACH=1; shift ;;
 	--help|-h) sed -n '2,6p' "$0"; exit 0 ;;
 	*) echo "unknown argument: $1" >&2; exit 2 ;;
@@ -119,7 +121,7 @@ PYPROJECT
 		GRC_PARTICLES=on GRC_TEXTURE_WORKERS=2 GRC_TEXTURE_WORKER_MIN_BYTES=0
 		GRC_EVIDENCE_DIR="$OUT/resident/evidence" GRC_LIVE_LISTEN="127.0.0.1:0"
 		GRC_LIVE_ALLOWED_ORIGINS="http://127.0.0.1:$GATE7_HARNESS_PORT"
-		RS_RESIDENT_OUT="$OUT/resident" RS_RESIDENT_SKIP_DETACH="$SABOTAGE_DETACH" XDG_DATA_HOME="$OUT/resident/xdg-data")
+		RS_RESIDENT_LARGE_TEXTURES="$LARGE_TEXTURES" RS_RESIDENT_OUT="$OUT/resident" RS_RESIDENT_SKIP_DETACH="$SABOTAGE_DETACH" XDG_DATA_HOME="$OUT/resident/xdg-data")
 	RENDERED_TIMEOUT_S=300
 	RENDERED_EXTRA_ARGS=(--max-fps 60)
 	(
@@ -139,6 +141,10 @@ PYPROJECT
 			ticks=$((ticks + 1))
 		done
 	}
+	# Large payload fetch/transcode can exceed the small fixture's one-second receiver window.
+	# Leave time for the attached proxy update after the complete first snapshot is applied.
+	RECEIVER_STOP_S=1
+	if [ "$LARGE_TEXTURES" = 1 ]; then RECEIVER_STOP_S=5; fi
 	for round in 0 1 2; do
 		wait_marker "$OUT/resident/ready-$round.json"
 		dir="$OUT/resident/browser-$round"
@@ -153,7 +159,7 @@ PYTOKEN
 		LEG_ENV=(RS_RECEIVER_MODE=live RS_RECEIVER_PROTOCOL="$RESIDENT_PROTOCOL"
 			RS_RECEIVER_URL="ws://$(cat "$dir/url")/render-stream"
 			RS_RECEIVER_TOKEN_FILE="$dir/token" RS_RECEIVER_OUT="$dir/applied.json"
-			RS_RECEIVER_LIVE_STOP_S=1 RS_RECEIVER_SHOT_FINAL=1)
+			RS_RECEIVER_LIVE_STOP_S="$RECEIVER_STOP_S" RS_RECEIVER_SHOT_FINAL=1)
 		RENDERED_EXTRA_ARGS=(--resolution 640x360 --max-fps 60)
 		run_rendered "$dir" "$RECEIVER_DIR"
 		[ "$(cat "$dir/exit-code.txt")" = 0 ]

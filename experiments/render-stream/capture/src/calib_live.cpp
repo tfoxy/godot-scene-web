@@ -226,9 +226,8 @@ bool derive_live_calibration(const AbiTable &table, const ProcessFingerprint &fp
     identity.slice_offset = fp.slice_offset; identity.slice_size = fp.slice_size;
   }
   if (pe) {
-    // The PE fingerprint hashes headers + executable sections + .rdata. The
-    // record also carries the whole-file hash; compute it only for derivation.
-    identity.sha256 = sha256_file(fp.exe_path);
+    // Collection retains both digests; the image check still uses its selected sections.
+    identity.sha256 = fp.exe_sha256;
     if (identity.sha256.empty()) return fail("cannot hash PE executable for derived record");
     identity.image_sha256 = fp.image_sha256;
     identity.codeview_id = fp.codeview_id;

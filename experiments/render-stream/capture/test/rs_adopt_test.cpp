@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <cstring>
 #include <cstdio>
+#include <functional>
 #include <map>
 #include <memory>
 #include <random>
@@ -47,7 +48,13 @@ int g_failures = 0;
 int g_checks = 0;
 int g_shader_adopt_calls = 0;
 bool g_material_adopt_to_mirror = false;
+std::map<uint64_t, double> g_material_adopt_values;
+std::map<uint64_t, uint64_t> g_material_adopt_shaders;
+std::map<uint64_t, std::string> g_shader_adopt_codes;
 bool g_texture_readback_adopt = false;
+bool g_stage_test_adopt = false;
+std::uint64_t g_stage_test_ns = 0;
+std::uint64_t stage_test_clock() { return g_stage_test_ns; }
 
 void check(bool condition, const std::string &what) {
   ++g_checks;
@@ -425,7 +432,16 @@ bool hooks_offmain_standby() { return g_test_standby; }
 bool hooks_test_inflight_delay(std::unique_lock<std::mutex> *) { return true; }
 bool hooks_reload_scope_begin() { return g_reload_scope_allowed; }
 void hooks_reload_scope_end(ReloadScopeCounts *out) { *out = {1, 1, 0}; }
-bool hooks_adopt_texture(uint64_t, void *image, rs2::AdoptedContent content, const char *source, bool *) {
+bool hooks_adopt_texture(uint64_t rid, void *image, rs2::AdoptedContent content, const char *source, bool *) {
+  if (g_stage_test_adopt && image != nullptr) {
+    g_stage_test_ns += 500000;  // main-thread duplication, in addition to the getter's cost
+    rs::PayloadCopy copy;
+    copy.status = "ok";
+    copy.width = copy.height = 2;
+    copy.hash = std::string(64, 'a');
+    rs::mirror_instance().texture_adopt(rid, copy, nullptr, content, 1);
+    return true;
+  }
   if (g_texture_readback_adopt && image != nullptr) return true;
   if (g_reload_adopt && content == rs2::AdoptedContent::Current &&
       (std::string(source) == "reload" || (g_hold_adopt && std::string(source) == "hold"))) {
@@ -459,16 +475,30 @@ bool hooks_adopt_mesh(uint64_t, const std::vector<rs::AdoptSurface> &, const flo
 // G8m: the material path's hooks (never reached here: the engine walk does not run).
 void hooks_internal_begin(std::string *, uint64_t *) {}
 void hooks_internal_end() {}
-bool hooks_adopt_shader(uint64_t, const std::string &) { ++g_shader_adopt_calls; return false; }
+bool hooks_adopt_shader(uint64_t rid, const std::string &code) {
+  ++g_shader_adopt_calls;
+  g_shader_adopt_codes[rid] = code;
+  if (!g_material_adopt_to_mirror) return false;
+  rs::mirror_instance().shader_create(rid, 1);
+  return true;
+}
 bool hooks_adopt_shader_refused(uint64_t, rs2::ShaderReason) { return false; }
 void hooks_adopt_default_texture(uint64_t, const std::string &, uint64_t, int32_t) {}
-bool hooks_adopt_material(uint64_t rid, uint64_t shader, const std::vector<rs::AdoptParam> &) {
+bool hooks_adopt_material(uint64_t rid, uint64_t shader, const std::vector<rs::AdoptParam> &params) {
+  g_material_adopt_shaders[rid] = shader;
+  for (const auto &p : params) if (p.name == "gain") {
+    double value = 0;
+    g_iface.get_variant_to_type_constructor(GDEXTENSION_VARIANT_TYPE_FLOAT)(&value, const_cast<void *>(p.variant));
+    g_material_adopt_values[rid] = value;
+  }
   if (!g_material_adopt_to_mirror) return false;
   rs::mirror_instance().material_adopt(rid, 1);
   rs::mirror_instance().material_set_shader(rid, shader, 1);
   return rs::mirror_instance().knows_material(rid);
 }
-void hooks_adopt_item_material(uint64_t, uint64_t) {}
+void hooks_adopt_item_material(uint64_t item, uint64_t material) {
+  if (g_material_adopt_to_mirror) rs::mirror_instance().set_material(item, material, 1);
+}
 // VS2: the real hooks tap the process-wide mirror and the hook log; here only the mirror.
 void hooks_adopt_viewport(const rs::Mirror::AdoptedViewport &v, uint64_t frame) {
   rs::mirror_instance().adopt_viewport(v, frame);
@@ -487,7 +517,9 @@ void hooks_adopt_viewport_texture(uint64_t viewport, uint64_t rt, uint64_t frame
 void hooks_reresolve_proxy(uint64_t proxy, uint64_t base, uint64_t viewport, uint64_t frame) {
   rs::mirror_instance().texture_proxy_update(proxy, base, viewport, frame);
 }
-void hooks_adopt_material_shader(uint64_t, uint64_t) {}
+void hooks_adopt_material_shader(uint64_t material, uint64_t shader) {
+  if (g_material_adopt_to_mirror) rs::mirror_instance().material_set_shader(material, shader, 1);
+}
 void hooks_adopt_instance_param(uint64_t, const std::string &, const void *) {}
 // PM7: the emitter path's hooks (likewise never reached).
 void hooks_internal_material(std::vector<std::string> *, uint64_t *) {}
@@ -1296,6 +1328,69 @@ void test_multimesh_from_registry() {
   grc::rs::registry_configure(false, grc::rs::RegistryFault::None);
 }
 
+// One parameter declaration for the server-backed material cache fixture. Empty fake arrays
+// elsewhere still have size zero, including callers that cache this builtin method pointer.
+int material_parameter_marker;
+void material_array_size(void *base, const GDExtensionConstTypePtr *, void *out, int) {
+  void *marker = nullptr;
+  std::memcpy(&marker, base, sizeof(marker));
+  *static_cast<std::int64_t *>(out) = marker == &material_parameter_marker ? 1 : 0;
+}
+void material_dictionary_get(void *, const GDExtensionConstTypePtr *args, void *out, int) {
+  const std::string *key = nullptr;
+  std::memcpy(&key, static_cast<const unsigned char *>(args[0]) + 8, sizeof(key));
+  if (key && *key == "name") {
+    const auto *name = &fake::intern("gain");
+    fake::detail::from_type<const std::string *, GDEXTENSION_VARIANT_TYPE_STRING>(out, &name);
+  } else if (key && *key == "type") {
+    std::int64_t type = GDEXTENSION_VARIANT_TYPE_FLOAT;
+    fake::detail::from_type<std::int64_t, GDEXTENSION_VARIANT_TYPE_INT>(out, &type);
+  }
+}
+void material_parameter_interface() {
+  auto &iface = grc::g_iface;
+  iface.variant_get_ptr_constructor = [](GDExtensionVariantType type, int32_t index) -> GDExtensionPtrConstructor {
+    if (type == GDEXTENSION_VARIANT_TYPE_STRING && index == 2)
+      return +[](void *out, const GDExtensionConstTypePtr *args) { std::memcpy(out, args[0], 8); };
+    return nullptr;
+  };
+  iface.get_variant_to_type_constructor = [](GDExtensionVariantType type) {
+    if (type == GDEXTENSION_VARIANT_TYPE_STRING || type == GDEXTENSION_VARIANT_TYPE_DICTIONARY)
+      return &fake::detail::to_type<void *>;
+    return fake::detail::to_type_ctor(type);
+  };
+  iface.get_variant_from_type_constructor = [](GDExtensionVariantType type) {
+    if (type == GDEXTENSION_VARIANT_TYPE_STRING)
+      return &fake::detail::from_type<void *, GDEXTENSION_VARIANT_TYPE_STRING>;
+    return fake::detail::from_type_ctor(type);
+  };
+  iface.string_new_with_utf8_chars = [](void *out, const char *text) {
+    const auto *value = &fake::intern(text);
+    std::memcpy(out, &value, sizeof(value));
+  };
+  iface.string_to_utf8_chars = [](const void *text, char *out, GDExtensionInt length) -> GDExtensionInt {
+    const std::string *value = nullptr;
+    std::memcpy(&value, text, sizeof(value));
+    if (!value) return 0;
+    if (out) std::memcpy(out, value->data(), std::min<std::size_t>(length, value->size()));
+    return value->size();
+  };
+  iface.variant_get_ptr_builtin_method = [](GDExtensionVariantType type,
+      GDExtensionConstStringNamePtr name, GDExtensionInt) -> GDExtensionPtrBuiltInMethod {
+    if (type == GDEXTENSION_VARIANT_TYPE_ARRAY && fake::name_of(name) == "size")
+      return &material_array_size;
+    if (type == GDEXTENSION_VARIANT_TYPE_DICTIONARY && fake::name_of(name) == "get")
+      return &material_dictionary_get;
+    return nullptr;
+  };
+  iface.array_operator_index_const = [](const void *array, GDExtensionInt index) -> void * {
+    void *marker = nullptr;
+    std::memcpy(&marker, array, sizeof(marker));
+    static std::uint64_t entry[3] = {GDEXTENSION_VARIANT_TYPE_DICTIONARY, 0, 0};
+    return marker == &material_parameter_marker && index == 0 ? entry : nullptr;
+  };
+}
+
 // A known shared shader must not turn an off-main lean material readback into a permanent
 // ProcessMaterial refusal. Both material reference kinds defer their getter to the main drain.
 void test_offmain_lean_material() {
@@ -1303,6 +1398,8 @@ void test_offmain_lean_material() {
   constexpr uint64_t shader = 0x7ff0, process = 0x7ff1, canvas = 0x7ff2;
   std::vector<uint64_t> unused;
   fake_rendering_server(&unused);
+  adopt_materials_attachment_end();
+  material_parameter_interface();
   registry_configure(true, RegistryFault::None);
   for (auto rid : {process, canvas}) {
     registry_note_create(rid, RegistryKind::Material);
@@ -1316,12 +1413,32 @@ void test_offmain_lean_material() {
   Mirror::ParticlesOptions options;
   options.enabled = true;
   m.set_particles(options);
-  m.shader_create(shader, 1);
   g_material_adopt_to_mirror = true;
   const auto main_thread = std::this_thread::get_id();
-  unsigned reads = 0;
+  unsigned reads = 0, value_reads = 0, code_reads = 0;
+  std::string shader_code = "shader_type canvas_item; uniform float gain;";
+  fake::world().overrides["RenderingServer.shader_get_code"] =
+      [&](fake::Object *, FakeArgs, void *out) {
+        ++code_reads;
+        const auto *code = &fake::intern(shader_code.c_str());
+        std::memcpy(out, &code, sizeof(code));
+      };
+  double gain = 1.0;
+  std::function<void()> during_read;
+  fake::world().overrides["RenderingServer.material_get_param"] =
+      [&](fake::Object *, FakeArgs, void *out) {
+        ++value_reads;
+        fake::detail::from_type<double, GDEXTENSION_VARIANT_TYPE_FLOAT>(out, &gain);
+        if (during_read) {
+          auto callback = std::move(during_read);
+          during_read = nullptr;
+          callback();
+        }
+      };
   fake::world().overrides["RenderingServer.get_shader_parameter_list"] =
-      [&](fake::Object *, FakeArgs, void *) {
+      [&](fake::Object *, FakeArgs, void *out) {
+        void *marker = &material_parameter_marker;
+        std::memcpy(out, &marker, sizeof(marker));
         check(std::this_thread::get_id() == main_thread, "lean material: getter on main thread");
         ++reads;
       };
@@ -1338,12 +1455,70 @@ void test_offmain_lean_material() {
   adopt_frame_drain();
   check(m.knows_material(process) && m.knows_material(canvas),
         "lean material: main drain adopts both material reference kinds");
-  check(reads == 2 && adopt_resource_stats().offmain_drained == 2 &&
+  check(reads == 1 && adopt_resource_stats().offmain_drained == 2 &&
             adopt_emitter_stats().ppm_refused == 0 && adopt_emitter_stats().ppm_refused_material == 0,
-        "lean material: main drain reads once each without ProcessMaterial refusal");
+        "lean material: shared shader parameter list read once without ProcessMaterial refusal");
+  check(value_reads == 2, "lean material: initial values read once per material");
+  const auto rearm = [&] {
+    adopt_resources_end();
+    mirror_enable(false);
+    g_shader_adopt_codes.clear();
+    stream_begin();
+    mirror_instance().set_particles(options);
+    check(materialize(process, RefKind::Material), "lean material: re-arm adopts process");
+    check(materialize(canvas, RefKind::Material), "lean material: re-arm adopts canvas");
+    check(g_shader_adopt_codes[shader] == shader_code,
+          "lean material: re-arm replays the current shader code into the fresh mirror");
+  };
+  rearm();
+  check(reads == 1 && code_reads == 1 && value_reads == 2, "lean material: re-arm reuses shader code, list and values");
+  gain = 2.0;
+  const auto *name = &fake::intern("gain");
+  adopt_materials_param_changed(process, &name);
+  rearm();
+  check(value_reads == 3 && g_material_adopt_values[process] == gain,
+        "lean material: attached parameter change refreshes only changed material");
+  adopt_materials_forget(process);  // set_shader invalidation
+  rearm();
+  check(value_reads == 4, "lean material: set_shader drops material descriptor");
+  adopt_materials_forget(canvas);  // free, then reuse the fixture RID
+  rearm();
+  check(value_reads == 5, "lean material: free drops material descriptor");
+  shader_code += " void fragment() { COLOR *= gain; }";
+  adopt_materials_forget(shader);  // shader code/default changes
+  rearm();
+  check(reads == 2 && code_reads == 2 && value_reads == 7, "lean material: shader change invalidates all dependants");
+  adopt_materials_attachment_end();
+  rearm();
+  check(reads == 3 && code_reads == 3 && value_reads == 9, "lean material: first arm after attach rereads values");
+  gain = 3.0;
+  adopt_materials_param_changed(process, &name);
+  during_read = [&] {
+    gain = 4.0;
+    adopt_materials_param_changed(process, &name);  // setter completes during the getter
+  };
+  rearm();
+  check(value_reads == 10 && g_material_adopt_values[process] == 3.0,
+        "lean material: interrupted getter returns its sampled value");
+  rearm();
+  check(value_reads == 11 && g_material_adopt_values[process] == 4.0,
+        "lean material: interrupted getter cannot cache a stale value");
+  constexpr uint64_t replacement_shader = 0x7ff3;
+  registry_note_material_shader(process, replacement_shader);
+  adopt_materials_forget(process);
+  rearm();
+  check(reads == 4 && code_reads == 4 && value_reads == 12 &&
+            g_material_adopt_shaders[process] == replacement_shader,
+        "lean material: set_shader adopts the new binding and its declarations");
+  rearm();
+  check(reads == 4 && code_reads == 4 && value_reads == 12,
+        "lean material: replacement binding is cached on the next re-arm");
+  std::printf("materials shared list reads %u, value reads %u across 11 arms\n", reads, value_reads);
   g_material_adopt_to_mirror = false;
   stream_end();
+  adopt_materials_attachment_end();
   registry_configure(false, RegistryFault::None);
+  fake::install();
 }
 
 // LAR1: CanvasTextures adopted from the registry share atlas pages. No getter runs on a registered
@@ -2022,6 +2197,7 @@ void test_warm_census_revalidation() {
     return text.size();
   };
   for (int state = 0; state < 4; ++state) {
+    grc::rs::adopt_process_reset();
     constexpr uint64_t rid = 0xcafe2000;
     grc::rs::registry_configure(true, grc::rs::RegistryFault::None);
     auto &resource = w.make({"Object", "Resource", "CompressedTexture2D"}, rid);
@@ -2058,9 +2234,38 @@ void test_warm_census_revalidation() {
     check(stats.from_cache == (state == 0 ? 1u : 0u) && stats.skipped_by.no_image == (state == 0 ? 0u : 1u),
           "warm census: missing or changed resource is counted without warming");
     check(grc::rs::adopt_warm_finish().warm_balanced, "warm census: entries balance after revalidation");
+    // A new cached Resource can replace the old one between arms. Revalidate the path,
+    // retaining the process inventory rather than walking ResourceLoader again.
+    warming = false;
+    resource.rid = rid + 2;
+    const int directories = w.count("ResourceLoader.list_directory");
+    const auto first_census_ns = grc::rs::adopt_resource_stats().census_ns;
+    grc::rs::adopt_resources_end(); grc::rs::adopt_release();
+    grc::rs::mirror_enable(false); grc::rs::mirror_enable(true);
+    grc::rs::adopt_resources_begin(grc::rs::AdoptFault::None, true);
+    grc::rs::adopt_reload_at_arm();
+    const auto second = grc::rs::adopt_warm_at_arm(grc::rs::warm_now_ns(), "sync");
+    check(w.count("ResourceLoader.list_directory") == directories,
+          "warm census: re-arm never walks the directory again");
+    check(second.from_cache == 1, "warm census: newly cached RID at inventoried path is warmed");
+    std::printf("census arm 1 %llu ns, arm 2 %llu ns\n",
+        static_cast<unsigned long long>(first_census_ns),
+        static_cast<unsigned long long>(grc::rs::adopt_resource_stats().census_ns));
+    grc::rs::adopt_resources_end(); grc::rs::adopt_release();
+    grc::rs::mirror_enable(false); grc::rs::mirror_enable(true);
+    grc::rs::adopt_resources_begin(grc::rs::AdoptFault::None, true);
+    w.overrides["ResourceLoader.get_cached_ref"] = [](fake::Object *, FakeArgs, void *ret) {
+      fake::put_object(ret, nullptr);
+    };
+    const int before_free = w.count("RenderingServer.texture_2d_get");
+    grc::rs::adopt_reload_at_arm();
+    const auto freed = grc::rs::adopt_warm_at_arm(grc::rs::warm_now_ns(), "sync");
+    check(freed.from_cache == 0 && w.count("RenderingServer.texture_2d_get") == before_free,
+          "warm census: freed resource is not read on re-arm");
     grc::rs::adopt_resources_end(); grc::rs::adopt_release(); w.reset_calls();
   }
   grc::rs::registry_configure(false, grc::rs::RegistryFault::None);
+  grc::rs::adopt_process_reset();
   grc::g_iface = saved;
 }
 
@@ -2575,6 +2780,337 @@ void test_viewports_live_node_map() {
   check(grc::rs::adopted_item_nodes().empty(), "vp map: a node added afterwards is not mapped");
 }
 
+// A replayed builtin must still be discoverable when a later hook names its engine shader RID.
+void test_cim_rearm_named_shader() {
+  using namespace grc::rs;
+  constexpr uint64_t item = 0x99201, material = 0x99202, named = 0x99203;
+  constexpr uint64_t synthetic = 1ull << 63;  // blend=mix, light=normal, no particles animation
+  auto &w = fake::world();
+  adopt_materials_attachment_end();
+  registry_configure(false, RegistryFault::None);
+  g_material_adopt_to_mirror = true;
+  const auto version = grc::g_iface.get_godot_version2;
+  grc::g_iface.get_godot_version2 = [](GDExtensionGodotVersion2 *v) {
+    v->string = "Godot Engine v4.5.1.stable.official";
+    v->build = "official";
+  };
+  for (int sequence = 0; sequence < 2; ++sequence) {
+    adopt_materials_attachment_end();
+    for (int arm = 0; arm <= sequence; ++arm) {
+      auto &engine = w.make({"Object", "Engine"});
+      auto &tree = w.make({"Object", "SceneTree"});
+      auto &root = w.make({"Object", "Node", "Window", "Viewport"});
+      auto &node = w.make({"Object", "Node", "CanvasItem", "Control"}, item);
+      auto &cim = w.make({"Object", "Resource", "Material", "CanvasItemMaterial"}, material);
+      w.singletons["Engine"] = &engine;
+      w.overrides["Engine.get_main_loop"] = [&tree](fake::Object *, FakeArgs, void *ret) {
+        fake::put_object(ret, &tree);
+      };
+      w.overrides["SceneTree.get_root"] = [&root](fake::Object *, FakeArgs, void *ret) {
+        fake::put_object(ret, &root);
+      };
+      w.overrides["Object.connect"] = [](fake::Object *, FakeArgs, void *ret) {
+        fake::put_int(ret, 0);
+      };
+      w.overrides["CanvasItem.get_material"] = [&cim](fake::Object *, FakeArgs, void *ret) {
+        fake::put_object(ret, &cim);
+      };
+      mirror_enable(false);
+      mirror_enable(true);
+      auto &m = mirror_instance();
+      m.set_root(kRootViewport, kRootCanvas, kIdentity);
+      adopt_resources_begin(AdoptFault::None, true);  // no RS getter for a builtin shader
+      adopt_materials_configure(AdoptMaterialSabotage::None);
+      adopt_materials_at_arm();  // connect node_added before adding the material's holder
+      m.adopt_item(item, 1);
+      m.set_parent(item, kRootCanvas, 1);
+      alignas(8) unsigned char variant[24]{};
+      void *object = &node;
+      fake::detail::from_type<void *, GDEXTENSION_VARIANT_TYPE_OBJECT>(variant, &object);
+      const GDExtensionConstVariantPtr args[] = {variant};
+      GDExtensionCallError error{};
+      check(g_node_added_info.call_func != nullptr, "cim rearm: node-added callback exists");
+      if (g_node_added_info.call_func != nullptr)
+        g_node_added_info.call_func(g_node_added_info.callable_userdata, args, 1, nullptr, &error);
+      m.set_material(item, material, 1);
+      adopt_materials_at_arm();
+      check(m.knows_material(material) && m.knows_shader(synthetic) &&
+                m.snapshot(1, 1).state.shaders.size() == 1,
+            "cim rearm: arm adopts exactly one synthetic shader");
+      // Compare a first-arm rebind with a re-arm that replayed the synthetic descriptor.
+      if (arm == sequence) {
+        m.material_set_shader(material, named, 2);
+        check(m.has_pending_material_refs(), "cim rearm: named shader reference is pending");
+        adopt_materials_at_arm();
+        const auto snapshot = m.snapshot(2, 2).state;
+        check(m.knows_shader(named) && !m.knows_shader(synthetic) && snapshot.shaders.size() == 1,
+              "cim rearm: lazy named rebind replaces the replayed synthetic shader");
+        check(snapshot.shaders.size() == 1 && snapshot.materials.size() == 1 &&
+                  snapshot.materials[0].has_shader &&
+                  snapshot.materials[0].shader == snapshot.shaders[0].id &&
+                  !m.has_pending_material_refs(),
+              "cim rearm: material resolves to the only named shader");
+      }
+      stream_end();
+    }
+  }
+  grc::g_iface.get_godot_version2 = version;
+  g_material_adopt_to_mirror = false;
+  adopt_materials_attachment_end();
+}
+
+void test_staged_texture_replace_source() {
+  using namespace grc::rs;
+  constexpr uint64_t target = 0xf100, source = 0xf101, item = 0xf102;
+  for (bool queued : {false, true}) {
+    const std::string label = queued ? "staged replace queued: " : "staged replace fresh: ";
+    std::vector<uint64_t> reads;
+    fake_rendering_server(&reads);
+    auto &w = fake::world();
+    auto &image = w.make({"Object", "Image"});
+    bool source_freed = false;
+    int reads_after_free = 0;
+    w.overrides["RenderingServer.texture_2d_get"] = [&](fake::Object *, FakeArgs args, void *ret) {
+      const auto rid = fake::arg_u64(args, 0);
+      reads.push_back(rid);
+      if (rid == source && source_freed) {
+        ++reads_after_free;
+        fake::put_object(ret, nullptr);
+      } else {
+        fake::put_object(ret, &image);
+      }
+    };
+    for (const auto *name : {"Image.get_width", "Image.get_height"})
+      w.overrides[name] = [](fake::Object *, FakeArgs, void *ret) { fake::put_int(ret, 2); };
+    registry_configure(true, RegistryFault::None);
+    stream_begin();
+    g_stage_test_adopt = true;
+    auto &m = mirror_instance();
+    m.set_recover(true, true, true);
+    m.canvas_item_create(item, 1);
+    m.set_parent(item, kRootCanvas, 1);
+    check(materialize(target, RefKind::Texture), label + "target known before replace");
+    m.add_texture_rect(item, {1, 2, 3, 4}, target, false, grc::rs2::kWhite, false, 1);
+    reads.clear();
+    g_stage_test_ns = 1000000;
+    adopt_stage_begin(4000, g_stage_test_ns, stage_test_clock);
+    if (queued) {
+      materialize(source, RefKind::Texture);
+      m.add_texture_rect(item, {5, 6, 7, 8}, source, false, grc::rs2::kWhite, false, 1);
+    }
+    check(reads.empty() && adopt_stage_stats().pending == (queued ? 1u : 0u),
+          label + "source valid and unwarmed before hook");
+    // The hook's order: adopt both sides, transfer registry state, then forward to the
+    // engine, which consumes the source without a free hook, and finally update the mirror.
+    materialize(target, RefKind::Texture);
+    materialize_texture_replace_source(source);
+    check(reads == std::vector<uint64_t>({source}) && m.knows_texture(source) &&
+              adopt_stage_stats().pending == 0,
+          label + "source read synchronously and removed from pending before forward");
+    registry_note_replace(target, source);
+    source_freed = true;
+    m.texture_replace(target, source, 2);
+    adopt_frame_drain();
+    check(reads_after_free == 0, label + "no getter after engine consumes source");
+    check(adopt_stage_stats().pending == 0 && !adopt_stage_holds_publish(),
+          label + "queue empty and first publish released");
+    const auto snapshot = m.snapshot(1, 2).state;
+    check(!snapshot.textures.empty() && std::none_of(snapshot.textures.begin(), snapshot.textures.end(),
+              [](const auto &texture) {
+                return texture.has_reason && texture.reason == grc::rs2::TextureReason::UnknownTexture;
+              }), label + "first snapshot has no unknown-texture texture");
+    check(std::none_of(snapshot.unsupported.begin(), snapshot.unsupported.end(), [](const auto &entry) {
+            return entry.reason == grc::rs2::UnsupportedReason::UnknownTexture;
+          }), label + "first snapshot has no unknown-texture command");
+    check(snapshot.items.size() == 1 && !snapshot.items[0].commands.empty() &&
+              snapshot.items[0].commands[0].kind == grc::rs2::CommandKind::AddTextureRect,
+          label + "target draw remains supported");
+    adopt_stage_published();
+    g_stage_test_adopt = false;
+    stream_end();
+    adopt_release();
+    registry_configure(false, RegistryFault::None);
+  }
+}
+
+void test_staged_recovery_evidence() {
+  using namespace grc::rs;
+  auto &w = fake::world();
+  std::vector<uint64_t> reads;
+  fake_rendering_server(&reads);
+  auto &image = w.make({"Object", "Image"});
+  w.overrides["RenderingServer.texture_2d_get"] = [&](fake::Object *, FakeArgs args, void *ret) {
+    reads.push_back(fake::arg_u64(args, 0));
+    fake::put_object(ret, &image);
+  };
+  registry_configure(true, RegistryFault::None);
+  mirror_enable(false); mirror_enable(true);
+  auto &m = mirror_instance();
+  m.set_root(kRootViewport, kRootCanvas, kIdentity);
+  m.canvas_item_create(0xface, 1);
+  m.set_parent(0xface, kRootCanvas, 1);
+  m.material_create(0xf100, 1);
+  m.set_material(0xface, 0xf100, 1);
+  adopt_resources_begin(AdoptFault::HoldOffSkipRepublish);
+  m.set_recover(true, false, true);
+  adopt_stage_begin(4000, 0);
+  g_stage_test_adopt = true;
+  registry_note_texture_create(0xf001, {2, 2, 0, false, true}, false);
+  materialize(0xf001, RefKind::Texture);
+  DecodedParam param;
+  param.type = "rid"; param.tex_rid = 0xf001;
+  m.material_set_param(0xf100, "paint", param, 1);
+  m.add_texture_rect(0xface, {1, 2, 3, 4}, 0xf001, false, {1, 1, 1, 1}, false, 1);
+  auto report = m.recover_report(32);
+  check(report.entries == 0 && report.peak == 0 && report.unresolved.empty(),
+        "staged evidence: queued work is not refusal recovery");
+  adopt_frame_drain();
+  report = m.recover_report(32);
+  const auto snapshot = m.snapshot(1, 2).state;
+  check(report.entries == 0 && report.peak == 0 && report.resolved_by_adopt == 0 &&
+            report.materials == 0 && report.params == 0 && report.republish_skipped_fault == 0,
+        "staged evidence: normal completion leaves recovery counts unchanged");
+  check(snapshot.materials.size() == 1 && snapshot.materials[0].status == grc::rs2::MaterialStatus::Ok &&
+            snapshot.items.size() == 1 && snapshot.items[0].commands.size() == 1 &&
+            snapshot.items[0].commands[0].kind == grc::rs2::CommandKind::AddTextureRect,
+        "staged evidence: refusal fault never suppresses ordinary queued dependents");
+  // A genuinely refused queued texture joins the diagnostic index, deduplicating draws by item.
+  w.overrides["RenderingServer.texture_2d_get"] = [](fake::Object *, FakeArgs, void *ret) {
+    fake::put_object(ret, nullptr);
+  };
+  materialize(0xf002, RefKind::Texture);
+  param.tex_rid = 0xf002;
+  m.material_set_param(0xf100, "paint", param, 2);
+  for (int i = 0; i < 2; ++i)
+    m.add_texture_rect(0xface, {1, 2, 3, 4}, 0xf002, false, {1, 1, 1, 1}, false, 2);
+  adopt_frame_drain();
+  report = m.recover_report(32);
+  check(adopt_texture_refused(0xf002) && report.entries == 2 && report.peak == 2 &&
+            report.unresolved.size() == 1 && m.recover_dependents(0xf002, 16).items.size() == 1,
+        "staged evidence: real refusal retains bounded deduplicated diagnostics");
+  PayloadCopy copy;
+  copy.status = "ok"; copy.width = copy.height = 2; copy.hash = std::string(64, 'a');
+  m.set_recover(true, true, true);
+  m.texture_adopt(0xf002, copy, nullptr, grc::rs2::AdoptedContent::Current, 3);
+  const auto recovered = m.snapshot(1, 3).state;
+  check(recovered.items.size() == 1 && recovered.items[0].commands.size() == 3 &&
+            recovered.items[0].commands[1].kind == grc::rs2::CommandKind::AddTextureRect &&
+            recovered.items[0].commands[2].kind == grc::rs2::CommandKind::AddTextureRect &&
+            m.recover_report(32).entries == 0,
+        "staged evidence: recovery restores every command behind one diagnostic item");
+  m.set_recover(true, false, true);
+  materialize(0xf004, RefKind::Texture);
+  param.tex_rid = 0xf004;
+  m.material_set_param(0xf100, "paint", param, 3);
+  m.add_texture_rect(0xface, {1, 2, 3, 4}, 0xf004, false, {1, 1, 1, 1}, false, 3);
+  adopt_frame_drain();
+  m.texture_adopt(0xf004, copy, nullptr, grc::rs2::AdoptedContent::Current, 4);
+  report = m.recover_report(32);
+  check(report.entries == 2 && report.republish_skipped_fault == 1,
+        "staged evidence: fault still catches republication after real refusal");
+  g_stage_test_adopt = false;
+  stream_end();
+  adopt_release();
+  registry_configure(false, RegistryFault::None);
+}
+
+void test_staged_texture_budget() {
+  using namespace grc::rs;
+  std::vector<uint64_t> reads;
+  fake_rendering_server(&reads);
+  auto &w = fake::world();
+  auto &image = w.make({"Object", "Image"});
+  std::uint64_t getter_ns = 1500000;
+  w.overrides["RenderingServer.texture_2d_get"] = [&](fake::Object *, FakeArgs args, void *ret) {
+    reads.push_back(fake::arg_u64(args, 0));
+    g_stage_test_ns += getter_ns;
+    fake::put_object(ret, &image);
+  };
+  for (const auto *name : {"Image.get_width", "Image.get_height"})
+    w.overrides[name] = [](fake::Object *, FakeArgs, void *ret) { fake::put_int(ret, 2); };
+  registry_configure(true, RegistryFault::None);
+  stream_begin();
+  auto &m = mirror_instance();
+  m.set_recover(true, true, true);
+  m.canvas_item_create(0xface, 1);
+  m.set_parent(0xface, kRootCanvas, 1);
+  g_stage_test_ns = 1000000;
+  adopt_stage_begin(3000, g_stage_test_ns, stage_test_clock);
+  g_stage_test_adopt = true;
+  registry_note_texture_create(0xf000, {2, 2, 0, false, true}, false);
+  const auto warm = adopt_warm_at_arm(warm_now_ns(), "sync");
+  check(warm.queued == 1 && reads == std::vector<uint64_t>({0xf000}),
+        "staged: eager warm pass still prepares registered textures at arm");
+  materialize(0xf000, RefKind::Texture);
+  check(m.knows_texture(0xf000) && reads.size() == 1 && adopt_stage_stats().queued == 0 &&
+            !adopt_stage_holds_publish() && adopt_warm_stats().served == 1 &&
+            adopt_warm_stats().decode_at_reference == 0,
+        "staged: warm hit bypasses miss queue with zero decode at reference");
+  reads.clear();
+  adopt_stage_begin(3000, g_stage_test_ns, stage_test_clock);
+  for (uint64_t rid : {0xf001, 0xf002, 0xf003}) {
+    registry_note_texture_create(rid, {2, 2, 0, false, true}, false);
+    materialize(rid, RefKind::Texture);
+    materialize(rid, RefKind::Texture);
+    m.add_texture_rect(0xface, {1, 2, 3, 4}, rid, true, {1, 0, 1, 1}, true, 1);
+  }
+  check(reads.empty() && adopt_stage_stats().pending == 3 && adopt_stage_holds_publish(),
+        "staged: references deduplicate without synchronous readback; first publish held");
+  adopt_frame_drain();
+  auto stats = adopt_stage_stats();
+  check(reads == std::vector<uint64_t>({0xf001, 0xf002}) && stats.pending == 1 &&
+            stats.max_frame_us == 4000 && stats.max_texture_us == 2000 &&
+            stats.queue_at_arm == 3 && stats.frames_to_drain == 1,
+        "staged: fake clock budget includes readback and duplication; first-reference order");
+  check(adopt_stage_holds_publish(), "staged: first publication remains held mid-drain");
+  adopt_frame_drain();
+  stats = adopt_stage_stats();
+  check(reads.size() == 3 && stats.pending == 0 && stats.frames_to_drain == 2 && stats.readback_bytes == 12 &&
+            !adopt_stage_holds_publish(), "staged: drained queue releases publication");
+  const auto snapshot = m.snapshot(1, 3).state;
+  check(snapshot.items.size() == 1 && snapshot.items[0].commands.size() == 3,
+        "staged: first state keeps every dependent command");
+  if (!snapshot.items.empty()) for (const auto &cmd : snapshot.items[0].commands)
+    check(cmd.kind == grc::rs2::CommandKind::AddTextureRect && cmd.has_tex &&
+              cmd.rect == grc::rs2::Rect4({1, 2, 3, 4}) && cmd.tile && cmd.transpose,
+          "staged: recovery rematerializes original draw without unknown-texture");
+  adopt_stage_published();
+  check(adopt_stage_stats().arm_to_first_publish_us == 6000, "staged: arm-to-publish latency");
+  registry_note_texture_create(0xf004, {2, 2, 0, false, true}, false);
+  materialize(0xf004, RefKind::Texture);
+  check(reads.size() == 4 && m.knows_texture(0xf004), "staged: steady-state first reference stays synchronous");
+
+  // A single item larger than the budget must still make progress, once per frame.
+  adopt_stage_begin(1000, g_stage_test_ns, stage_test_clock);
+  getter_ns = 9000000;
+  for (uint64_t rid : {0xf005, 0xf006}) {
+    registry_note_texture_create(rid, {2, 2, 0, false, true}, false);
+    materialize(rid, RefKind::Texture);
+  }
+  adopt_frame_drain();
+  check(reads.size() == 5 && adopt_stage_stats().pending == 1 &&
+            adopt_stage_stats().max_texture_us == 9500,
+        "staged: at least one oversize item per frame");
+  const auto before_detach = reads.size();
+  adopt_resources_end();
+  adopt_frame_drain();
+  check(adopt_stage_stats().pending == 0 && reads.size() == before_detach &&
+            !adopt_stage_holds_publish(), "staged: detach drops pending work with no later callbacks");
+
+  adopt_resources_begin(AdoptFault::None);
+  adopt_stage_begin(1000, g_stage_test_ns, stage_test_clock);
+  materialize(0xf006, RefKind::Texture);
+  adopt_resource_freed(0xf006);
+  registry_note_free(0xf006);
+  adopt_frame_drain();
+  check(reads.size() == before_detach && !adopt_stage_holds_publish(),
+        "staged: free while queued cancels getter");
+  g_stage_test_adopt = false;
+  stream_end();
+  adopt_release();
+  registry_configure(false, RegistryFault::None);
+}
+
 int main() {
   test_born_equals_adopted();
   test_sabotages();
@@ -2608,6 +3144,10 @@ int main() {
   test_viewport_plan();
   test_proxy_materialize();
   test_viewports_live_node_map();
+  test_cim_rearm_named_shader();
+  test_staged_texture_budget();
+  test_staged_recovery_evidence();
+  test_staged_texture_replace_source();
   std::printf("rs_adopt_test: %d checks, %d failures\n", g_checks, g_failures);
   return g_failures == 0 ? 0 : 1;
 }

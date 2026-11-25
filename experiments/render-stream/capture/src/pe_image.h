@@ -24,5 +24,6 @@ std::string pe_codeview_id(const uint8_t *image, size_t n, const PeHeaders &h, b
 bool pe_read_codeview_id(const uint8_t *image, size_t n, const PeHeaders &h, bool mapped,
                          std::string *id, std::string *error);
 bool pe_image_sha256(const std::string &utf8_path, std::string *hex, uint64_t *bytes,
-                     uint64_t *preferred_image_base, std::string *error);
+                     uint64_t *preferred_image_base, std::string *error,
+                     std::string *whole_file_hex = nullptr);
 }  // namespace grc

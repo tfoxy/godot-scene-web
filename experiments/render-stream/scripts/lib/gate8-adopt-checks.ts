@@ -850,12 +850,31 @@ const LAR6_CONTENT = new Set([
   "cache_paths",
   "resolve_scans",
 ]);
-function stripTimings(v: unknown, lar6 = false): unknown {
+// Warm/deferred and late captures read back different subsets. Scheduling work and duration
+// therefore differ; the budget, drained pending count and adopted resource totals still match.
+const STAGED_WORK = new Set([
+  "queue_at_arm",
+  "queued",
+  "frames_to_drain",
+  "max_frame_us",
+  "max_texture_us",
+  "readback_bytes",
+  "arm_to_first_publish_us",
+]);
+export function comparableAdoptStats(
+  v: unknown,
+  lar6 = false,
+  staged = false,
+): unknown {
   if (v === null || typeof v !== "object" || Array.isArray(v)) return v;
   return Object.fromEntries(
     Object.entries(v as Record<string, unknown>)
-      .filter(([k]) => !isTiming(k) && !(lar6 && LAR6_CONTENT.has(k)))
-      .map(([k, x]) => [k, stripTimings(x, lar6)]),
+      .filter(
+        ([k]) =>
+          !isTiming(k) &&
+          !(lar6 && (LAR6_CONTENT.has(k) || (staged && STAGED_WORK.has(k)))),
+      )
+      .map(([k, x]) => [k, comparableAdoptStats(x, lar6, k === "staged")]),
   );
 }
 
@@ -1200,17 +1219,23 @@ export async function runG8a(
       problems.push(...e.problems.slice(0, 20));
       if (e.problems.length > 20)
         problems.push(`... ${e.problems.length - 20} more`);
-      const a = stripTimings(deferredResult?.stream?.gate8?.adopt_stats, true);
-      const b = stripTimings(lateResult?.stream?.gate8?.adopt_stats, true);
+      const a = comparableAdoptStats(
+        deferredResult?.stream?.gate8?.adopt_stats,
+        true,
+      );
+      const b = comparableAdoptStats(
+        lateResult?.stream?.gate8?.adopt_stats,
+        true,
+      );
       if (a === undefined || JSON.stringify(a) !== JSON.stringify(b))
         problems.push(
-          `adopt_stats differ from late's (timings and LAR6's content split aside): deferred ${JSON.stringify(a)} late ${JSON.stringify(b)}`,
+          `adopt_stats differ from late's (timings, staged work and LAR6's content split aside): deferred ${JSON.stringify(a)} late ${JSON.stringify(b)}`,
         );
     }
     checks.push(
       check(
         "adopt-equivalence-deferred",
-        `the deferred capture (loaded at birth, armed at K=${K} by GRC_ARM_DEFER_FRAMES) validates, declares {"mode":"arm","frame":${K}} with its first transaction at K, equals born from K on under adopt-equivalence's rule and its refused exception (the deferred capture holds Stale's and Grown atlas's pre-arm updates, so no creation exception), and its adopt_stats equal late's but for timings (LAR0 leaves adoption unchanged) and LAR6's texture-content split (judged by tex-current-unupdated)`,
+        `the deferred capture (loaded at birth, armed at K=${K} by GRC_ARM_DEFER_FRAMES) validates, declares {"mode":"arm","frame":${K}} with its first transaction at K, equals born from K on under adopt-equivalence's rule and its refused exception (the deferred capture holds Stale's and Grown atlas's pre-arm updates, so no creation exception), and its adopt_stats equal late's but for timings, staged scheduling work (warm hits bypass readback) and LAR6's texture-content split (judged by tex-current-unupdated); staged budget and final pending count still match`,
         problems,
       ),
     );

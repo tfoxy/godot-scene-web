@@ -2918,6 +2918,7 @@ void hook_free(void *self, RID rid) {
       return;
     }
   }
+  rs::adopt_materials_forget(rid.id);
   bump(kFree);
   log_entry(&g_frees, rids(rid.id));
   // A private CanvasTexture RID of the headless shim is recorded, then forwarded like any other:
@@ -3744,6 +3745,7 @@ RID hook_shader_create_from_code(void *self, const void *code, const void *path_
   bump(kShaderCreateFromCode);
   const RID result =
       original<FnShaderCreateFromCode>(kShaderCreateFromCode)(self, code, path_hint);
+  rs::adopt_materials_forget(result.id);
   registry_create(result.id, rs::RegistryKind::Shader);
   if (rs::registry_on() && result.id != 0) {  // LAR3: the code the server was given, by reference
     rs::registry_note_shader_code(result.id, registry_held_string(code));
@@ -3786,6 +3788,7 @@ void hook_shader_set_code(void *self, RID shader, const void *code) {
   if (rs::registry_on()) {  // LAR3: the last code wins (R5)
     rs::registry_note_shader_code(shader.id, registry_held_string(code));
   }
+  rs::adopt_materials_forget(shader.id);
 }
 
 void hook_material_set_param(void *self, RID material, const void *name, const void *value) {
@@ -3819,6 +3822,9 @@ void hook_material_set_param(void *self, RID material, const void *name, const v
   if (rs::registry_on()) {  // LAR3
     registry_param(material.id, name, value);
   }
+  // Invalidate after forwarding: a getter between hook entry and the engine mutation must
+  // not leave an old value cached after this setter completes.
+  rs::adopt_materials_param_changed(material.id, name);
 }
 
 // --- calibrator 8 hooks --------------------------------
@@ -3828,6 +3834,7 @@ RID hook_shader_create(void *self) {
 
   bump(kShaderCreate);
   const RID result = original<FnCreate>(kShaderCreate)(self);
+  rs::adopt_materials_forget(result.id);
   registry_create(result.id, rs::RegistryKind::Shader);
   log_entry(&g_shader_create_calls, rids(result.id));
   if (log_active()) {
@@ -3870,6 +3877,7 @@ void hook_shader_set_default_texture_parameter(void *self, RID shader, const voi
     rs::registry_note_shader_default_texture(shader.id, rs::decode_string_name(name), texture.id,
                                              index);
   }
+  rs::adopt_materials_forget(shader.id);
 }
 
 RID hook_material_create(void *self) {
@@ -3880,6 +3888,7 @@ RID hook_material_create(void *self) {
   }
   bump(kMaterialCreate);
   const RID result = original<FnCreate>(kMaterialCreate)(self);
+  rs::adopt_materials_forget(result.id);
   registry_create(result.id, rs::RegistryKind::Material);
   log_entry(&g_material_create_calls, rids(result.id));
   if (log_active()) {
@@ -3903,6 +3912,7 @@ RID hook_material_create_from_shader(void *self, RID next_pass, int32_t priority
   bump(kMaterialCreateFromShader);
   const RID result = original<FnMaterialCreateFromShader>(kMaterialCreateFromShader)(
       self, next_pass, priority, shader);
+  rs::adopt_materials_forget(result.id);
   registry_create(result.id, rs::RegistryKind::Material);
   if (rs::registry_on()) {
     rs::registry_note_material_next_pass(result.id, next_pass.id);
@@ -3950,6 +3960,7 @@ void hook_material_set_shader(void *self, RID material, RID shader) {
     resources().material_set_shader(tap_context(), material.id, shader.id, omit);
   }
   original<FnSetMaterial>(kMaterialSetShader)(self, material, shader);
+  rs::adopt_materials_forget(material.id);
 }
 
 // canvas_set_modulate: the colour itself is not a material parameter (Q2's "never to
@@ -5581,7 +5592,7 @@ void hook_texture_replace(void *self, RID texture, RID by_texture) {
   bump(kTextureReplace);
   // G8r: either side may be a pre-arm texture; adopt it before the dummy frees the by-texture.
   rs::materialize(texture.id, rs::RefKind::Texture);
-  rs::materialize(by_texture.id, rs::RefKind::Texture);
+  rs::materialize_texture_replace_source(by_texture.id);
   log_entry(&g_texture_replaces, rids(texture.id, by_texture.id));
   if (rs::registry_on()) {
     // LAR0 (design R5): the engine frees by_texture inside the call, with no free of its own.

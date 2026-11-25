@@ -356,6 +356,24 @@ void adopt_texture_recovered(std::uint64_t rid, RecoverPath path, std::uint64_t 
                              const RecoverInfo &info);
 std::string adopt_refusals_json(std::uint64_t arm, std::uint64_t frame);
 
+// Attached-only first-publication staging. The clock seam is for deterministic budget tests.
+struct AdoptStageStats {
+  std::uint64_t budget_us = 4000;
+  std::uint64_t queue_at_arm = 0;  // first-reference inventory before the first drain
+  std::uint64_t queued = 0;
+  std::uint64_t frames_to_drain = 0;
+  std::uint64_t max_frame_us = 0;
+  std::uint64_t max_texture_us = 0;
+  std::uint64_t readback_bytes = 0;  // logical source image bytes read by texture_2d_get
+  std::uint64_t arm_to_first_publish_us = 0;
+  std::uint64_t pending = 0;
+};
+void adopt_stage_begin(std::uint64_t budget_us, std::uint64_t arm_ns,
+                       std::uint64_t (*clock)() = nullptr);
+bool adopt_stage_holds_publish();
+void adopt_stage_published();
+AdoptStageStats adopt_stage_stats();
+
 // What lazy resource adoption did (result.json stream.gate8.adopt_stats.resources).
 struct AdoptResourceStats {
   std::uint32_t textures = 0;          // adopted textures, every source
@@ -452,6 +470,8 @@ std::string adopt_reload_json(std::uint64_t arm_index, std::uint64_t frame);
 // LS3: after adopt_resources_end at a disarm, frees what the arm left: the refused map, the
 // census, the off-main queue, the emitter waits, the material residuals, the walk's lists and
 // (with no tag acquire holding it) the node map. Returns the entries it freed.
+// Process-lifetime inventory, released only when the extension unloads.
+void adopt_process_reset();
 std::size_t adopt_release();
 // LS3: what adopt_release would free now (the disarm's accounting).
 std::size_t adopt_held();
@@ -481,6 +501,11 @@ enum class RefKind : std::uint8_t {
 // material, process material) materialize on the calling thread. True when the mirror knows `rid`
 // afterwards (false when queued).
 bool materialize(std::uint64_t rid, RefKind ref);
+
+// texture_replace consumes its source inside the engine call, without a free hook.
+// On the main thread, adopt it before forwarding even during staged adoption, and
+// cancel any staged read of that RID so it cannot run after the source is freed.
+bool materialize_texture_replace_source(std::uint64_t rid);
 
 // LAR6: the frame boundary (entry.cpp's frame callback, main thread, before the transaction is
 // formed): the off-main queue, then the material queue (adopt_materials_resolve), then the
@@ -587,6 +612,10 @@ struct AdoptMaterialStats {
 };
 
 // Called by entry.cpp before adopt_at_arm (with the stream's sabotage kind).
+// Existing resource events invalidate attachment-local adoption snapshots.
+void adopt_materials_forget(std::uint64_t rid);
+void adopt_materials_param_changed(std::uint64_t rid, const void *name);
+void adopt_materials_attachment_end();
 void adopt_materials_configure(AdoptMaterialSabotage sabotage);
 const char *adopt_material_sabotage_name(AdoptMaterialSabotage sabotage);
 AdoptMaterialStats adopt_material_stats();

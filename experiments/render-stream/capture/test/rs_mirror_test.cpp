@@ -4973,6 +4973,284 @@ void test_recover_command_builders() {
         "null, headless-canvas and known texture branches add no notes");
 }
 
+void test_pending_command_recovery() {
+  using namespace grc::rs;
+  Mirror m;
+  bind_root(&m);
+  m.set_recover(true, true, true);
+  for (std::uint64_t rid : {0x900, 0x901, 0x902}) m.texture_stage_pending(rid);
+  m.canvas_item_create(0x300, 1);
+  m.set_parent(0x300, kRootCanvas, 1);
+  m.add_texture_rect(0x300, kRect, 0x900, true, kRed, true, 1);
+  m.add_texture_rect_region(0x300, kRect, 0x900, kRect, kRed, true, true, 1);
+  m.add_msdf_texture_rect_region(0x300, kRect, 0x900, kRect, kRed, 2, 4, 1, 1);
+  m.add_primitive(0x300, {{1, 2}}, {kRed}, {{0, 0}}, 0x900, false, 1);
+  m.add_primitive(0x300, {{1, 2}}, {kRed}, {{0, 0}}, 0x900, true, 1);
+  m.add_triangle_array(0x300, {0}, {{1, 2}}, {kRed}, {{0, 0}}, false, 0x900, 1, 1);
+  m.add_nine_patch(0x300, kRect, kRect, 0x900, {1, 2}, {3, 4}, 1, 2, true, kRed, 1);
+  m.mesh_create(0x600, 1);
+  m.set_multimesh(mm_options());
+  m.multimesh_create(0x700, 1);
+  m.set_particles(pt_options());
+  m.particles_create(0x800, 1);
+  m.add_mesh(0x300, 0x600, kRootXform, kRed, 0x900, 1);
+  m.add_multimesh(0x300, 0x700, 0x900, 1);
+  m.add_particles(0x300, 0x800, 0x900, 1);
+  // Re-record another item before the texture lands. Stale command positions must not revive.
+  m.canvas_item_create(0x301, 1);
+  m.set_parent(0x301, kRootCanvas, 1);
+  m.add_texture_rect(0x301, kRect, 0x900, false, kRed, false, 1);
+  m.clear(0x301, 2);
+  m.add_rect(0x301, kRect, kGreen, false, 2);
+  m.shader_create(0x400, 1);
+  m.shader_set_default_texture_parameter(0x400, "paint", 0x900, 0, 1);
+  m.shader_set_default_texture_parameter(0x400, "cleared", 0x900, 1, 1);
+  m.shader_set_default_texture_parameter(0x400, "cleared", 0, 1, 2);
+  DecodedParam pending;
+  pending.type = "rid"; pending.tex_rid = 0x900;
+  m.set_instance_shader_parameter(0x300, "paint", pending, 1);
+  m.set_instance_shader_parameter(0x300, "cleared", pending, 1);
+  m.set_instance_shader_parameter(0x300, "cleared", scalar("float", {7}), 2);
+  const auto incomplete = m.snapshot(1, 2).state;
+  PayloadPtr bytes;
+  const auto copy = rgba8_copy(4, 4, fill(4, 4, 3), &bytes);
+  m.texture_adopt(0x900, copy, bytes, grc::rs2::AdoptedContent::Current, 3);
+  const auto complete = m.snapshot(2, 3).state;
+  const auto *a = item(complete, 1);
+  const CommandKind kinds[] = {CommandKind::AddTextureRect, CommandKind::AddTextureRectRegion,
+      CommandKind::AddMsdfTextureRectRegion, CommandKind::AddPrimitive, CommandKind::AddPolygon,
+      CommandKind::AddTriangleArray, CommandKind::AddNinePatch, CommandKind::AddMesh,
+      CommandKind::AddMultimesh, CommandKind::AddParticles};
+  check(a && a->commands.size() == 10, "pending commands retain every draw");
+  if (a && a->commands.size() == 10) {
+    for (std::size_t i = 0; i < 10; ++i)
+      check(a->commands[i].kind == kinds[i] && a->commands[i].has_tex && a->commands[i].tex == 1,
+            "pending commands rematerialize through the recovery index");
+    check(a->commands[0].tile && a->commands[1].clip_uv && a->commands[2].msdf_outline == 2 &&
+              a->commands[3].points.size() == 1 && a->commands[5].indices.size() == 1 &&
+              a->commands[6].np_margin_br == grc::rs2::Point2({3, 4}),
+          "pending commands preserve original arguments");
+  }
+  check(item(complete, 2)->commands[0].kind == CommandKind::AddRect,
+        "pending recovery never revives a cleared command");
+  check(item(incomplete, 1)->commands[0].kind == CommandKind::Unsupported,
+        "pending recovery preserves previously captured immutable command storage");
+  const auto no_unknown_texture = [](const Snapshot &s) {
+    return std::none_of(s.unsupported.begin(), s.unsupported.end(), [](const auto &entry) {
+      return entry.reason == UnsupportedReason::UnknownTexture;
+    });
+  };
+  check(no_unknown_texture(complete), "recovered first snapshot has no unknown-texture");
+  const auto *sh = shader(complete, 1);
+  check(sh && sh->default_textures.size() == 1 && sh->default_textures[0].name == "paint" &&
+            sh->default_textures[0].tex == 1,
+        "pending shader defaults recover without resurrecting a cleared binding");
+  check(a && a->instance_params.size() == 2 && a->instance_params[0].name == "cleared" &&
+            !a->instance_params[0].has_tex && a->instance_params[1].name == "paint" &&
+            a->instance_params[1].has_tex && a->instance_params[1].tex == 1,
+        "pending instance parameters recover without replacing a newer value");
+
+  // Diagnostic limits must not discard dependencies required to complete the first snapshot.
+  m.clear(0x300, 4);
+  // Spread the dependencies across items, respecting the independent per-item command cap.
+  for (std::uint64_t rid = 0x310; rid < 0x315; ++rid) {
+    m.canvas_item_create(rid, 4);
+    m.set_parent(rid, kRootCanvas, 4);
+    for (int i = 0; i < 820; ++i)
+      m.add_texture_rect(rid, kRect, 0x901, false, kRed, false, 4);
+  }
+  m.texture_adopt(0x901, copy, bytes, grc::rs2::AdoptedContent::Current, 5);
+  const auto many = m.snapshot(3, 5).state;
+  bool recovered = no_unknown_texture(many) && m.stats().dropped_capacity == 0;
+  for (std::uint32_t id = 3; id < 8; ++id) {
+    const auto *dependent = item(many, id);
+    recovered = recovered && dependent && dependent->commands.size() == 820 &&
+        std::all_of(dependent->commands.begin(), dependent->commands.end(), [](const auto &command) {
+          return command.kind == CommandKind::AddTextureRect && command.has_tex;
+        });
+  }
+  check(recovered,
+        "pending command recovery is complete beyond the diagnostic index cap");
+}
+
+void test_pending_particles_recovery() {
+  using namespace grc::rs;
+  Mirror m;
+  pt_scene(&m);
+  auto input = shader_input("shader_type particles;\n", "unsupported", "shader-mode");
+  input.copy.mode = "particles";
+  m.shader_create_from_code(0x600, input, 1);
+  m.material_create(0x610, 1);
+  m.material_set_shader(0x610, 0x600, 1);
+  m.particles_call(0x900, PtOp::SetProcessMaterial, pt_i(0, 0x610), 1);
+  m.set_ppm_queue(true);
+  m.set_recover(true, true, true);
+  for (std::uint64_t rid : {0x900, 0x901, 0x902}) m.texture_stage_pending(rid);
+  m.clear(100, 2);
+  m.add_particles(100, 0x900, 0x901, 2);
+  // An earlier frame can consume the queue while the draw's texture is still pending.
+  check(m.take_ppm_candidates().builtin.empty(), "pending particles wait for their draw texture");
+  PayloadPtr bytes;
+  const auto copy = rgba8_copy(4, 4, fill(4, 4, 3), &bytes);
+  m.texture_adopt(0x901, copy, bytes, grc::rs2::AdoptedContent::Current, 3);
+  const auto candidates = m.take_ppm_candidates();
+  check(candidates.builtin.size() == 1 && candidates.builtin[0].pairs.size() == 1 &&
+            candidates.builtin[0].pairs[0].second == 100,
+        "pending particle draw recovery requeues process-material keying");
+}
+
+void test_pending_proxy_recovery() {
+  using namespace grc::rs;
+  Mirror m;
+  m.set_viewports(true);
+  bind_root(&m);
+  m.set_recover(true, true, true);
+  for (std::uint64_t rid : {0x900, 0x901, 0x902}) m.texture_stage_pending(rid);
+  m.canvas_item_create(0x300, 1);
+  m.set_parent(0x300, kRootCanvas, 1);
+  m.texture_proxy_create(0x400, 0, 0, 1);
+  m.add_texture_rect(0x300, kRect, 0x400, false, kRed, false, 1);
+  m.texture_proxy_update(0x400, 0x900, 0, 2);
+  m.unresolved_proxy_uses();
+  m.proxy_node_route_result(0x400, 0, 2);  // the route tried before the queued base landed
+  PayloadPtr bytes;
+  const auto copy = rgba8_copy(4, 4, fill(4, 4, 3), &bytes);
+  m.texture_adopt(0x900, copy, bytes, grc::rs2::AdoptedContent::Current, 3);
+  auto uses = m.unresolved_proxy_uses();
+  check(uses.size() == 1 && uses[0].proxy == 0x400,
+        "pending proxy base recovery requeues the existing route");
+  m.texture_proxy_update(0x400, 0x900, 0, 3);  // registry route now finds the base
+  check(texture(m.snapshot(1, 3).state, 1)->status == grc::rs2::TextureStatus::Ok,
+        "pending proxy resolves before first publication");
+  m.texture_proxy_update(0x400, 0x901, 0, 4);
+  m.texture_proxy_update(0x400, 0x902, 0, 4);  // newest pointing wins, even while unresolved
+  m.unresolved_proxy_uses();
+  m.proxy_node_route_result(0x400, 0, 4);
+  m.texture_adopt(0x901, copy, bytes, grc::rs2::AdoptedContent::Current, 5);
+  check(m.unresolved_proxy_uses().empty(), "pending proxy recovery ignores a superseded base");
+  m.texture_adopt(0x902, copy, bytes, grc::rs2::AdoptedContent::Current, 6);
+  uses = m.unresolved_proxy_uses();
+  check(uses.size() == 1 && uses[0].proxy == 0x400,
+        "pending proxy recovery preserves the newest base");
+}
+
+void test_pending_canvas_diffuse_recovery() {
+  using namespace grc::rs;
+  using namespace grc::rs2;
+  PayloadPtr bytes;
+  const auto copy = rgba8_copy(4, 4, fill(4, 4, 3), &bytes);
+  // Direct recovery, superseded binding, and returning to the original pending RID.
+  for (int rebind : {0, 1, 2, 3}) {
+    Mirror m;
+    bind_root(&m);
+    m.set_recover(true, true, true);
+    m.canvas_texture_create(0x600, 1);  // id 1
+    drawing_item(&m, 100, 0x600, 1);
+    m.texture_2d_create(0x501, copy, bytes, 1);  // known U, id 2
+    m.texture_stage_pending(0x500);
+    m.canvas_texture_set_channel(0x600, 0, 0x500, 2);
+    if (rebind == 3) {
+      // Changing between two unknown RIDs must update the pending binding too.
+      m.texture_stage_pending(0x502);
+      m.canvas_texture_set_channel(0x600, 0, 0x502, 2);
+    } else if (rebind != 0) {
+      m.canvas_texture_set_channel(0x600, 0, 0x501, 2);
+      if (rebind == 2) m.canvas_texture_set_channel(0x600, 0, 0x500, 2);
+    }
+    auto before = m.snapshot(1, 2).state;
+    const auto version = texture(before, 1)->version;
+    const auto adopted = m.texture_adopt(0x500, copy, bytes, AdoptedContent::Current, 3);
+    auto after = m.snapshot(2, 3).state;
+    const auto *canvas = texture(after, 1);
+    if (rebind == 1) {
+      check(canvas && canvas->status == TextureStatus::Ok && canvas->canvas.has_diffuse &&
+                canvas->canvas.diffuse == 2 && canvas->version == version,
+            "pending canvas diffuse recovery preserves a newer known binding");
+    } else if (rebind == 3) {
+      check(canvas && canvas->status == TextureStatus::Unsupported &&
+                canvas->reason == TextureReason::UnknownTexture &&
+                !canvas->canvas.has_diffuse && canvas->version == version,
+            "pending canvas diffuse recovery preserves a newer unknown binding");
+      const auto latest = m.texture_adopt(0x502, copy, bytes, AdoptedContent::Current, 4);
+      after = m.snapshot(3, 4).state;
+      canvas = texture(after, 1);
+      check(canvas && canvas->status == TextureStatus::Ok && canvas->canvas.has_diffuse &&
+                canvas->canvas.diffuse == latest.published_id && canvas->version == version + 1,
+            "pending canvas diffuse recovery resolves the newest unknown binding");
+    } else {
+      check(canvas && canvas->kind == TextureKind::Canvas && canvas->status == TextureStatus::Ok &&
+                !canvas->has_reason && canvas->canvas.has_diffuse &&
+                canvas->canvas.diffuse == adopted.published_id && canvas->version == version + 1,
+            rebind == 0 ? "pending canvas diffuse recovers before first publication"
+                        : "pending canvas diffuse recovers after rebinding to the same RID");
+    }
+    const auto report = m.recover_report(32);
+    check(report.entries == 0 && report.peak == 0 && report.resolved_by_adopt == 0 &&
+              report.materials == 0 && report.params == 0 && report.unresolved.empty(),
+          "pending canvas diffuse scheduling does not change refusal diagnostics");
+  }
+  for (bool recreate : {false, true}) {
+    Mirror m;
+    bind_root(&m);
+    m.set_recover(true, true, true);
+    m.canvas_texture_create(0x600, 1);
+    drawing_item(&m, 100, 0x600, 1);  // keeps the freed canvas as a tombstone
+    m.texture_stage_pending(0x500);
+    m.canvas_texture_set_channel(0x600, 0, 0x500, 2);
+    m.free_rid(0x600, 3);
+    if (recreate) m.canvas_texture_create(0x600, 3);
+    m.texture_adopt(0x500, copy, bytes, AdoptedContent::Current, 4);
+    const auto snapshot = m.snapshot(1, 4).state;
+    const auto *freed = texture(snapshot, 1);
+    check(freed && freed->status == TextureStatus::Freed && !freed->has_canvas,
+          "pending canvas diffuse recovery never revives a freed canvas");
+    if (recreate) {
+      drawing_item(&m, 101, 0x600, 4);
+      const auto current = m.snapshot(2, 4).state;
+      const auto *replacement = texture(current, 2);
+      check(replacement && replacement->status == TextureStatus::Ok &&
+                replacement->version == 1 && !replacement->canvas.has_diffuse,
+            "pending canvas diffuse recovery ignores a recycled canvas RID");
+    }
+  }
+  for (int channel : {0, 1, 2}) {
+    Mirror m;
+    bind_root(&m);
+    m.set_recover(true, true, true);
+    m.canvas_texture_create(0x600, 1);
+    drawing_item(&m, 100, 0x600, 1);
+    m.texture_stage_pending(0x500);
+    m.canvas_texture_set_channel(0x600, 0, 0x500, 2);
+    if (channel) m.canvas_texture_set_channel(0x600, channel, 0x501, 2);
+    const auto before = m.recover_report(32);
+    m.texture_stage_finished(0x500);  // readback refused
+    auto snapshot = m.snapshot(1, 2).state;
+    const auto *canvas = texture(snapshot, 1);
+    check(canvas && canvas->status == TextureStatus::Unsupported && !canvas->canvas.has_diffuse &&
+              canvas->reason == (channel ? TextureReason::CanvasTextureChannel
+                                        : TextureReason::UnknownTexture),
+          "refused staged diffuse stays unsupported with channel reason precedence");
+    const auto refused = m.recover_report(32);
+    check(refused.entries == before.entries && refused.peak == before.peak &&
+              refused.unresolved.size() == before.unresolved.size() && refused.dropped == before.dropped,
+          "refused canvas diffuse adds no refusal diagnostics");
+    const auto version = canvas->version;
+    m.set_recover(true, true);  // first publication disables staged command recovery
+    const auto adopted = m.texture_adopt(0x500, copy, bytes, AdoptedContent::Current, 3);
+    snapshot = m.snapshot(2, 3).state;
+    canvas = texture(snapshot, 1);
+    check(canvas && canvas->canvas.has_diffuse && canvas->canvas.diffuse == adopted.published_id &&
+              canvas->version == version + 1 &&
+              canvas->status == (channel ? TextureStatus::Unsupported : TextureStatus::Ok) &&
+              (!channel || canvas->reason == TextureReason::CanvasTextureChannel),
+          "later adoption repairs a refused diffuse while preserving normal/specular refusal");
+    const auto recovered = m.recover_report(32);
+    check(recovered.entries == 0 && recovered.peak == 0 && recovered.resolved_by_adopt == 0 &&
+              recovered.unresolved.empty(),
+          "canvas-only refusal recovery leaves refusal counters unchanged");
+  }
+}
+
 void test_recover_adoption() {
   using namespace grc::rs;
   using namespace grc::rs2;
@@ -5188,6 +5466,10 @@ int main() {
   test_recover_index_notes();
   test_recover_command_builders();
   test_recover_index_bounds();
+  test_pending_command_recovery();
+  test_pending_particles_recovery();
+  test_pending_proxy_recovery();
+  test_pending_canvas_diffuse_recovery();
   test_recover_adoption();
   test_recover_replace();
   test_recover_replace_noops_and_stale();

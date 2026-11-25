@@ -20,6 +20,7 @@ def check(root):
     result_path = root / "resources-result.json"
     result_path.unlink(missing_ok=True)
     checks = 0
+    adoption_reports = []
 
     def require(ok, reason):
         nonlocal checks
@@ -36,11 +37,41 @@ def check(root):
             "logical-size carried texture must be created attached in round zero")
     updates = jsonl(root / "proxy-updates.jsonl")
     require([row["round"] for row in updates] == [0, 1, 2], "proxy did not switch after attach in every round")
+    identity = load(root / "0-fingerprint.json")
+    facts = load(root / "0-calibration-check.json")
+    hooks = load(root / "evidence" / "counters.json")["hooks_planned"]
+    require(identity["fingerprint_hash_count"] == 1, "identity hashed once at load")
     for index in range(3):
+        require(load(root / f"{index}-fingerprint.json") == identity,
+                f"round {index} changed process identity or repeated hashing")
+        require(load(root / f"{index}-calibration-check.json") == facts,
+                f"round {index} changed calibration facts")
+        ready = load(root / f"ready-{index}.json")["info"]
+        require(ready["fingerprint_hash_count"] == 1
+                and ready["fingerprint_ns"] == identity["fingerprint_ns"],
+                f"round {index} arm identity counters disagree")
         evidence = root / "evidence" if index == 0 else root / "evidence" / f"arm-{index + 1}"
         rows = jsonl(evidence / "resources.jsonl")
         gate = load(root / f"resource-result-{index}.json")["stream"]["gate8"]
+        if "draw" in hooks:
+            require(gate["shader_clock"]["source"] == "draw-hook",
+                    f"round {index} planned draw hook must drive the shader clock")
+        staged = gate["adopt_stats"].get("staged")
+        first_publish_frame = load(root / f"browser-{index}/applied.json")["transactions"][0]["frame"]
+        if staged is not None:
+            require(staged["pending"] == 0 and staged["arm_to_first_publish_us"] > 0,
+                    f"round {index} did not finish staged adoption before publication: {staged}")
+            require(staged["max_frame_us"] < staged["budget_us"] + staged["max_texture_us"] + 1000,
+                    f"round {index} exceeded its budget by more than one texture: {staged}")
+        trace_path = root / f"adoption-frames-{index}.json"
+        if trace_path.exists():
+            trace = load(trace_path)
+            if trace["large_texture_bytes"]:
+                require(trace["large_texture_bytes"] == 134217728, "expected eight pre-attach 2048² RGBA textures")
+            adoption_reports.append({"round": index, "staged": staged, **trace})
         resources = gate["adopt_stats"]["resources"]
+        require(resources["census_ns"] > 0 if index == 0 else resources["census_ns"] == 0,
+                f"round {index} census must run only on the first arm")
         require(all(value == 0 for key, value in resources.items()
                     if key.startswith("refused_") or key.endswith("_refused")),
                 f"round {index} resource refusals: {resources}")
@@ -57,14 +88,16 @@ def check(root):
                 continue
             if row.get("kind") == "shader" and row.get("reason") == "shader-mode":
                 continue
-            # A setter can temporarily point to an unread image. The main-thread resolver must
-            # recover it in the same frame, before any state for that proxy is published.
+            # A setter can temporarily point to an unread image. During staged adoption its
+            # dependency may land on a later frame, but must resolve before the first snapshot.
+            # After publication (and without staging), the same-frame rule still applies.
             if row.get("op") == "texture_proxy_update" and row.get("reason") == "proxy-unresolved":
                 following = [later for later in rows[at + 1:] if later.get("rid") == row["rid"]]
                 next_proxy = next((later for later in following
                                    if later.get("op") == "texture_proxy_update" or later.get("call") == "state"), {})
+                deadline = first_publish_frame if staged and row["frame"] < first_publish_frame else row["frame"]
                 require(next_proxy.get("op") == "texture_proxy_update" and next_proxy.get("status") == "ok"
-                        and next_proxy.get("frame") == row["frame"],
+                        and row["frame"] <= next_proxy.get("frame", -1) <= deadline,
                         f"round {index} proxy unresolved at publication")
                 continue
             bad.append(row)
@@ -137,6 +170,7 @@ def check(root):
         require(image.getpixel((360, 230)) == image.getpixel((380, 230)),
                 f"round {index} completed one-shot revived")
     result = {"status": "pass", "checks": checks, "streams": 3, "cycles": 2}
+    (root / "adoption-report.json").write_text(json.dumps(adoption_reports, indent=2) + "\n")
     result_path.write_text(json.dumps(result, indent=2) + "\n")
     print(json.dumps(result))
 

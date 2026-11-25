@@ -1194,8 +1194,13 @@ class Mirror {
   // Every unfinished encode job (stream end: entry.cpp abandons them after the pool dropped them).
   std::vector<BasisJobPtr> basis_jobs() const;
 
-  // Unknown texture dependents are bounded and live only in this mirror's arm.
-  void set_recover(bool notes_on, bool republish);
+  // Unknown-texture diagnostic notes are bounded and live only in this mirror's arm.
+  // During staged adoption, retain every pending command dependency until it resolves.
+  void set_recover(bool notes_on, bool republish, bool commands = false);
+  // Queued readbacks are scheduling dependencies, separate from bounded refusal diagnostics.
+  // A failed readback transfers its material/item notes to the refusal index.
+  void texture_stage_pending(std::uint64_t rid);
+  void texture_stage_finished(std::uint64_t rid);
   RefusalDependents recover_dependents(std::uint64_t rid, std::size_t cap) const;
   RecoverIndexReport recover_report(std::size_t cap) const;
   MirrorStats stats() const;
@@ -1239,6 +1244,7 @@ class Mirror {
     std::uint64_t rid = 0;
     // HC4a: in its table's dirty set (ItemMap::mut); cleared by the snapshot that visits it.
     bool dirty = false;
+    std::uint64_t command_generation = 0;
     // W11b: the stable content_version (V11Options) and the mirror counter it was computed at.
     bool cv_digest_set = false;
     std::uint64_t cv_digest_of = 0;
@@ -1258,7 +1264,7 @@ class Mirror {
     // G55d: instance parameters (sorted by name on publication) and the names whose last value
     // had an unsupported type (the derived `param-type` entry while non-empty).
     std::map<std::string, rs2::Param> instance_params;
-    std::set<std::string> instance_param_unsupported;
+    std::map<std::string, std::uint64_t> instance_param_unsupported;  // pending texture RID, or 0
     // Non-null skeleton (calibrator 7): same idea, its own op name.
     bool unsupported_skeleton = false;
     // Skip policy only: the unknown RID this item was parented to (state.parent is then None and
@@ -1310,6 +1316,7 @@ class Mirror {
     // A non-null diffuse RID the mirror never saw created (unknown-texture);
     // `has_diffuse` is false in that case too (nothing to name on the wire), and once freed.
     bool diffuse_unknown = false;
+    std::uint64_t pending_diffuse_rid = 0;  // guards staged recovery against a newer binding
     bool normal_set = false;    // a non-null normal channel is set
     bool specular_set = false;  // a non-null specular channel is set
     rs2::Filter filter = rs2::Filter::Default;
@@ -1383,7 +1390,7 @@ class Mirror {
     // (name, index) -> texture-table id; unresolvable_defaults counts entries whose last set
     // named an unknown texture RID.
     std::map<std::pair<std::string, std::int32_t>, std::uint32_t> default_textures;
-    std::set<std::pair<std::string, std::int32_t>> unresolvable_defaults;
+    std::map<std::pair<std::string, std::int32_t>, std::uint64_t> unresolvable_defaults;
     // PM5: the particle_process_material key the node map resolved (has_ppm), /12 only.
     bool has_ppm = false;
     rs2::BuiltinParticleProcessMaterial ppm;
@@ -1718,18 +1725,26 @@ class Mirror {
 
   struct RecoverDependent {
     std::uint32_t owner = 0;
-    std::uint8_t kind = 0;  // 0: material, 1: item (evidence only)
+    std::uint8_t kind = 0;  // 0: material, 1: draw, 2: defaults, 3: instance, 4: proxy, 5: canvas diffuse
     const char *op = nullptr;  // static command name for an item
+    std::size_t command = 0;
+    std::uint64_t generation = 0;
+    rs2::CommandKind restore = rs2::CommandKind::Unsupported;
   };
   void note_recover_locked(std::uint64_t rid, RecoverDependent dependent);
+  void note_command_recover(std::uint64_t rid, const Item &item, const char *op,
+                            rs2::CommandKind restore, std::size_t index);
   void erase_recover_locked(std::uint64_t rid);
   enum class RecoverBy { Replace, Adopt };
   RecoverInfo resolve_recover_locked(std::uint64_t rid, RecoverBy path);
   static void copy_texture_content(Texture *target, const Texture *by);
   RefusalDependents recover_dependents_locked(std::uint64_t rid, std::size_t cap) const;
+  bool recover_commands_ = false;
   bool recover_on_ = false;
   bool recover_republish_ = true;
   RidMap<std::vector<RecoverDependent>> recover_index_;
+  RidMap<std::vector<RecoverDependent>> staged_recover_index_;
+  std::unordered_set<std::uint64_t> staged_refused_;
   std::uint64_t recover_entries_ = 0, recover_peak_ = 0;
   RecoverIndexReport recover_counts_;
 

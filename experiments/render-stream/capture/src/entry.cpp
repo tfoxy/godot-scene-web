@@ -285,6 +285,9 @@ struct State {
   bool api_pending_arm = false;
   rs::StandbyFault standby_fault = rs::StandbyFault::None;
 
+  bool identity_checked = false;
+  std::size_t identity_check_count = 0;
+  uint64_t fingerprint_hash_count = 0, fingerprint_ns = 0;
   Calibration calib;
   ProcessFingerprint fp;
   LiveVtableFacts facts;
@@ -372,6 +375,7 @@ struct State {
 // `stream.status`: off | open | closed | refused | open-failed.
 struct Stream {
   uint64_t arm_t0_ns = 0;
+  uint64_t adopt_frame_budget_us = 4000;
   std::string path;        // GRC_STREAM_OUT (full sink); empty when unset
   std::string patch_path;  // GRC_STREAM_PATCH_OUT (patch sink); empty when unset
   std::string status = "off";
@@ -1182,6 +1186,8 @@ std::string result_json() {
     json.field("texture_decode", std::string(g_stream.gate8.decode_engine ? "engine" : "off"));
     json.field("float_formats", g_stream.gate8.float_formats);
     json.key("adopt_stats").object_begin();
+    json.field("fingerprint_hash_count", static_cast<int64_t>(g_state.fingerprint_hash_count));
+    json.field("fingerprint_ns", static_cast<int64_t>(g_state.fingerprint_ns));
     json.field("ran", g_stream.adopt_stats.ran);
     json.field("canvases", static_cast<int64_t>(g_stream.adopt_stats.canvases));
     json.field("layers", static_cast<int64_t>(g_stream.adopt_stats.layers));
@@ -1230,6 +1236,18 @@ std::string result_json() {
       json.field("fault", std::string(rs::adopt_fault_name(g_stream.adopt_fault)));
       // LAR6 (resolve-queue-only): the mirror scans the frame drains made (material refs + ppm).
       json.field("resolve_scans", static_cast<int64_t>(rs::adopt_resolve_scans()));
+      const auto staged = rs::adopt_stage_stats();
+      json.key("staged").object_begin();
+      json.field("budget_us", static_cast<int64_t>(staged.budget_us));
+      json.field("queue_at_arm", static_cast<int64_t>(staged.queue_at_arm));
+      json.field("queued", static_cast<int64_t>(staged.queued));
+      json.field("frames_to_drain", static_cast<int64_t>(staged.frames_to_drain));
+      json.field("max_frame_us", static_cast<int64_t>(staged.max_frame_us));
+      json.field("max_texture_us", static_cast<int64_t>(staged.max_texture_us));
+      json.field("readback_bytes", static_cast<int64_t>(staged.readback_bytes));
+      json.field("arm_to_first_publish_us", static_cast<int64_t>(staged.arm_to_first_publish_us));
+      json.field("pending", static_cast<int64_t>(staged.pending));
+      json.object_end();
       json.key("resources").object_begin();
       json.field("textures", static_cast<int64_t>(r.textures));
       json.field("textures_reload", static_cast<int64_t>(r.textures_reload));
@@ -1426,6 +1444,8 @@ std::string fingerprint_json() {
   const ProcessFingerprint &fp = g_state.fp;
   JsonWriter json;
   json.object_begin();
+  json.field("fingerprint_hash_count", static_cast<int64_t>(g_state.fingerprint_hash_count));
+  json.field("fingerprint_ns", static_cast<int64_t>(g_state.fingerprint_ns));
   json.field("exe_path", fp.exe_path);
   json.field("version_string", fp.version_string);
   json.field("sha256", fp.exe_sha256);
@@ -1547,6 +1567,8 @@ cap::Value::Object api_arm_info() {
       {"token", g_api_arm.token}, {"wt_cert_hash", cert}, {"root_size", g_api_arm.root_size},
       {"stream_version", g_api_arm.stream_version}, {"arm_ms", g_api_arm.ms},
       {"arm_frame", std::int64_t(g_api_arm.frame)},
+      {"fingerprint_hash_count", std::int64_t(g_state.fingerprint_hash_count)},
+      {"fingerprint_ns", std::int64_t(g_state.fingerprint_ns)},
       {"adopted", cap::Value::Object{{"canvases", std::int64_t(a.canvases)},
           {"layers", std::int64_t(a.layers)}, {"items", std::int64_t(a.items)},
           {"materials", std::int64_t(a.materials)}, {"lights", std::int64_t(a.lights)}}}};
@@ -2838,6 +2860,8 @@ void stream_start() {
       error = "image-access-unavailable";
     } else if (!env_non_negative("GRC_RESOURCE_INLINE_MAX_BYTES", 0, &inline_max_bytes)) {
       error = "invalid GRC_RESOURCE_INLINE_MAX_BYTES (a decimal integer >= 0)";
+    } else if (!env_positive("GRC_ADOPT_FRAME_BUDGET_US", 4000, &g_stream.adopt_frame_budget_us)) {
+      error = "invalid GRC_ADOPT_FRAME_BUDGET_US (a decimal integer >= 1)";
     } else if (!env_positive("GRC_RESOURCE_BUDGET_BYTES", 512ull << 20,
                              &g_stream.budget_bytes)) {
       error = "invalid GRC_RESOURCE_BUDGET_BYTES (a decimal integer >= 1)";
@@ -3438,6 +3462,7 @@ void stream_start() {
              ", cache " + std::to_string(warm.from_cache) + ") jobs=" + std::to_string(warm.jobs) +
              " sync=" + std::to_string(warm.sync_coded) + " skipped=" +
              (warm.skipped.empty() ? "-" : warm.skipped) + " us=" + std::to_string(warm.warm_queue_us));
+    rs::adopt_stage_begin(g_stream.adopt_frame_budget_us, g_stream.arm_t0_ns);
     g_stream.adopt_stats = rs::adopt_at_arm(adopt_config);
     session.adoption.present = true;
     session.adoption.frame = static_cast<int32_t>(adopt_config.arm_frame);
@@ -3540,7 +3565,8 @@ void stream_start() {
   }
   rs::mirror_set_canvas_texture_headless(headless_host);
   rs::mirror_instance().set_recover(
-      g_stream.gate8.adopt, g_stream.adopt_fault != rs::AdoptFault::HoldOffSkipRepublish);
+      g_stream.gate8.adopt, g_stream.adopt_fault != rs::AdoptFault::HoldOffSkipRepublish,
+      g_stream.gate8.adopt);
   if (sabotage.config.kind == rs2::SabotageKind::OmitUpdate) {
     rs::mirror_set_drop_frame(sabotage.config.frame);
   } else if (sabotage.config.kind == rs2::SabotageKind::OmitOp) {
@@ -5284,6 +5310,12 @@ void stream_publish(uint64_t frame) {
   rs::mirror_set_dynamic_hash_readers(
       rs::resource_log().wants_lines() ||
       (g_live.hub != nullptr && !g_hc_dyn_hash_unread && g_live.hub->has_connection_below_v11()));
+  if (rs::adopt_stage_holds_publish()) {
+    // The existing pending-delivery hold: an incomplete adoption never enters HoldBack, so
+    // worker completion or teardown cannot publish an older snapshot with unknown textures.
+    if (g_live.hub) g_live.hub->on_frame(frame, monotonic_ns(), nullptr, epoch, 0);
+    return;
+  }
   const uint64_t t0 = monotonic_ns();
   rs::Captured snapshot = rs::mirror_snapshot(0, frame);
   uint64_t snapshot_ns = monotonic_ns() - t0;
@@ -5389,6 +5421,11 @@ void stream_publish(uint64_t frame) {
     published = g_stream.publisher->last_published();
   } else {
     snapshot.state.frame = publish_frame;
+  }
+  if (g_stream.gate8.adopt && rs::adopt_stage_stats().arm_to_first_publish_us == 0) {
+    rs::adopt_stage_published();
+    rs::mirror_instance().set_recover(
+        true, g_stream.adopt_fault != rs::AdoptFault::HoldOffSkipRepublish);
   }
   if (g_hints.on) {
     g_hints.in_state = published->payloads;  // the next budget walk's captured state
@@ -5622,6 +5659,7 @@ bool attempt(const char *phase) {
     refuse("interface-incomplete");
     return true;
   }
+  if (!g_state.identity_checked) {
   const bool derived = g_state.calibration_source == "derived";
   if (g_state.calibration_path.empty() && !derived) {
     refuse("no-calibration");
@@ -5635,7 +5673,14 @@ bool attempt(const char *phase) {
     refuse(error.compare(0, 11, "cannot read") == 0 ? "no-calibration" : "invalid-calibration");
     return true;
   }
-  if (!collect_fingerprint(&g_state.fp, &error)) {
+  bool fingerprint_ok = true;
+  if (g_state.fingerprint_hash_count == 0) {
+    const auto start = rs::warm_now_ns();
+    ++g_state.fingerprint_hash_count;
+    fingerprint_ok = collect_fingerprint(&g_state.fp, &error);
+    g_state.fingerprint_ns += rs::warm_now_ns() - start;
+  }
+  if (!fingerprint_ok) {
     log_line("fingerprint: " + error);
     if (derived) {
       g_state.derive_error = error;
@@ -5729,6 +5774,10 @@ bool attempt(const char *phase) {
     refuse("slot-mask-mismatch");
     return true;
   }
+
+  g_state.identity_check_count = g_state.checks.size();
+  g_state.identity_checked = true;
+  }  // process identity and immutable hook plan
 
   // HSD (render-stream-12.md "Headless defaults (HSD)"): GRC_HEADLESS_CANVAS_TEXTURE,
   // GRC_HEADLESS_PARTICLES and GRC_PREDRAW_PUMP unset (or `auto`) default on for a headless host at
@@ -6828,6 +6877,8 @@ cap::Value::Object api_state() {
         cap::Value::Object{{"entries", std::int64_t(stats.family[i].entries)}};
   }
   auto snapshot = g_api->state(g_state.frames_total, std::move(registry));
+  snapshot["fingerprint_hash_count"] = std::int64_t(g_state.fingerprint_hash_count);
+  snapshot["fingerprint_ns"] = std::int64_t(g_state.fingerprint_ns);
   snapshot["frame_callback_registered"] = g_frame_registered;
   const auto table = g_state.shadow.published();
   snapshot["table"] = table == ShadowVtable::Table::Lean ? "lean" :
@@ -6913,6 +6964,7 @@ bool attachment_detach() {
   while (!hooks_attachment_drained()) std::this_thread::sleep_for(std::chrono::milliseconds(1));
   api_teardown_finish_blocking();
   stream_finish(rs2::EndReason::Disarm);
+  rs::adopt_materials_attachment_end();
   rs::adopt_warm_cancel();
   rs::texture_worker_pool().stop();
   encoders_finish();
@@ -6948,6 +7000,20 @@ bool attachment_attach() {
        g_state.shadow.published() != ShadowVtable::Table::Lean)) return false;
   State fresh;
   fresh.shadow = g_state.shadow;
+  fresh.identity_checked = g_state.identity_checked;
+  fresh.fingerprint_hash_count = g_state.fingerprint_hash_count;
+  fresh.fingerprint_ns = g_state.fingerprint_ns;
+  fresh.fp = g_state.fp;
+  fresh.calib = g_state.calib;
+  fresh.facts = g_state.facts;
+  fresh.plan = g_state.plan;
+  fresh.identity_check_count = g_state.identity_check_count;
+  fresh.checks.assign(g_state.checks.begin(),
+                     g_state.checks.begin() + g_state.identity_check_count);
+  fresh.derived_record = g_state.derived_record;
+  fresh.display_server = g_state.display_server;
+  fresh.rendering_driver = g_state.rendering_driver;
+  fresh.rendering_method = g_state.rendering_method;
   fresh.calibration_path = g_state.calibration_path;
   fresh.abi_table_path = g_state.abi_table_path;
   fresh.calibration_source = g_state.calibration_source;
@@ -6970,7 +7036,8 @@ bool attachment_attach() {
   g_meta.configured = false;
   g_perf = Perf();
   g_hc_shadow_budget.clear();
-  g_viewports = ViewportsState();
+  g_viewports.stream_live = false;
+  g_viewports.node_route_calls = g_viewports.node_route_bound = 0;
   rs::shader_clock_reset_attachment();
   hooks_attachment_reset();
   live::carrier_registry().reopen();
@@ -7399,6 +7466,8 @@ void deinitialize(void * /*userdata*/, GDExtensionInitializationLevel level) {
   if (g_state.shadow.built()) g_state.shadow.publish(ShadowVtable::Table::Engine);
   while (!hooks_attachment_drained()) std::this_thread::sleep_for(std::chrono::milliseconds(1));
   while (!hooks_lean_drained()) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  rs::adopt_materials_attachment_end();
+  rs::adopt_process_reset();
   rs::registry_configure(false, rs::RegistryFault::None);
   api_evidence();
   cap::gd_capture_unregister();

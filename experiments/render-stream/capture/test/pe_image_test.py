@@ -15,6 +15,7 @@ def compare(path):
     global checks
     expected = json.loads(subprocess.check_output([sys.executable, "-I", str(tools / "calibrate.py"), "--pe-identity", str(path)]))
     actual = json.loads(subprocess.check_output([exe, str(path)]))
+    assert "sha256" in actual, "whole-file digest must share PE collection"
     assert actual == {k: expected[k] for k in actual}, (actual, expected)
     checks += 1
 
