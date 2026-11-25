@@ -49,6 +49,13 @@ impl HelloParams {
         if f["clientTweens"] == true && version < 17 {
             return Err("render-stream client: clientTweens needs protocol 17 or later".into());
         }
+        let integer = |value: &Value, field: &str| -> Result<Value, String> {
+            json_integer(value, (1u64 << 53) - 1)
+                .map(Value::from)
+                .ok_or_else(|| {
+                    format!("render-stream client: {field} must be a non-negative safe integer")
+                })
+        };
         let gpu = f["gpuFormats"].as_str().unwrap_or("none");
         let mut out = object(vec![
             ("type", "hello".into()),
@@ -73,7 +80,8 @@ impl HelloParams {
             (
                 "inbound_buffer_bytes",
                 f.get("inboundBufferBytes")
-                    .cloned()
+                    .map(|v| integer(v, "inbound_buffer_bytes"))
+                    .transpose()?
                     .unwrap_or(16777216.into()),
             ),
             ("token", f["token"].clone()),
@@ -81,11 +89,23 @@ impl HelloParams {
                 "manifest_sha256",
                 f.get("manifestSha256").cloned().unwrap_or(Value::Null),
             ),
-            ("presentation_backing_w", f["backing"][0].clone()),
-            ("presentation_backing_h", f["backing"][1].clone()),
-            ("presentation_css_w", f["css"][0].clone()),
-            ("presentation_css_h", f["css"][1].clone()),
-            ("dpr_milli", f["dprMilli"].clone()),
+            (
+                "presentation_backing_w",
+                integer(&f["backing"][0], "presentation_backing_w")?,
+            ),
+            (
+                "presentation_backing_h",
+                integer(&f["backing"][1], "presentation_backing_h")?,
+            ),
+            (
+                "presentation_css_w",
+                integer(&f["css"][0], "presentation_css_w")?,
+            ),
+            (
+                "presentation_css_h",
+                integer(&f["css"][1], "presentation_css_h")?,
+            ),
+            ("dpr_milli", integer(&f["dprMilli"], "dpr_milli")?),
             (
                 "texture_encodings",
                 if gpu != "" && gpu != "none" {
@@ -354,6 +374,57 @@ pub fn call(operation: &str, input: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn hello_integral_floats_encode_as_integers() {
+        for version in 16..=19 {
+            let facts = json!({
+                "protocol": version as f64,
+                "creditWindow": 2.0,
+                "inboundBufferBytes": 8388608.0,
+                "token": null,
+                "backing": [640.0, 360.0],
+                "css": [320.0, 180.0],
+                "dprMilli": 2000.0,
+            });
+            let out: Value =
+                serde_json::from_str(&HelloParams { facts }.encode().unwrap()).unwrap();
+            for (key, expected) in [
+                ("credit_window", 2),
+                ("inbound_buffer_bytes", 8388608),
+                ("presentation_backing_w", 640),
+                ("presentation_backing_h", 360),
+                ("presentation_css_w", 320),
+                ("presentation_css_h", 180),
+                ("dpr_milli", 2000),
+            ] {
+                assert_eq!(out[key].as_u64(), Some(expected), "{version}: {key}");
+            }
+        }
+    }
+
+    #[test]
+    fn hello_integer_fields_reject_fractional_and_non_numeric_values() {
+        for path in [
+            "/protocol",
+            "/creditWindow",
+            "/inboundBufferBytes",
+            "/backing/0",
+            "/backing/1",
+            "/css/0",
+            "/css/1",
+            "/dprMilli",
+        ] {
+            for invalid in [json!(640.5), json!("640"), Value::Null, json!(true)] {
+                let mut facts = json!({
+                    "protocol": 19, "creditWindow": 2, "inboundBufferBytes": 16777216,
+                    "backing": [640, 360], "css": [320, 180], "dprMilli": 2000,
+                });
+                *facts.pointer_mut(path).unwrap() = invalid;
+                assert!(HelloParams { facts }.encode().is_err(), "{path}");
+            }
+        }
+    }
+
     #[test]
     fn strict_descriptor_errors_are_typed() {
         for (url, code) in [

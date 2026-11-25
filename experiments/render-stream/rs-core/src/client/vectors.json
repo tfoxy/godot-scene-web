@@ -8,7 +8,7 @@
   {
     "name": "hello-json-float-numbers",
     "op": "client_hello",
-    "input": "{\"protocol\":19.0,\"creditWindow\":2.0,\"token\":null,\"backing\":[640,360],\"css\":[640,360],\"dprMilli\":1000,\"gpuFormats\":\"none\"}",
+    "input": "{\"protocol\":19.0,\"creditWindow\":2.0,\"inboundBufferBytes\":16777216.0,\"token\":null,\"backing\":[640.0,360.0],\"css\":[640.0,360.0],\"dprMilli\":1000.0,\"gpuFormats\":\"none\"}",
     "output": "{\"type\":\"hello\",\"protocol\":\"render-stream/19\",\"receiver\":\"gsw-render-stream-client\",\"receiver_kind\":\"gsw-canvas\",\"credit_stage\":\"submitted\",\"credit_window\":2,\"inbound_buffer_bytes\":16777216,\"token\":null,\"manifest_sha256\":null,\"presentation_backing_w\":640,\"presentation_backing_h\":360,\"presentation_css_w\":640,\"presentation_css_h\":360,\"dpr_milli\":1000,\"texture_encodings\":\"decoded\",\"gpu_formats\":\"none\",\"live_coding\":\"zstd-base,zstd\"}"
   },
   {
