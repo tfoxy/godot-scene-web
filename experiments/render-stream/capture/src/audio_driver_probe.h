@@ -9,6 +9,9 @@ struct Probe {
   uint64_t base = 0, vptr = 0, object = 0;
   size_t object_matches = 0;
 };
+enum class EnginePath { unsupported, official, derived };
+// Admission still requires live ABI derivation and behavioural validation.
+EnginePath audio_engine_path(const std::string &version);
 bool parse_abi(const std::string &json, Abi *out, std::string *error);
 bool dummy_name(const std::string &name, std::string *error);
 bool derive(const CalibMemoryReader &memory,

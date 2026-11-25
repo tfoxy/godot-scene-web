@@ -1209,6 +1209,15 @@ grc_add_test(NAME audio_driver_probe COMMAND audio_driver_probe_test
   ${CMAKE_CURRENT_SOURCE_DIR}/../calibration/abi/godot-4.5.1-audio-driver.json)
 endif()
 
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
+add_executable(audio_driver_hook_test test/audio_driver_hook_test.cpp
+  src/audio_driver_hook.cpp src/audio_driver_probe.cpp src/report.cpp)
+target_include_directories(audio_driver_hook_test PRIVATE src vendor)
+target_link_libraries(audio_driver_hook_test PRIVATE grc_warnings grc_platform Threads::Threads ${CMAKE_DL_LIBS})
+grc_add_test(NAME audio_driver_hook COMMAND audio_driver_hook_test
+  ${CMAKE_CURRENT_BINARY_DIR}/audio-driver-hook-test)
+endif()
+
 add_executable(rs_audio_clock_test test/rs_audio_clock_test.cpp)
 target_include_directories(rs_audio_clock_test PRIVATE src)
 target_link_libraries(rs_audio_clock_test PRIVATE grc_warnings)

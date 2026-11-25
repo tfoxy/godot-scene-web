@@ -37,6 +37,24 @@ class Memory final : public grc::CalibMemoryReader {
 int main(int argc,char **argv) {
   if(argc!=2)return 2;
   std::ifstream f(argv[1]); std::string json((std::istreambuf_iterator<char>(f)),{}),error;
+  using grc::audio::EnginePath;
+  const struct { const char *version; EnginePath expected; const char *label; } engines[] = {
+    {"Godot Engine v4.5.1.stable.official", EnginePath::official, "official engine admitted"},
+    {"MegaDot v4.5.1.m.14.mono.custom_build", EnginePath::derived, "MegaDot m.14 requires derivation"},
+    {"MegaDot v4.5.1.m.12.mono.custom_build", EnginePath::derived, "MegaDot m.12 requires derivation"},
+    {"MegaDot v4.5.1.m.99.mono.custom_build", EnginePath::derived, "MegaDot builds use version family, not build allowlist"},
+    {"MegaDot v4.5.2.m.1.mono.custom_build", EnginePath::unsupported, "different patch refused"},
+    {"Godot Engine v4.5.1.stable.custom_build", EnginePath::unsupported, "unverified Godot custom build refused"},
+    {"", EnginePath::unsupported, "empty version refused"},
+    {"MegaDot v4.5.10.m.14.mono.custom_build", EnginePath::unsupported, "patch prefix collision refused"},
+    {"MegaDot v4.5.1", EnginePath::unsupported, "missing build separator refused"},
+    {"MegaDot v4.5.1.", EnginePath::unsupported, "missing build suffix refused"},
+    {"OtherDot v4.5.1.m.14.mono.custom_build", EnginePath::unsupported, "unknown fork refused"},
+    {"prefix MegaDot v4.5.1.m.14.mono.custom_build", EnginePath::unsupported, "embedded fork prefix refused"},
+    {"Godot Engine v4.5.1.stable.official.extra", EnginePath::unsupported, "official match stays exact"},
+  };
+  for (const auto &engine : engines)
+    check(grc::audio::audio_engine_path(engine.version) == engine.expected, engine.label);
   grc::audio::Abi abi; grc::audio::Probe p;
   check(grc::audio::parse_abi(json,&abi,&error),"parse header-derived ABI");
   if(abi.slots.size()!=38)return 2;

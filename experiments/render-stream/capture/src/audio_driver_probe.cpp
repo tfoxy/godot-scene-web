@@ -1,6 +1,7 @@
 #include "audio_driver_probe.h"
 #include "rs_json_lite.h"
 #include <set>
+#include <string_view>
 
 namespace grc::audio {
 namespace {
@@ -43,6 +44,12 @@ std::set<uint64_t> tables(const CalibMemoryReader &m, const std::string &name, u
   return result;
 }
 }  // namespace
+EnginePath audio_engine_path(const std::string &version) {
+  if (version == "Godot Engine v4.5.1.stable.official") return EnginePath::official;
+  constexpr std::string_view fork_prefix = "MegaDot v4.5.1.";
+  if (version.starts_with(fork_prefix) && version.size() > fork_prefix.size()) return EnginePath::derived;
+  return EnginePath::unsupported;
+}
 bool dummy_name(const std::string &name, std::string *error) {
   return name == "Dummy" || fail(error, "active audio driver is not Dummy: " + name);
 }

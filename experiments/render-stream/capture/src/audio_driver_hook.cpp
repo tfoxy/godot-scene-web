@@ -79,8 +79,8 @@ void initialize(const std::string &evidence_dir) {
   if ((!mode || !*mode) && granted && config.godot_sample) mode = "sample";
   if (!mode || !*mode) return;
   [[maybe_unused]] const char *path=rs::env("GRC_AUDIO_ABI_TABLE");
-  Probe probe; Abi abi; std::string error, bound;
-  bool ok=false;
+  Probe probe; Abi abi; std::string error, bound, engine_version, engine_path;
+  bool ok=false, engine_unverified=false;
   if (std::string(mode)!="probe" && std::string(mode)!="log" && std::string(mode)!="sample") error="unsupported GRC_AUDIO mode";
   else if (std::string(mode)=="sample" && !granted) error="audio-not-granted";
 #if defined(__linux__) && defined(__x86_64__)
@@ -96,7 +96,11 @@ void initialize(const std::string &evidence_dir) {
   else if (!path || !*path) error="GRC_AUDIO_ABI_TABLE is required";
   else {
     ProcessFingerprint fp;
-    if (collect_fingerprint(&fp,&error) && fp.version_string=="Godot Engine v4.5.1.stable.official") {
+    const bool fingerprinted=collect_fingerprint(&fp,&error);
+    engine_version=fp.version_string;
+    const auto decision=audio_engine_path(engine_version);
+    if (fingerprinted && decision!=EnginePath::unsupported) {
+      engine_path=decision==EnginePath::official ? "official" : "derived";
       rs::File f(rs::open_file(path,"rb")); std::string text;
       if (!rs::file_read_all(f.get(),&text)) error="cannot read audio ABI table";
       else if (parse_abi(text,&abi,&error)) {
@@ -115,16 +119,25 @@ void initialize(const std::string &evidence_dir) {
           }
         }
       }
-    } else if (error.empty()) error="unsupported engine version: "+fp.version_string;
+    } else if (error.empty()) {
+      error="unsupported engine version: "+fp.version_string;
+      engine_unverified=true;
+    }
   }
 #else
   else error="audio seam supports Linux x86-64 only";
 #endif
   if (ok && std::string(mode)=="log") ok=start_log(probe,abi,evidence_dir,&error);
   if (ok && std::string(mode)=="sample") ok=start_sample(probe,abi,&error);
-  if (!ok && std::string(mode)=="sample") godot_slab().refuse(bound != "Dummy" && !bound.empty() ? "unavailable:not-dummy" : error == "no-stop-entry" ? "unavailable:no-stop-entry" : "unavailable:seam");
+  if (!ok && std::string(mode)=="sample") {
+    const char *reason=bound != "Dummy" && !bound.empty() ? "unavailable:not-dummy"
+      : error == "no-stop-entry" ? "unavailable:no-stop-entry"
+      : engine_unverified ? "unavailable:engine-unverified" : "unavailable:seam";
+    godot_slab().refuse(reason);
+  }
   JsonWriter j; j.object_begin().field("mode",std::string(mode)).field("status",std::string(ok?"found":"refused"))
-    .field("reason",error).field("bound_driver",bound).field_hex("object",probe.object)
+    .field("reason",error).field("engine_version",engine_version).field("engine_path",engine_path)
+    .field("bound_driver",bound).field_hex("object",probe.object)
     .field_hex("vptr",probe.vptr).field("object_matches",int64_t(probe.object_matches)).key("slots").object_begin();
   for (size_t i=0;i<abi.slots.size();++i) j.field(abi.slots[i].name,int64_t(i));
   j.object_end().object_end();

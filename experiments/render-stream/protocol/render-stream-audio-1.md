@@ -49,6 +49,9 @@ never FMOD banks, engine code, or client-side event/parameter replay.
   and assets have unity gain; the client applies Godot bus and FMOD group gains.
   Group gains are linear amplitude; the toolkit imposes no product volume curve.
   Loop cue kinds gate lane gain on the client.
+- Godot sample capture accepts `Godot Engine v4.5.1.stable.official` or
+  `MegaDot v4.5.1.*` only after ABI derivation and behavioural validation; other
+  versions report `unavailable:engine-unverified`.
 - Godot registered samples have SHA-256-addressed variants: original MP3 bytes,
   re-muxed Ogg Vorbis, and RIFF PCM16 WAV at native rate/channels as fallback.
   WAV is built on a worker only when a connection lacks the original codec.
