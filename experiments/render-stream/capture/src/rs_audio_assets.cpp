@@ -78,7 +78,7 @@ std::string Assets::put(uint32_t id, Bytes bytes, const char *codec, bool store,
   const auto hash = sha256_hex(bytes.data(), bytes.size());
   std::lock_guard lock(mu_);
   auto &e = entries_[hash];
-  if (!e.body.bytes) e.body = {std::make_shared<const Bytes>(std::move(bytes)), store, codec};
+  if (!e.body.bytes) e.body = {std::make_shared<const rs::PageBytes>(bytes.begin(), bytes.end()), store, codec};
   e.body.store &= store; e.owners[id] = true; e.expires = now + 30000000;
   return hash;
 }
@@ -106,7 +106,7 @@ void Assets::sweep(uint64_t now) {
     if (i->second.owners.empty() && now >= i->second.expires) i = entries_.erase(i); else ++i;
   }
 }
-std::shared_ptr<const Bytes> AudioResources::lookup(std::string_view hash) {
+Assets::Payload AudioResources::lookup(std::string_view hash) {
   auto asset = godot_assets().get(hash, asset_now()); return asset.bytes ? asset.bytes : view_.lookup(hash);
 }
 live::ResourceBody AudioResources::lookup_body(std::string_view hash, live::Coding accepted) {

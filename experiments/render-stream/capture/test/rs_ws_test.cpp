@@ -51,6 +51,7 @@
 // src/rs_ws.cpp, so a bug that is symmetric between encode and decode would
 // not cancel out.
 
+#include "rs_page_allocator.h"
 #include "rs_platform.h"
 
 // Native client-only facilities; the listener itself uses rs_platform on every OS.
@@ -360,21 +361,21 @@ std::vector<std::uint8_t> pattern_bytes(std::size_t len, std::uint8_t seed) {
 class FakeResourceSource : public grc::live::ResourceSource {
  public:
   void set(const std::string &hash, std::vector<std::uint8_t> body) {
-    bodies_[hash] = std::make_shared<const std::vector<std::uint8_t>>(std::move(body));
+    bodies_[hash] = std::make_shared<const ::grc::rs::PageBytes>(std::move(body));
   }
-  std::shared_ptr<const std::vector<std::uint8_t>> lookup(std::string_view hash) override {
+  std::shared_ptr<const ::grc::rs::PageBytes> lookup(std::string_view hash) override {
     const auto it = bodies_.find(std::string(hash));
     return it == bodies_.end() ? nullptr : it->second;
   }
 
  private:
-  std::map<std::string, std::shared_ptr<const std::vector<std::uint8_t>>> bodies_;
+  std::map<std::string, std::shared_ptr<const ::grc::rs::PageBytes>> bodies_;
 };
 
 // G8kz: a source that also codes (what ServedResources does), counting its compressions.
 class CodedResourceSource : public FakeResourceSource {
  public:
-  std::shared_ptr<const std::vector<std::uint8_t>> lookup_coded(std::string_view hash,
+  std::shared_ptr<const ::grc::rs::PageBytes> lookup_coded(std::string_view hash,
                                                                 grc::live::Coding coding) override {
     const auto identity = lookup(hash);
     if (identity == nullptr) return nullptr;
@@ -384,7 +385,7 @@ class CodedResourceSource : public FakeResourceSource {
                         : grc::rs::http_coding::gzip_compress(identity->data(), identity->size(), &out);
     ++compressions;
     if (!ok || out.size() >= identity->size()) return nullptr;
-    return std::make_shared<const std::vector<std::uint8_t>>(std::move(out));
+    return std::make_shared<const ::grc::rs::PageBytes>(std::move(out));
   }
   int compressions = 0;
 };
@@ -1835,10 +1836,10 @@ class StreamSource : public FakeResourceSource {
  public:
   std::mutex m;
   std::shared_ptr<grc::rs::BodyStream> stream;
-  std::shared_ptr<const std::vector<std::uint8_t>> whole;  // set once "made"
+  std::shared_ptr<const ::grc::rs::PageBytes> whole;  // set once "made"
   grc::live::ResourceBody lookup_body(std::string_view hash, grc::live::Coding accepted) override {
     grc::live::ResourceBody out;
-    const std::shared_ptr<const std::vector<std::uint8_t>> identity = lookup(hash);
+    const std::shared_ptr<const ::grc::rs::PageBytes> identity = lookup(hash);
     if (identity == nullptr) return out;
     out.identity_bytes = identity->size();
     std::lock_guard<std::mutex> lock(m);
@@ -1897,7 +1898,7 @@ void test_http_follow_stream() {
   const std::string lan_get =
       plain_http_request("GET", config.resource_prefix + hash, {{"Accept-Encoding", "gzip, deflate"}});
   const auto append = [&](std::size_t i) {
-    source.stream->append(std::make_shared<const std::vector<std::uint8_t>>(parts[i]));
+    source.stream->append(std::make_shared<const ::grc::rs::PageBytes>(parts[i]));
   };
 
   // A: before any chunk exists. Its head arrives at once.
@@ -1992,7 +1993,7 @@ void test_http_follow_stream() {
   // Once whole: Content-Length, the same bytes.
   {
     std::lock_guard<std::mutex> lock(source.m);
-    source.whole = std::make_shared<const std::vector<std::uint8_t>>(joined);
+    source.whole = std::make_shared<const ::grc::rs::PageBytes>(joined);
   }
   grc::rs::socket_send(b, lan_get.data(), lan_get.size());
   HttpResponse rd = read_http_response(b);
@@ -2010,7 +2011,7 @@ void test_http_follow_stream() {
   HttpResponse rf;
   std::thread tf([&] { rf = read_http_response(f); });
   std::this_thread::sleep_for(std::chrono::milliseconds(20));
-  source.stream->append(std::make_shared<const std::vector<std::uint8_t>>(parts[0]));
+  source.stream->append(std::make_shared<const ::grc::rs::PageBytes>(parts[0]));
   const auto t0 = std::chrono::steady_clock::now();
   source.stream->finish(false);
   tf.join();
@@ -2029,7 +2030,7 @@ void test_http_follow_stream() {
   server.stop(200);
   const auto stop_ms =
       std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t_stop).count();
-  source.stream->append(std::make_shared<const std::vector<std::uint8_t>>(parts[0]));  // after stop: no reader
+  source.stream->append(std::make_shared<const ::grc::rs::PageBytes>(parts[0]));  // after stop: no reader
   source.stream->finish(true);
   check(stop_ms < 2000, "follow: stop() with a follower attached returns (" + std::to_string(stop_ms) + " ms)");
   for (SocketHandle fd : {ws_fd, a, b, c, f, g}) grc::rs::socket_close(fd);
@@ -2462,9 +2463,9 @@ void test_http_get_auth_correct_token_200() {
   server.stop(1000);
 }
 
-void test_no_mmap_mprotect_imports() {
+void test_no_mprotect_imports() {
 #ifdef _WIN32
-  std::puts("skip no-mmap-mprotect-imports: ELF nm inspection; PE imports are checked by w-imports");
+  std::puts("skip no-mprotect-imports: ELF nm inspection; PE imports are checked by w-imports");
 #else
 #ifdef __APPLE__
   // Mach-O: Apple nm lists undefined symbols with -u (both slices of a universal binary).
@@ -2484,16 +2485,14 @@ void test_no_mmap_mprotect_imports() {
   FILE *pipe = ::popen(cmd.c_str(), "r");
   check(pipe != nullptr, "popen(nm) for the import check");
   if (pipe == nullptr) return;
-  bool found_mmap = false;
   bool found_mprotect = false;
   char line[512];
   while (std::fgets(line, sizeof(line), pipe) != nullptr) {
     const std::string l(line);
-    if (l.find("mmap") != std::string::npos) found_mmap = true;
     if (l.find("mprotect") != std::string::npos) found_mprotect = true;
   }
   ::pclose(pipe);
-  check(!found_mmap, "the test binary imports no mmap symbol (HTTP bodies are served from memory, never mapped)");
+  // Owned payloads may use anonymous page mappings; executable mappings remain forbidden.
   check(!found_mprotect, "the test binary imports no mprotect symbol");
 #endif
 }
@@ -3917,7 +3916,7 @@ int main(int argc, char **argv) {
   test_http_get_auth_missing_token_401();
   test_http_get_auth_wrong_token_401();
   test_http_get_auth_correct_token_200();
-  test_no_mmap_mprotect_imports();
+  test_no_mprotect_imports();
   test_g7n_subprotocol_choice();
   test_g7n_origin_on_upgrade();
   test_g7n_origin_and_cors_on_resources();

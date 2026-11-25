@@ -1,3 +1,4 @@
+#include "rs_page_allocator.h"
 #include "rs_texture_decode.h"
 
 #include <atomic>
@@ -229,7 +230,7 @@ DecodeResult texture_decode(const DecodeRequest &request) {
   }
   const std::uint64_t perturb = g_perturb_frame.load();
   if (perturb != 0 && request.frame >= perturb) {
-    auto flipped = std::make_shared<std::vector<std::uint8_t>>(
+    auto flipped = std::make_shared<PageBytes>(
         decoded.data, decoded.data + decoded.data_size);
     // G8f: a float texel's first channel is flipped whole (4 bytes of an f32, 2 of a half), so
     // the change is a sign and exponent one, never a mantissa ripple a clamp could hide.

@@ -14,6 +14,7 @@
 #ifndef GRC_RS_CAPTURED_H
 #define GRC_RS_CAPTURED_H
 
+#include "rs_page_allocator.h"
 #include <cstdint>
 #include <map>
 #include <memory>
@@ -38,12 +39,13 @@ struct RestSibling;  // rs_payload_rest.h
 // One payload body: the bytes as held (identity, or coded), plus the facts of the coding.
 // Everything that only moves the pointer or weighs it sees a vector; anything that reads the
 // identity content goes through rs::identity_of() (rs_payload_rest.h).
-class PayloadBytes : public std::vector<std::uint8_t> {
+class PayloadBytes : public PageBytes {
  public:
-  using std::vector<std::uint8_t>::vector;
+  using PageBytes::PageBytes;
   PayloadBytes() = default;
+  explicit PayloadBytes(PageBytes &&bytes) : PageBytes(std::move(bytes)) {}
   explicit PayloadBytes(std::vector<std::uint8_t> &&bytes)
-      : std::vector<std::uint8_t>(std::move(bytes)) {}
+      : PageBytes(bytes) {}
 
   RestCoding rest = RestCoding::Identity;
   // Coded: the identity payload's size. Identity: unused (size() is it).
@@ -53,7 +55,7 @@ class PayloadBytes : public std::vector<std::uint8_t> {
   mutable bool rest_tried = false;
   // The at-rest-keep-identity sabotage (GRC_AT_REST_FAULT=keep-identity) only: the identity body
   // kept beside the coded one, the defect the TDR review found (Review record item 10).
-  std::shared_ptr<const std::vector<std::uint8_t>> kept_identity;
+  std::shared_ptr<const PageBytes> kept_identity;
   // The same payload in the host's second HTTP coding (GRC_HTTP_ENCODING's second entry), made
   // on the sibling pool once the body is served (rs_payload_rest.h "Sibling coding").
   // Read and written only under that module's mutex; never part of held_bytes(), which a map

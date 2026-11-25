@@ -20,9 +20,9 @@ struct Supplier : VariantSupplier {
   void no_store(uint32_t id) override { assets.no_store(id); }
 };
 struct View : grc::live::ResourceSource {
-  using Payload = std::shared_ptr<const Bytes>;
+  using Payload = Assets::Payload;
   Payload lookup(std::string_view) override { return body; }
-  Payload body = std::make_shared<const Bytes>(Bytes{1, 2, 3});
+  Payload body = std::make_shared<const grc::rs::PageBytes>(grc::rs::PageBytes{1, 2, 3});
 };
 }
 int main() {
@@ -131,11 +131,16 @@ int main() {
   check(resources.lookup(audio_hash) != view.body && resources.no_store(audio_hash),
         "audio-only resource lookup retains no-store policy");
   const auto body = resources.lookup_body(audio_hash, grc::live::Coding::Gzip);
+  const auto stored_bytes = godot_assets().get(audio_hash, now).bytes;
+  check(resources.lookup(audio_hash) == stored_bytes && body.bytes == stored_bytes,
+        "audio resource lookups share stored page-backed bytes without copying");
   check(body.bytes && *body.bytes == pcm && body.coding == grc::live::Coding::Identity && body.identity_bytes == pcm.size(),
         "audio asset serves original bytes despite accepted HTTP coding");
   grc::live::ResourceBody coded;
   check(resources.lookup_coded_body(audio_hash, grc::live::Coding::Gzip, &coded) && !coded.bytes && coded.identity_bytes == pcm.size(),
         "carrier coding probe falls back to audio identity bytes");
+  check(resources.lookup_coded_body(audio_hash, grc::live::Coding::Identity, &coded) && coded.bytes == stored_bytes,
+        "identity carrier lookup shares stored page-backed bytes without copying");
   check(resources.lookup("view") == view.body && !resources.no_store("view"),
         "view resource lookup and caching still delegated");
   godot_assets().release(999, now);

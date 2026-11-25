@@ -87,6 +87,7 @@
 // track-cap-exp-ignored (both need --track-caps=hmac). At stop the tracks close 1001 `stream-ended` before
 // the view linger, and <--evidence-dir>/live-tracks.json is written (also after every change).
 
+#include "rs_page_allocator.h"
 #include <chrono>
 #include <csignal>
 #include <cstdio>
@@ -135,12 +136,12 @@ class FixedSource : public grc::live::ResourceSource {
   FixedSource() {
     std::vector<std::uint8_t> body(1024);
     for (std::size_t i = 0; i < body.size(); ++i) body[i] = static_cast<std::uint8_t>(i % 251);
-    body_ = std::make_shared<const std::vector<std::uint8_t>>(std::move(body));
+    body_ = std::make_shared<const ::grc::rs::PageBytes>(std::move(body));
   }
   // --big-resource-mib: a GRT1 body of `mib` MiB of texture-like texels, coded zstd at rest and
   // held in a ServedResources exactly as the capture holds a texture body, under kBigHash.
   void hold_audio() {
-    audio_ = std::make_shared<const std::vector<std::uint8_t>>(grc::audio::Hub::synthetic_wav());
+    audio_ = std::make_shared<const ::grc::rs::PageBytes>(grc::audio::Hub::synthetic_wav());
     audio_hash_ = grc::sha256_hex(audio_->data(), audio_->size());
   }
   void hold_big(std::size_t mib) {
@@ -169,12 +170,12 @@ class FixedSource : public grc::live::ResourceSource {
     big_->pin({&map}, 1, &events);
   }
   std::atomic<std::uint64_t> audio_hits{0};
-  std::shared_ptr<const std::vector<std::uint8_t>> lookup(std::string_view hash) override {
+  std::shared_ptr<const ::grc::rs::PageBytes> lookup(std::string_view hash) override {
     if (hash == kHash) return body_;
     if (audio_ && hash == audio_hash_) { ++audio_hits; return audio_; }
     return big_ != nullptr ? big_->lookup(hash) : nullptr;
   }
-  std::shared_ptr<const std::vector<std::uint8_t>> lookup_coded(std::string_view hash,
+  std::shared_ptr<const ::grc::rs::PageBytes> lookup_coded(std::string_view hash,
                                                                 grc::live::Coding coding) override {
     return big_ != nullptr ? big_->lookup_coded(hash, coding) : nullptr;
   }
@@ -192,8 +193,8 @@ class FixedSource : public grc::live::ResourceSource {
 
  private:
   static constexpr std::string_view kBigHash = "2222222222222222222222222222222222222222222222222222222222222222";
-  std::shared_ptr<const std::vector<std::uint8_t>> body_;
-  std::shared_ptr<const std::vector<std::uint8_t>> audio_;
+  std::shared_ptr<const ::grc::rs::PageBytes> body_;
+  std::shared_ptr<const ::grc::rs::PageBytes> audio_;
   std::string audio_hash_;
   std::unique_ptr<grc::rs::ServedResources> big_;
 };

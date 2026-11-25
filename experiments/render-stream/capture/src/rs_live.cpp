@@ -2614,7 +2614,7 @@ void Hub::run_job(Job &job) {
       record.hash = hash;
       // TDR: the record carries the identity payload; a body coded at rest is inflated once
       // here (the memo keeps the encoded record for every connection of this callback).
-      const std::shared_ptr<const std::vector<std::uint8_t>> identity =
+      const auto identity =
           rs::identity_of(payload->second, rs::InflateSite::Inline);
       if (identity == nullptr) {
         // Only a failed allocation gets here (the host coded these bytes itself): end the
@@ -2624,7 +2624,7 @@ void Hub::run_job(Job &job) {
         transport_->send_text(f.id, encode_error("message-too-large", job.error_detail));
         return;
       }
-      record.payload = *identity;
+      record.payload.assign(identity->begin(), identity->end());
       record_bytes = std::make_shared<const std::vector<std::uint8_t>>(encode_resource(record));
     }
     if (record_bytes->size() > job.max_message_bytes) {

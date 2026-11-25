@@ -1,3 +1,4 @@
+#include "rs_page_allocator.h"
 #include "rs_platform.h"
 #include "rs_resource_store.h"
 
@@ -54,7 +55,7 @@ void ResourceStore::close() {
   }
 }
 
-std::size_t ResourceStore::first_data_offset(const std::vector<std::uint8_t> &payload) {
+std::size_t ResourceStore::first_data_offset(const PageBytes &payload) {
   if (payload.size() < 12) {
     return 0;
   }
@@ -115,7 +116,7 @@ ResourceStore::Put ResourceStore::put_shader(const rs2::ShaderEntry &shader,
                                              std::string *error) {
   // render-stream-5.md "Shader payload": index lines gain type "shader-code". code_bytes is the
   // payload's own meta value (whole length minus magic, meta length and meta).
-  const std::vector<std::uint8_t> &payload = *payload_ptr;
+  const PageBytes &payload = *payload_ptr;
   std::uint64_t code_bytes = 0;
   if (payload.size() >= 12) {
     const std::uint32_t meta_len = static_cast<std::uint32_t>(payload[8]) |
@@ -160,7 +161,7 @@ ResourceStore::Put ResourceStore::put_bytes(const std::string &hash, const char 
   std::string index_path = path_join(dir_, "index.jsonl");
   auto write = [final_path, payload, corrupt, index, line = std::move(line),
                 index_path = std::move(index_path)](std::string *why) {
-    const std::shared_ptr<const std::vector<std::uint8_t>> identity =
+    const std::shared_ptr<const PageBytes> identity =
         identity_of(payload, InflateSite::Store);
     if (identity == nullptr) {
       *why = "cannot inflate the coded body of " + final_path;
@@ -182,11 +183,11 @@ ResourceStore::Put ResourceStore::put_bytes(const std::string &hash, const char 
 }
 
 bool ResourceStore::write_payload_file(const std::string &final_path,
-                                       const std::vector<std::uint8_t> &payload, bool corrupt,
+                                       const PageBytes &payload, bool corrupt,
                                        std::FILE *index, const std::string &line,
                                        const std::string &index_path, std::string *error) {
   const std::uint8_t *data = payload.data();
-  std::vector<std::uint8_t> corrupted;
+  PageBytes corrupted;
   if (corrupt) {
     corrupted = payload;
     const std::size_t offset = first_data_offset(corrupted);
@@ -226,12 +227,12 @@ namespace {
 // wrong-hash's served copy: the identity bytes with the first data byte flipped, then (TDR) coded
 // at rest again, so a coding GET serves it coded like every other body.
 PayloadPtr corrupted_copy(const PayloadPtr &payload) {
-  const std::shared_ptr<const std::vector<std::uint8_t>> identity =
+  const std::shared_ptr<const PageBytes> identity =
       identity_of(payload, InflateSite::Sabotage);
   if (identity == nullptr) {
     return payload;
   }
-  auto copy = std::make_shared<PayloadBytes>(std::vector<std::uint8_t>(*identity));
+  auto copy = std::make_shared<PayloadBytes>(PageBytes(*identity));
   const std::size_t offset = ResourceStore::first_data_offset(*copy);
   if (offset != 0) {
     (*copy)[offset] ^= 0xFF;
@@ -567,7 +568,7 @@ bool ServedResources::contains(std::string_view hash) {
   return held_locked(hash) != nullptr;
 }
 
-std::shared_ptr<const std::vector<std::uint8_t>> ServedResources::lookup(std::string_view hash) {
+std::shared_ptr<const PageBytes> ServedResources::lookup(std::string_view hash) {
   PayloadPtr held;
   {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -579,7 +580,7 @@ std::shared_ptr<const std::vector<std::uint8_t>> ServedResources::lookup(std::st
   return identity_of(held, InflateSite::Get);
 }
 
-std::shared_ptr<const std::vector<std::uint8_t>> ServedResources::lookup_coded(
+std::shared_ptr<const PageBytes> ServedResources::lookup_coded(
     std::string_view hash, live::Coding coding) {
   if (coding == live::Coding::Identity) {
     return nullptr;

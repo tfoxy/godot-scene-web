@@ -44,6 +44,7 @@
 #ifndef GRC_RS_PAYLOAD_REST_H
 #define GRC_RS_PAYLOAD_REST_H
 
+#include "rs_page_allocator.h"
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -100,7 +101,7 @@ const char *inflate_site_name(InflateSite site);
 // The identity payload of `body`: `body` itself when it is not coded, otherwise a fresh inflated
 // copy (counted under `site`; the keep-identity sabotage's kept body instead, uncounted). Null for
 // a null body, or when the inflate fails (counted as `inflate_failed`).
-std::shared_ptr<const std::vector<std::uint8_t>> identity_of(const PayloadPtr &body,
+std::shared_ptr<const PageBytes> identity_of(const PayloadPtr &body,
                                                              InflateSite site);
 
 struct RestStats {
@@ -139,7 +140,7 @@ void set_rest_main_thread();
 struct RestSibling {
   enum class State : std::uint8_t { Pending, Ready, Failed } state = State::Pending;
   RestCoding coding = RestCoding::Identity;
-  std::shared_ptr<const std::vector<std::uint8_t>> bytes;  // Ready: the coded body
+  std::shared_ptr<const PageBytes> bytes;  // Ready: the coded body
   std::shared_ptr<BodyStream> stream;                      // Pending: the encode as it is made
 };
 
@@ -169,10 +170,10 @@ bool start_sibling(const PayloadPtr &body, const SiblingSubmit &submit);
 // `body` in `coding` when that is its sibling and made. Otherwise null, and when `stream` is given
 // and the encode is still running, *stream is set to it (follow it: counted as streamed). Never
 // waits, never codes. A null answer with no stream for the host's second coding counts as a miss.
-std::shared_ptr<const std::vector<std::uint8_t>> sibling_body(const PayloadPtr &body, RestCoding coding,
+std::shared_ptr<const PageBytes> sibling_body(const PayloadPtr &body, RestCoding coding,
                                                               std::shared_ptr<BodyStream> *stream);
 // sibling_body without a stream: a whole body or null (a carrier's lookup).
-std::shared_ptr<const std::vector<std::uint8_t>> sibling_bytes(const PayloadPtr &body, RestCoding coding);
+std::shared_ptr<const PageBytes> sibling_bytes(const PayloadPtr &body, RestCoding coding);
 
 // served-at-rest's census of what a holder keeps: each distinct GRT1 body once.
 struct RestCensus {

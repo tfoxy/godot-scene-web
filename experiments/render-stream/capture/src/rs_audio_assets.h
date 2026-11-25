@@ -16,7 +16,7 @@ struct Mp3Format { uint32_t rate = 0, channels = 0; };
 Mp3Format mp3_format(const Bytes &bytes);
 class Assets {
  public:
-  using Payload = std::shared_ptr<const Bytes>;
+  using Payload = std::shared_ptr<const rs::PageBytes>;
   struct Body { Payload bytes; bool store = true; std::string codec; };
   std::string put(uint32_t id, Bytes bytes, const char *codec, bool store, uint64_t now);
   void release(uint32_t id, uint64_t now);
@@ -32,7 +32,7 @@ Assets &godot_assets();
 class AudioResources final : public live::ResourceSource {
  public:
   explicit AudioResources(live::ResourceSource &view) : view_(view) {}
-  std::shared_ptr<const Bytes> lookup(std::string_view hash) override;
+  Assets::Payload lookup(std::string_view hash) override;
   live::ResourceBody lookup_body(std::string_view hash, live::Coding accepted) override;
   bool lookup_coded_body(std::string_view hash, live::Coding coding, live::ResourceBody *out) override;
   bool no_store(std::string_view hash) override;

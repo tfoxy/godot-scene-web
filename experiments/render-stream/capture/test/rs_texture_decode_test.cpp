@@ -1,6 +1,7 @@
 // Unit tests for the host-decode seam (src/rs_texture_decode.*),
 // against a fake backend: the engine's Image::decompress runs only inside Godot (run-gate8.sh).
 
+#include "rs_page_allocator.h"
 #include <cstdint>
 #include <cstdio>
 #include <memory>
@@ -35,7 +36,7 @@ bool fake_backend(void *image, DecodedImage *out) {
   if (!g_fake_ok) {
     return false;
   }
-  auto bytes = std::make_shared<std::vector<std::uint8_t>>(64, 0x40);
+  auto bytes = std::make_shared<::grc::rs::PageBytes>(64, 0x40);
   out->format = g_fake_format;
   out->width = g_fake_width;
   out->height = 4;

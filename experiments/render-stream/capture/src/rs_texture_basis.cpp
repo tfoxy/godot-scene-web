@@ -35,7 +35,7 @@ void run_basis_job(BasisJob *job, int level, bool perturb, bool corrupt) {
                      ::rs::basis::params_id(level) != nullptr ? ::rs::basis::params_id(level) : ""};
   const bool keyed = cache.enabled() && cache_key_valid(key) && !corrupt;
   if (keyed) {
-    std::vector<std::uint8_t> bytes;
+    PageBytes bytes;
     std::string hash;
     const CacheResult got = cache.get(key, &bytes, &hash);
     if (got == CacheResult::Hit) {
@@ -54,7 +54,7 @@ void run_basis_job(BasisJob *job, int level, bool perturb, bool corrupt) {
   }
   // TDR: the decoded body is held coded at rest; the encode reads it inflated, on this pool.
   const auto source = rs::identity_of(job->source(), rs::InflateSite::Basis);
-  std::vector<std::vector<std::uint8_t>> levels;
+  std::vector<PageBytes> levels;
   if (source == nullptr || !grt1_rgba8_levels(*source, job->format(), job->width(), job->height(),
                                               job->mipmaps(), &levels)) {
     out.error = "decoded payload is not an RGBA8/RGB8 GRT1 of the entry's shape";
@@ -64,7 +64,7 @@ void run_basis_job(BasisJob *job, int level, bool perturb, bool corrupt) {
   std::vector<::rs::basis::Level> in;
   std::int64_t w = job->width();
   std::int64_t h = job->height();
-  for (const std::vector<std::uint8_t> &l : levels) {
+  for (const PageBytes &l : levels) {
     in.push_back({static_cast<std::uint32_t>(w), static_cast<std::uint32_t>(h), l.data()});
     w = w > 1 ? w >> 1 : 1;
     h = h > 1 ? h >> 1 : 1;

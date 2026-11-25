@@ -609,7 +609,7 @@ void test_delivery_seam() {
   {
     std::vector<std::uint8_t> p = {0x47, 0x52, 0x54, 0x31, 0x0D, 0x0A, 0x1A, 0x0A, 2, 0, 0, 0, '{', '}', 9, 0, 0, 0,
                                    1, 2, 3, 4, 5, 6, 7, 8, 9};
-    std::vector<std::vector<std::uint8_t>> levels;
+    std::vector<grc::rs::PageBytes> levels;
     check(grc::rs::grt1_rgba8_levels(p, "RGB8", 2, 1, true, &levels) && levels.size() == 2 &&
               levels[0] == std::vector<std::uint8_t>({1, 2, 3, 255, 4, 5, 6, 255}) &&
               levels[1] == std::vector<std::uint8_t>({7, 8, 9, 255}),

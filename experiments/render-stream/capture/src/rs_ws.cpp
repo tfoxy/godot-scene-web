@@ -1,3 +1,4 @@
+#include "rs_page_allocator.h"
 #include "rs_ws.h"
 
 #include "rs_platform.h"
@@ -619,7 +620,7 @@ class SendQueue {
     segs_.back().own = std::move(bytes);
     bytes_ += segs_.back().own.size();
   }
-  void append(std::shared_ptr<const std::vector<std::uint8_t>> body) {
+  void append(std::shared_ptr<const rs::PageBytes> body) {
     if (body == nullptr || body->empty()) return;
     if (body->size() <= kCoalesceBytes / 4) {
       append(body->data(), body->size());  // cheaper to copy than to hold a segment
@@ -653,7 +654,7 @@ class SendQueue {
  private:
   struct Segment {
     std::vector<std::uint8_t> own;
-    std::shared_ptr<const std::vector<std::uint8_t>> shared;
+    std::shared_ptr<const rs::PageBytes> shared;
     const std::uint8_t *data() const { return shared ? shared->data() : own.data(); }
     std::size_t size() const { return shared ? shared->size() : own.size(); }
   };
@@ -1032,10 +1033,10 @@ struct Server::Impl {
   // 200 OK with a body (render-stream-2.md "HTTP (live)"). `coding` (G8kz) is the content coding
   // `body` is already in: a coded body carries Content-Encoding and the per-coding ETag. The body
   // is queued by reference (send_q holds the shared buffer until it is sent), never copied.
-  void send_http_ok(Conn &c, const std::string &hash, std::shared_ptr<const std::vector<std::uint8_t>> body_ref,
+  void send_http_ok(Conn &c, const std::string &hash, std::shared_ptr<const rs::PageBytes> body_ref,
                     bool keep_alive, const std::vector<std::pair<std::string, std::string>> &cors,
                     Coding coding = Coding::Identity, bool no_store = false) {
-    const std::vector<std::uint8_t> &body = *body_ref;
+    const auto &body = *body_ref;
     std::string resp = "HTTP/1.1 200 OK\r\n";
     // G8ku (render-stream-9.md "KTX2 payload"): a KTX2 body is `image/ktx2` (and never coded: only
     // GRT1 bodies are, ServedResources::lookup_coded); every other payload stays octet-stream.
@@ -1099,9 +1100,9 @@ struct Server::Impl {
     for (rs::BodyStream::Chunk &chunk : fresh) {
       if (c.follow_corrupt && c.follow_next == 0 && chunk->size() > 10) {
         // corrupt-coded-body: one byte flipped inside the deflate data (past the gzip header).
-        std::vector<std::uint8_t> sabotaged = *chunk;
+        rs::PageBytes sabotaged = *chunk;
         sabotaged[10 + (sabotaged.size() - 10) / 2] ^= 0x5a;
-        chunk = std::make_shared<const std::vector<std::uint8_t>>(std::move(sabotaged));
+        chunk = std::make_shared<const rs::PageBytes>(std::move(sabotaged));
       }
       char size_line[24];
       const int n = std::snprintf(size_line, sizeof size_line, "%zx\r\n", chunk->size());
@@ -1266,11 +1267,11 @@ struct Server::Impl {
       return;
     }
     const Coding used = found.coding;
-    std::shared_ptr<const std::vector<std::uint8_t>> body = found.bytes;
+    std::shared_ptr<const rs::PageBytes> body = found.bytes;
     if (used != Coding::Identity && config.corrupt_coded_body && !body->empty()) {
-      std::vector<std::uint8_t> sabotaged = *body;
+      rs::PageBytes sabotaged = *body;
       sabotaged[sabotaged.size() / 2] ^= 0x5a;
-      body = std::make_shared<const std::vector<std::uint8_t>>(std::move(sabotaged));
+      body = std::make_shared<const rs::PageBytes>(std::move(sabotaged));
     }
     const std::uint64_t coded_bytes = body->size();
     send_http_ok(c, hash, std::move(body), keep_alive, cors, used, no_store);

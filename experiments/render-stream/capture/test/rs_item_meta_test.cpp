@@ -25,7 +25,7 @@ void check(bool condition, const std::string &what) {
 using namespace grc::rs::item_meta;
 
 std::string body(const Formed &f) {
-  const std::vector<std::uint8_t> &b = *f.bytes;
+  const auto &b = *f.bytes;
   return std::string(b.begin() + 8, b.end() - 4);
 }
 

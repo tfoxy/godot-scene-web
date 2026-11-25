@@ -69,6 +69,15 @@ include(cmake/tests.cmake)
 if(GRC_LINUX_LIBCXX)
   include(cmake/linux-libcxx.cmake)
 endif()
+add_executable(rs_page_allocator_test test/rs_page_allocator_test.cpp)
+target_include_directories(rs_page_allocator_test PRIVATE src)
+target_link_libraries(rs_page_allocator_test PRIVATE grc_warnings)
+if(GRC_MACOS)
+  set_target_properties(rs_page_allocator_test PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+  grc_sign_macho(rs_page_allocator_test)
+endif()
+grc_add_test(NAME rs_page_allocator COMMAND rs_page_allocator_test)
+
 # Pure audio wire judge. Source-tree golden data is not part of the Windows bundle.
 if(NOT GRC_WINDOWS)
 add_executable(rs_audio_wire_test test/rs_audio_wire_test.cpp src/rs_audio_wire.cpp src/rs_sha256.cpp)
@@ -1104,6 +1113,14 @@ add_executable(rs_capture_api_test test/rs_capture_api_test.cpp src/rs_capture_a
 target_include_directories(rs_capture_api_test PRIVATE src)
 target_link_libraries(rs_capture_api_test PRIVATE grc_warnings grc_platform Threads::Threads)
 grc_add_test(NAME rs_capture_api COMMAND rs_capture_api_test)
+add_executable(rs_detach_release_test test/rs_detach_release_test.cpp src/rs_capture_api.cpp)
+target_include_directories(rs_detach_release_test PRIVATE src)
+target_link_libraries(rs_detach_release_test PRIVATE grc_warnings grc_platform Threads::Threads)
+if(GRC_WINDOWS)
+  grc_add_test(NAME rs_detach_release COMMAND rs_detach_release_test)
+else()
+  grc_add_test(NAME rs_detach_release COMMAND rs_detach_release_test ${CMAKE_CURRENT_SOURCE_DIR}/src/entry.cpp)
+endif()
 
 # These standalone consumers share the same platform implementation as the capture.
 foreach(target IN ITEMS rs_publish_test rs_ws_test rs_ws_echo rs_carrier_set_test rs_track_test

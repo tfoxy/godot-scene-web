@@ -279,9 +279,9 @@ const char *basis_decline_reason(const std::string &format, std::int64_t width,
   return nullptr;
 }
 
-bool grt1_rgba8_levels(const std::vector<std::uint8_t> &grt1, const std::string &format,
+bool grt1_rgba8_levels(const PageBytes &grt1, const std::string &format,
                        std::int64_t width, std::int64_t height, bool mipmaps,
-                       std::vector<std::vector<std::uint8_t>> *levels) {
+                       std::vector<PageBytes> *levels) {
   levels->clear();
   const int bpp = format == "RGBA8" ? 4 : (format == "RGB8" ? 3 : 0);
   if (bpp == 0 || width <= 0 || height <= 0 || grt1.size() < 16) {
@@ -313,7 +313,7 @@ bool grt1_rgba8_levels(const std::vector<std::uint8_t> &grt1, const std::string 
       levels->clear();
       return false;
     }
-    std::vector<std::uint8_t> rgba(n * 4);
+    PageBytes rgba(n * 4);
     const std::uint8_t *src = grt1.data() + at;
     for (std::size_t px = 0; px < n; ++px) {
       rgba[px * 4 + 0] = src[px * bpp + 0];

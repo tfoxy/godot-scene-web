@@ -299,6 +299,14 @@ bool TextureCache::has(const CacheKey &key) const {
 
 CacheResult TextureCache::get(const CacheKey &key, std::vector<std::uint8_t> *bytes,
                               std::string *hash) {
+  PageBytes mapped;
+  const auto result = get(key, &mapped, hash);
+  if (result == CacheResult::Hit) bytes->assign(mapped.begin(), mapped.end());
+  return result;
+}
+
+CacheResult TextureCache::get(const CacheKey &key, PageBytes *bytes,
+                              std::string *hash) {
   Row row;
   std::string path;
   {
@@ -317,7 +325,7 @@ CacheResult TextureCache::get(const CacheKey &key, std::vector<std::uint8_t> *by
   }
   // The read and the verify run outside the lock: workers hit the cache in parallel.
   File in(open_file(path, "rb"));
-  std::vector<std::uint8_t> data;
+  PageBytes data;
   const bool present = static_cast<bool>(in);
   if (present) {
     (void)file_read_all(in.get(), &data);

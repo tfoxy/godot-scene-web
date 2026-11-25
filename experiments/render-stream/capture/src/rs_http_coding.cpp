@@ -15,7 +15,8 @@ namespace grc {
 namespace rs {
 namespace http_coding {
 
-bool zstd_compress(const std::uint8_t *data, std::size_t size, std::vector<std::uint8_t> *out) {
+template <typename Buffer>
+bool zstd_compress_buffer(const std::uint8_t *data, std::size_t size, Buffer *out) {
   out->clear();
   out->resize(ZSTD_compressBound(size));
   const std::size_t n = ZSTD_compress(out->data(), out->size(), data, size, kZstdLevel);
@@ -27,7 +28,8 @@ bool zstd_compress(const std::uint8_t *data, std::size_t size, std::vector<std::
   return true;
 }
 
-bool zstd_decompress(const std::uint8_t *data, std::size_t size, std::vector<std::uint8_t> *out) {
+template <typename Buffer>
+bool zstd_decompress_buffer(const std::uint8_t *data, std::size_t size, Buffer *out) {
   out->clear();
   const unsigned long long known = ZSTD_getFrameContentSize(data, size);
   if (known == ZSTD_CONTENTSIZE_ERROR || known == ZSTD_CONTENTSIZE_UNKNOWN) {
@@ -42,7 +44,8 @@ bool zstd_decompress(const std::uint8_t *data, std::size_t size, std::vector<std
   return true;
 }
 
-bool gzip_compress(const std::uint8_t *data, std::size_t size, std::vector<std::uint8_t> *out) {
+template <typename Buffer>
+bool gzip_compress_buffer(const std::uint8_t *data, std::size_t size, Buffer *out) {
   out->clear();
   z_stream z = {};
   // windowBits 15 + 16: a gzip wrapper. memLevel 8 is zlib's default.
@@ -65,7 +68,8 @@ bool gzip_compress(const std::uint8_t *data, std::size_t size, std::vector<std::
   return true;
 }
 
-bool gzip_decompress(const std::uint8_t *data, std::size_t size, std::vector<std::uint8_t> *out) {
+template <typename Buffer>
+bool gzip_decompress_buffer(const std::uint8_t *data, std::size_t size, Buffer *out) {
   out->clear();
   z_stream z = {};
   if (inflateInit2(&z, 15 + 16) != Z_OK) {
@@ -87,6 +91,31 @@ bool gzip_decompress(const std::uint8_t *data, std::size_t size, std::vector<std
     return false;
   }
   return true;
+}
+
+bool zstd_compress(const std::uint8_t *data, std::size_t size, std::vector<std::uint8_t> *out) {
+  return zstd_compress_buffer(data, size, out);
+}
+bool zstd_compress(const std::uint8_t *data, std::size_t size, PageBytes *out) {
+  return zstd_compress_buffer(data, size, out);
+}
+bool gzip_compress(const std::uint8_t *data, std::size_t size, std::vector<std::uint8_t> *out) {
+  return gzip_compress_buffer(data, size, out);
+}
+bool gzip_compress(const std::uint8_t *data, std::size_t size, PageBytes *out) {
+  return gzip_compress_buffer(data, size, out);
+}
+bool zstd_decompress(const std::uint8_t *data, std::size_t size, std::vector<std::uint8_t> *out) {
+  return zstd_decompress_buffer(data, size, out);
+}
+bool zstd_decompress(const std::uint8_t *data, std::size_t size, PageBytes *out) {
+  return zstd_decompress_buffer(data, size, out);
+}
+bool gzip_decompress(const std::uint8_t *data, std::size_t size, std::vector<std::uint8_t> *out) {
+  return gzip_decompress_buffer(data, size, out);
+}
+bool gzip_decompress(const std::uint8_t *data, std::size_t size, PageBytes *out) {
+  return gzip_decompress_buffer(data, size, out);
 }
 
 bool zstd_decompress_progressive(const std::uint8_t *data, std::size_t size, std::uint8_t *out,
@@ -123,8 +152,8 @@ bool zstd_decompress_progressive(const std::uint8_t *data, std::size_t size, std
   return ok && o.pos == out_size && in.pos == size;
 }
 
-bool gzip_parallel(const std::uint8_t *data, std::size_t size, const GzipParallel &config,
-                   const std::function<void(std::vector<std::uint8_t> &&)> &emit,
+bool gzip_parallel_pages(const std::uint8_t *data, std::size_t size, const GzipParallel &config,
+                   const std::function<void(PageBytes &&)> &emit,
                    const std::atomic<bool> *cancel) {
   constexpr std::size_t kHeader = 10, kTrailer = 8, kWindow = 32768;
   // zlib takes 32-bit lengths. A block under a window primes the next with what precedes it.
@@ -132,7 +161,7 @@ bool gzip_parallel(const std::uint8_t *data, std::size_t size, const GzipParalle
   const std::size_t blocks = size == 0 ? 1 : (size + block - 1) / block;
   const int level = std::clamp(config.level, 1, 9);
   struct Done {
-    std::vector<std::uint8_t> bytes;  // the block's chunk: header (first) + deflate + room for the trailer (last)
+    PageBytes bytes;  // the block's chunk: header (first) + deflate + room for the trailer (last)
     uLong crc = 0;
     std::size_t len = 0;
     bool ready = false;
@@ -161,7 +190,7 @@ bool gzip_parallel(const std::uint8_t *data, std::size_t size, const GzipParalle
         }
       }
       emit(std::move(r.bytes));
-      r.bytes = std::vector<std::uint8_t>();
+      r.bytes = PageBytes();
       ++released;
     }
   };
@@ -169,7 +198,7 @@ bool gzip_parallel(const std::uint8_t *data, std::size_t size, const GzipParalle
   const auto work = [&] {
     z_stream z = {};
     bool init = false;
-    std::vector<std::uint8_t> scratch;
+    PageBytes scratch;
     for (;;) {
       if (failed.load(std::memory_order_acquire)) break;
       if (cancel != nullptr && cancel->load(std::memory_order_acquire)) {
@@ -241,6 +270,14 @@ bool gzip_parallel(const std::uint8_t *data, std::size_t size, const GzipParalle
   for (std::thread &t : helpers) t.join();
   std::lock_guard<std::mutex> lock(release_mutex);
   return !failed.load(std::memory_order_acquire) && released == blocks;
+}
+
+bool gzip_parallel(const std::uint8_t *data, std::size_t size, const GzipParallel &config,
+                   const std::function<void(std::vector<std::uint8_t> &&)> &emit,
+                   const std::atomic<bool> *cancel) {
+  return gzip_parallel_pages(data, size, config, [&](PageBytes &&bytes) {
+    emit(std::vector<std::uint8_t>(bytes.begin(), bytes.end()));
+  }, cancel);
 }
 
 }  // namespace http_coding

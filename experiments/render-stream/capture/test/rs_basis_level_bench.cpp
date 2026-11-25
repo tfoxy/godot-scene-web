@@ -43,7 +43,7 @@ double psnr(const std::vector<uint8_t> &a, const std::vector<uint8_t> &b, bool a
 	return 10.0 * std::log10(255.0 * 255.0 / (se / double(n)));
 }
 
-double transcode_ms(const std::vector<uint8_t> &ktx2, basist::transcoder_texture_format fmt) {
+double transcode_ms(const grc::rs::PageBytes &ktx2, basist::transcoder_texture_format fmt) {
 	basist::ktx2_transcoder t;
 	if (!t.init(ktx2.data(), uint32_t(ktx2.size())) || !t.start_transcoding()) return -1;
 	basist::ktx2_image_level_info info;

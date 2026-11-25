@@ -1,4 +1,5 @@
 // TDR: payload bodies compressed at rest (rs_payload_rest.h).
+#include "rs_page_allocator.h"
 #include "rs_payload_rest.h"
 
 #include <algorithm>
@@ -125,7 +126,7 @@ void code_at_rest(PayloadPtr *bytes) {
   }
   AtomicStats &s = stats();
   const std::uint64_t t0 = now_ns();
-  std::vector<std::uint8_t> out;
+  PageBytes out;
   const bool ok = coding == RestCoding::Zstd
                       ? http_coding::zstd_compress(identity->data(), identity->size(), &out)
                       : http_coding::gzip_compress(identity->data(), identity->size(), &out);
@@ -140,7 +141,7 @@ void code_at_rest(PayloadPtr *bytes) {
   // An exact-size copy: the coder's buffer has ZSTD_compressBound (about the identity size) of
   // capacity, and keeping it would hold the identity's memory under a coded size.
   auto coded = std::make_shared<PayloadBytes>(out.begin(), out.end());
-  out = std::vector<std::uint8_t>();
+  out = PageBytes();
   coded->rest = coding;
   coded->identity_bytes = identity->size();
   coded->rest_tried = true;
@@ -175,7 +176,7 @@ const char *inflate_site_name(InflateSite site) {
   return "?";
 }
 
-std::shared_ptr<const std::vector<std::uint8_t>> identity_of(const PayloadPtr &body,
+std::shared_ptr<const PageBytes> identity_of(const PayloadPtr &body,
                                                              InflateSite site) {
   if (body == nullptr || !body->coded()) {
     return body;
@@ -185,7 +186,7 @@ std::shared_ptr<const std::vector<std::uint8_t>> identity_of(const PayloadPtr &b
   }
   AtomicStats &s = stats();
   const std::uint64_t t0 = now_ns();
-  auto out = std::make_shared<std::vector<std::uint8_t>>();
+  auto out = std::make_shared<PageBytes>();
   out->reserve(static_cast<std::size_t>(body->identity_bytes));
   const bool ok = body->rest == RestCoding::Zstd
                       ? http_coding::zstd_decompress(body->data(), body->size(), out.get())
@@ -261,7 +262,7 @@ std::atomic<int> g_sibling_threads{0};  // 0: default_sibling_threads()
 
 // Ends a sibling encode: Ready with `bytes`, or Failed (none kept, never retried for this body).
 // The stream's readers are left to the caller (they finish their copy either way).
-void sibling_end(const std::shared_ptr<RestSibling> &sib, std::shared_ptr<const std::vector<std::uint8_t>> bytes) {
+void sibling_end(const std::shared_ptr<RestSibling> &sib, std::shared_ptr<const PageBytes> bytes) {
   std::lock_guard<std::mutex> lock(g_sibling_mutex);
   sib->bytes = std::move(bytes);
   sib->state = sib->bytes != nullptr ? RestSibling::State::Ready : RestSibling::State::Failed;
@@ -279,11 +280,17 @@ void count_inflate(InflateSite site, std::uint64_t coded_bytes, std::uint64_t id
 // The streamed gzip encode of a zstd body: one thread inflates the identity into a buffer while
 // the parallel deflate follows it block by block, each chunk going to the readers as it is done.
 // Returns whether a whole member was emitted; `*inflated` whether the identity was whole.
-bool stream_gzip_of_zstd(const PayloadBytes &body, const std::function<void(std::vector<std::uint8_t> &&)> &emit,
+bool stream_gzip_of_zstd(const PayloadBytes &body, const std::function<void(PageBytes &&)> &emit,
                          bool *inflated) {
   const std::size_t n = static_cast<std::size_t>(body.identity_bytes);
-  std::unique_ptr<std::uint8_t[]> identity(new (std::nothrow) std::uint8_t[n > 0 ? n : 1]);
-  if (identity == nullptr) {
+  const std::size_t capacity = n > 0 ? n : 1;
+  const auto release = [capacity](std::uint8_t *p) {
+    PageAllocator<std::uint8_t>{}.deallocate(p, capacity);
+  };
+  std::unique_ptr<std::uint8_t, decltype(release)> identity(nullptr, release);
+  try {
+    identity.reset(PageAllocator<std::uint8_t>{}.allocate(capacity));
+  } catch (const std::bad_alloc &) {
     *inflated = false;
     return false;
   }
@@ -328,7 +335,7 @@ bool stream_gzip_of_zstd(const PayloadBytes &body, const std::function<void(std:
     cv.wait(lock, [&] { return avail >= end || source_ended; });
     return avail >= end;
   };
-  const bool coded = http_coding::gzip_parallel(identity.get(), n, config, emit, &g_sibling_cancel);
+  const bool coded = http_coding::gzip_parallel_pages(identity.get(), n, config, emit, &g_sibling_cancel);
   if (inflater.joinable()) inflater.join();
   if (!source_ok) stats().inflate_failed.fetch_add(1, std::memory_order_relaxed);
   *inflated = source_ok;
@@ -357,15 +364,15 @@ struct SiblingTask {
     ran = true;
     AtomicStats &s = stats();
     std::atomic<std::uint64_t> *outcome = &s.sib_failed;  // inflate or coder failed
-    std::shared_ptr<const std::vector<std::uint8_t>> kept;
+    std::shared_ptr<const PageBytes> kept;
     std::uint64_t identity_size = body->identity_size();
     const std::uint64_t t0 = now_ns();
     bool whole = false;  // the stream's chunks are a whole member in sib->coding
     {
       std::vector<BodyStream::Chunk> chunks;
       std::uint64_t total = 0;
-      const auto emit = [&](std::vector<std::uint8_t> &&bytes) {
-        auto chunk = std::make_shared<const std::vector<std::uint8_t>>(std::move(bytes));
+      const auto emit = [&](PageBytes &&bytes) {
+        auto chunk = std::make_shared<const PageBytes>(std::move(bytes));
         total += chunk->size();
         chunks.push_back(chunk);
         stream->append(std::move(chunk));
@@ -378,13 +385,13 @@ struct SiblingTask {
         }
       } else {
         // Any other pair (a gzip body with a zstd sibling): one inflate, one coder, one chunk.
-        const std::shared_ptr<const std::vector<std::uint8_t>> identity = identity_of(body, InflateSite::Sibling);
+        const std::shared_ptr<const PageBytes> identity = identity_of(body, InflateSite::Sibling);
         if (identity != nullptr) {
-          std::vector<std::uint8_t> out;
+          PageBytes out;
           whole = sib->coding == RestCoding::Zstd
                       ? http_coding::zstd_compress(identity->data(), identity->size(), &out)
                       : http_coding::gzip_compress(identity->data(), identity->size(), &out);
-          if (whole) emit(std::vector<std::uint8_t>(out.begin(), out.end()));  // exact size
+          if (whole) emit(PageBytes(out.begin(), out.end()));  // exact size
         }
       }
       s.sib_ns.fetch_add(now_ns() - t0, std::memory_order_relaxed);
@@ -392,7 +399,7 @@ struct SiblingTask {
         outcome = &s.sib_not_smaller;  // its readers still get a whole (larger) member
       } else if (whole) {
         // The at-rest copy: the chunks spliced once into one exact-size body.
-        auto joined = std::make_shared<std::vector<std::uint8_t>>();
+        auto joined = std::make_shared<PageBytes>();
         joined->reserve(static_cast<std::size_t>(total));
         for (const BodyStream::Chunk &c : chunks) joined->insert(joined->end(), c->begin(), c->end());
         kept = std::move(joined);
@@ -449,12 +456,12 @@ bool start_sibling(const PayloadPtr &body, const SiblingSubmit &submit) {
   return submit([task] { task->run(); });
 }
 
-std::shared_ptr<const std::vector<std::uint8_t>> sibling_body(const PayloadPtr &body, RestCoding coding,
+std::shared_ptr<const PageBytes> sibling_body(const PayloadPtr &body, RestCoding coding,
                                                               std::shared_ptr<BodyStream> *stream) {
   if (body == nullptr || coding == RestCoding::Identity) {
     return nullptr;
   }
-  std::shared_ptr<const std::vector<std::uint8_t>> out;
+  std::shared_ptr<const PageBytes> out;
   bool following = false;
   {
     std::lock_guard<std::mutex> lock(g_sibling_mutex);
@@ -477,7 +484,7 @@ std::shared_ptr<const std::vector<std::uint8_t>> sibling_body(const PayloadPtr &
   return out;
 }
 
-std::shared_ptr<const std::vector<std::uint8_t>> sibling_bytes(const PayloadPtr &body, RestCoding coding) {
+std::shared_ptr<const PageBytes> sibling_bytes(const PayloadPtr &body, RestCoding coding) {
   return sibling_body(body, coding, nullptr);
 }
 

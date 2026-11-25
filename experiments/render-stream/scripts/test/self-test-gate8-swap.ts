@@ -410,6 +410,41 @@ const IDS = [
 ];
 
 try {
+  for (const platform of ["linux", "windows", "macos"] as const) {
+    const { root, g } = build(`${platform}-page-backed-served`, {
+      short: { fault: "keep-served", rssAnon: () => 180, inUse: () => 120 },
+      sabotage: {
+        "keep-served": { rssAnon: () => 180, inUse: () => 120 },
+      },
+    });
+    if (platform !== "linux") windowsTree(g, platform);
+    const swap = await loadLeg(join(g, "short/swap"), "swap", SHORT);
+    const control = await loadLeg(join(g, "short/control"), "control", SHORT);
+    const retained = judgeRss(swap, control, SHORT, 1, 0.5);
+    ok(
+      retained.evidence.length === 0,
+      `${platform} page-backed evidence complete`,
+    );
+    ok(
+      retained.rule.some((p) => p.includes("served_bytes")),
+      `${platform} retained page-backed served bytes fail RSS with flat heap/residency`,
+    );
+    ok(
+      passes((await verdict(root)).m, "sabotage-keep-served-caught"),
+      `${platform} catches page-backed keep-served sabotage with flat heap/residency`,
+    );
+    for (const bytes of [undefined, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      const row = swap.rows.find((r) => r.phase === "idle");
+      assert.ok(row);
+      row.served_bytes = bytes;
+      ok(
+        judgeRss(swap, control, SHORT, 1, 0.5).evidence.some((p) =>
+          p.includes("served_bytes"),
+        ),
+        `${platform} invalid served_bytes ${bytes} is missing evidence`,
+      );
+    }
+  }
   ok(Math.abs(slope([1, 2, 3], [1, 3, 5]) - 2) < 1e-9, "slope of a line");
 
   const arms = [warm(1), warm(2), warm(3)];
@@ -503,9 +538,10 @@ try {
       SHORT,
     );
     ok(
-      judgeRss(swap, control, SHORT, 1, 0.5).detail ===
+      judgeRss(swap, control, SHORT, 1, 0.5).detail.startsWith(
         "Allocator in-use heap deltas 0.000, 0.000, 0.000 MiB (bound 1); RssAnon deltas 4.00, 4.00, 4.00 MiB (absolute offset unbounded: one-time allocator residency accepted as debt; slope over cycles 2-3: 0.00 of 0.5 MiB/cycle); RssFile deltas 15.00, 15.00, 15.00 MiB; RssShmem deltas 0.00, 0.00, 0.00 MiB; allocator fordblks deltas 0.00, 0.00, 0.00 MiB; hblkhd deltas 0.00, 0.00, 0.00 MiB (reported without bounds)",
-      "Linux RSS detail stays byte-identical",
+      ),
+      "Linux heap and residency metrics stay byte-identical before served bytes",
     );
   }
 
@@ -732,8 +768,8 @@ try {
       );
   }
   {
-    // keep-served must fail BOTH rules: the accounting alone is not enough
-    const { root } = build("sab-served-no-rss", {
+    // A served-set count without retained body bytes must still fail BOTH rules.
+    const { root, g } = build("sab-served-no-rss", {
       sabotage: {
         "keep-served": {
           fault: "keep-served",
@@ -742,6 +778,12 @@ try {
         },
       },
     });
+    rewriteJson(
+      join(g, "short/sabotage-keep-served/evidence/swap-cycle.jsonl"),
+      (row) => {
+        if (row.phase === "idle") row.served_bytes = 0;
+      },
+    );
     const { m } = await verdict(root);
     ok(
       !passes(m, "sabotage-keep-served-caught"),
@@ -994,6 +1036,7 @@ try {
     rewriteJson(sabotagePath, (row) => {
       (row.process_heap as { allocated_bytes: number }).allocated_bytes =
         (120 + 4.1) * MB;
+      if (row.phase === "idle") row.served_bytes = 0;
     });
     const accountingOnly = await verdict(root);
     ok(
@@ -1170,7 +1213,7 @@ try {
     );
   }
   {
-    // Windows keeps the Linux rule: accounting alone does not catch keep-served
+    // A served-set count alone still cannot satisfy both required failures.
     const { root, g } = build("windows-keep-served-accounting-only", {
       sabotage: {
         "keep-served": {
@@ -1181,6 +1224,12 @@ try {
       },
     });
     windowsTree(g);
+    rewriteJson(
+      join(g, "short/sabotage-keep-served/evidence/swap-cycle.jsonl"),
+      (row) => {
+        if (row.phase === "idle") row.served_bytes = 0;
+      },
+    );
     ok(
       !passes((await verdict(root)).m, "sabotage-keep-served-caught"),
       "Windows keep-served needs swap-cycle-rss to fail too",

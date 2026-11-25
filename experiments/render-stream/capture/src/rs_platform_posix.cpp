@@ -433,6 +433,14 @@ bool dump_memory_info(const std::string &prefix) {
   while (copied && (n = std::fread(buffer, 1, sizeof(buffer), maps.get())) != 0)
     copied = std::fwrite(buffer, 1, n, dump.get()) == n;
   copied = copied && !std::ferror(maps.get()) && std::fflush(dump.get()) == 0;
+  {
+    File rollup(open_file("/proc/self/smaps_rollup", "r"));
+    File out(open_file(prefix + ".smaps_rollup", "w"));
+    if (!rollup || !out) return false;
+    while ((n = std::fread(buffer, 1, sizeof(buffer), rollup.get())) != 0)
+      if (std::fwrite(buffer, 1, n, out.get()) != n) return false;
+    if (std::ferror(rollup.get()) || std::fflush(out.get()) != 0) return false;
+  }
   if (std::FILE *f = open_file(prefix + ".malloc.xml", "w")) {
     const int result = malloc_info(0, f);
     std::fclose(f);

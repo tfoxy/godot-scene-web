@@ -529,8 +529,44 @@ export interface RssPair {
   malloc_hblkhd: RssComponent;
 }
 
-/** Pair idle samples by cycle and apply the platform's heap and residency rules. */
+/** Include page-backed served bodies, which bypass the platform's malloc heap. */
 export function judgeRss(
+  swap: SwapLeg,
+  control: SwapLeg,
+  n: number,
+  bound: number,
+  slopeBound: number,
+) {
+  const judged = judgePlatformRss(swap, control, n, bound, slopeBound);
+  const served: { leg: string; cycle: number; bytes: number }[] = [];
+  for (const [name, leg] of [
+    ["swap", swap],
+    ["control", control],
+  ] as const) {
+    for (const row of idleRows(leg)) {
+      const bytes = row.served_bytes;
+      if (typeof bytes !== "number" || !Number.isFinite(bytes) || bytes < 0) {
+        judged.evidence.push(
+          `${name} cycle ${row.cycle}: no valid idle served_bytes (${bytes})`,
+        );
+      } else {
+        served.push({ leg: name, cycle: row.cycle, bytes });
+        if (bytes !== 0)
+          judged.rule.push(
+            `${name} cycle ${row.cycle}: served_bytes ${bytes} bytes retained (bound 0)`,
+          );
+      }
+    }
+  }
+  return {
+    ...judged,
+    served_bytes: served,
+    detail: `${judged.detail}; idle served_bytes ${served.map((p) => `${p.leg} cycle ${p.cycle}: ${p.bytes}`).join(", ")} bytes (bound 0, includes page-backed bodies)`,
+  };
+}
+
+/** Pair idle samples by cycle and apply the platform's heap and residency rules. */
+function judgePlatformRss(
   swap: SwapLeg,
   control: SwapLeg,
   n: number,
@@ -953,6 +989,8 @@ export async function runG8sw(
   else if (shortSwap.rows[0]?.platform === "windows")
     report.bounds.notes =
       "Process heap allocated swap minus control is bounded at 1 MiB per idle sample; private_bytes growth after cycle 1 is bounded at 0.5 MiB/cycle only with >= 4 pairs after cycle 1, otherwise reported without judgment. The absolute private_bytes offset, rss_bytes and process heap committed bytes are reported without bounds";
+  report.bounds.notes +=
+    "; idle served_bytes must be 0 on every platform, including page-backed bodies outside the malloc heap";
   if (shortSwap.rows[0]?.platform !== shortControl.rows[0]?.platform) {
     const problem = `platform mismatch: swap ${shortSwap.rows[0]?.platform}, control ${shortControl.rows[0]?.platform}`;
     shortSwap.evidence.push(problem);
@@ -1126,7 +1164,11 @@ export async function runG8sw(
       HEAP_IN_USE_BOUND_MIB[set],
       RSS_SLOPE_MB[set],
     );
-    report.rss[l] = { pairs: j.pairs, slope_mb_per_cycle: j.slope };
+    report.rss[l] = {
+      pairs: j.pairs,
+      slope_mb_per_cycle: j.slope,
+      served_bytes: j.served_bytes,
+    };
     return j;
   };
   {

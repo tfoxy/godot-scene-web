@@ -10,6 +10,7 @@
 #ifndef GRC_RS_BODY_STREAM_H
 #define GRC_RS_BODY_STREAM_H
 
+#include "rs_page_allocator.h"
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -30,7 +31,7 @@ class StreamWaker {
 
 class BodyStream {
  public:
-  using Chunk = std::shared_ptr<const std::vector<std::uint8_t>>;
+  using Chunk = std::shared_ptr<const PageBytes>;
   enum class State : std::uint8_t { Open, Done, Failed };
 
   // Producer: one more chunk (empty chunks are dropped). Ignored once the stream has ended.

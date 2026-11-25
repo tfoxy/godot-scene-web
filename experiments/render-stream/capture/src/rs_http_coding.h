@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <functional>
 #include <vector>
+#include "rs_page_allocator.h"
 
 namespace grc {
 namespace rs {
@@ -21,9 +22,13 @@ constexpr int kGzipLevel = 6;
 // Each returns false (and leaves *out empty) on failure. gzip is RFC 1952 (header + deflate +
 // CRC32), what browsers and Godot's COMPRESSION_GZIP read.
 bool zstd_compress(const std::uint8_t *data, std::size_t size, std::vector<std::uint8_t> *out);
+bool zstd_compress(const std::uint8_t *data, std::size_t size, PageBytes *out);
 bool gzip_compress(const std::uint8_t *data, std::size_t size, std::vector<std::uint8_t> *out);
+bool gzip_compress(const std::uint8_t *data, std::size_t size, PageBytes *out);
 bool zstd_decompress(const std::uint8_t *data, std::size_t size, std::vector<std::uint8_t> *out);
+bool zstd_decompress(const std::uint8_t *data, std::size_t size, PageBytes *out);
 bool gzip_decompress(const std::uint8_t *data, std::size_t size, std::vector<std::uint8_t> *out);
+bool gzip_decompress(const std::uint8_t *data, std::size_t size, PageBytes *out);
 
 // One RFC 1952 gzip member made in parallel, pigz-style: `data` is cut into blocks of
 // `block_bytes`, each deflated on its own (raw deflate primed with the 32 KiB before it, so the
@@ -48,6 +53,11 @@ struct GzipParallel {
 // stops the inflate (false). Lets a reader start on the front while the rest is inflated.
 bool zstd_decompress_progressive(const std::uint8_t *data, std::size_t size, std::uint8_t *out,
                                  std::size_t out_size, const std::function<bool(std::size_t)> &progress);
+
+// Capture-owned streaming chunks and worker scratch use page-backed storage.
+bool gzip_parallel_pages(const std::uint8_t *data, std::size_t size, const GzipParallel &config,
+                         const std::function<void(PageBytes &&)> &emit,
+                         const std::atomic<bool> *cancel = nullptr);
 
 bool gzip_parallel(const std::uint8_t *data, std::size_t size, const GzipParallel &config,
                    const std::function<void(std::vector<std::uint8_t> &&)> &emit,

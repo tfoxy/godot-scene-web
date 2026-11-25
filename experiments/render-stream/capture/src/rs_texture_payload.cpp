@@ -19,7 +19,8 @@ constexpr const char *kFormatNames[kImageFormatCount] = {
     "ASTC_4x4_HDR", "ASTC_8x8",   "ASTC_8x8_HDR",
 };
 
-void put_u32le(std::vector<std::uint8_t> *out, std::uint32_t value) {
+template <typename Buffer>
+void put_u32le(Buffer *out, std::uint32_t value) {
   for (int i = 0; i < 4; ++i) {
     out->push_back(static_cast<std::uint8_t>(value >> (8 * i)));
   }
@@ -114,14 +115,22 @@ std::uint64_t payload_size(const std::string &meta, std::uint64_t data_bytes) {
   return sizeof(kPayloadMagic) + 4 + meta.size() + 4 + data_bytes;
 }
 
-void payload_header(const std::string &meta, std::uint64_t data_bytes,
-                    std::vector<std::uint8_t> *out) {
+template <typename Buffer>
+void payload_header_buffer(const std::string &meta, std::uint64_t data_bytes,
+                    Buffer *out) {
   out->clear();
   out->reserve(static_cast<std::size_t>(payload_size(meta, data_bytes)));
   out->insert(out->end(), kPayloadMagic, kPayloadMagic + sizeof(kPayloadMagic));
   put_u32le(out, static_cast<std::uint32_t>(meta.size()));
   out->insert(out->end(), meta.begin(), meta.end());
   put_u32le(out, static_cast<std::uint32_t>(data_bytes));
+}
+
+void payload_header(const std::string &meta, std::uint64_t data_bytes, std::vector<std::uint8_t> *out) {
+  payload_header_buffer(meta, data_bytes, out);
+}
+void payload_header(const std::string &meta, std::uint64_t data_bytes, PageBytes *out) {
+  payload_header_buffer(meta, data_bytes, out);
 }
 
 std::vector<std::uint8_t> encode_payload(std::int64_t format, std::int64_t width,

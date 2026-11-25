@@ -64,6 +64,9 @@ for f in "$SCRIPT_DIR"/test/self-test-*.ts; do
 	NAMES+=("${b%.ts}")
 	CMDS+=("cd '$REPO_ROOT' && mise exec -- pnpm exec tsx --conditions=development '$f'")
 done
+# Allocator report checks use synthetic evidence and need no native capture build.
+NAMES+=("self-test-capture-memory-report")
+CMDS+=("python3 '$SCRIPT_DIR/lib/test-capture-memory-report.py'")
 # GRT2b and GRT4a pure bash self-tests: stub launches, a private lock dir, a private source cache.
 # self-test-socket-owners.sh is not here, because its old-scan half walks every /proc fd (~1 min).
 for b in self-test-par-legs.sh self-test-fast-frames.sh self-test-free-port.sh self-test-validate-tier.sh self-test-source-cache.sh self-test-bench-instr.sh \

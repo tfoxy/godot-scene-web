@@ -604,12 +604,12 @@ bool Publisher::form_lane(const LaneJob &job, bool direct) {
     ResourceRecord record;
     record.hash = hash;
     // TDR: the record carries the identity payload; a body coded at rest is inflated here.
-    const std::shared_ptr<const std::vector<std::uint8_t>> identity =
+    const auto identity =
         rs::identity_of(payload->second, rs::InflateSite::Inline);
     if (identity == nullptr) {
       return false;
     }
-    record.payload = *identity;
+    record.payload.assign(identity->begin(), identity->end());
     const std::vector<std::uint8_t> bytes = encode_resource(record);
     const bool ok = direct ? lane->sink->write_direct(bytes) && lane->sink->flush_direct()
                            : lane->sink->write(bytes) && lane->sink->flush();

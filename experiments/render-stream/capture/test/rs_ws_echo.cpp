@@ -36,6 +36,7 @@
 // SIGINT/SIGTERM trigger a graceful stop() (close 1000 to any open
 // connection, flush, join) and exit 0.
 
+#include "rs_page_allocator.h"
 #include <chrono>
 #include <csignal>
 #include <cstdio>
@@ -88,22 +89,22 @@ constexpr std::string_view kHashUnknown = "fffffffffffffffffffffffffffffffffffff
 class TestResourceSource : public grc::live::ResourceSource {
  public:
   TestResourceSource() {
-    bodies_.emplace(std::string(kHash1MiB), std::make_shared<const std::vector<std::uint8_t>>(
+    bodies_.emplace(std::string(kHash1MiB), std::make_shared<const ::grc::rs::PageBytes>(
                                                  resource_payload(1u << 20)));
-    bodies_.emplace(std::string(kHash8MiB), std::make_shared<const std::vector<std::uint8_t>>(
+    bodies_.emplace(std::string(kHash8MiB), std::make_shared<const ::grc::rs::PageBytes>(
                                                  resource_payload(8u << 20)));
     // kHashUnknown is intentionally absent: lookup() falls through to nullptr (404).
   }
 
   // Called on the I/O thread (rs_ws.h ResourceSource contract); bodies_ is fixed at construction
   // and never mutated afterwards, so no lock is needed here.
-  std::shared_ptr<const std::vector<std::uint8_t>> lookup(std::string_view hash) override {
+  std::shared_ptr<const ::grc::rs::PageBytes> lookup(std::string_view hash) override {
     const auto it = bodies_.find(std::string(hash));
     return it == bodies_.end() ? nullptr : it->second;
   }
 
  private:
-  std::map<std::string, std::shared_ptr<const std::vector<std::uint8_t>>> bodies_;
+  std::map<std::string, std::shared_ptr<const ::grc::rs::PageBytes>> bodies_;
 };
 
 }  // namespace

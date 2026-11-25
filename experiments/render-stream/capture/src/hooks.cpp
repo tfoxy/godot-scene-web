@@ -1756,7 +1756,7 @@ rs::PayloadCopy derive_decoded(const rs::PayloadCopy &copy, rs::DecodeRequest re
     }
   }
   if (keyed) {
-    std::vector<uint8_t> data;
+    rs::PageBytes data;
     std::string hash;
     const rs::CacheResult result = cache.get(key, &data, &hash);
     outcome = result == rs::CacheResult::Hit ? "hit"

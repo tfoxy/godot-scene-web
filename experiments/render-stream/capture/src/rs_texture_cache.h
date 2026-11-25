@@ -23,6 +23,7 @@
 #include <mutex>
 #include <string>
 #include <vector>
+#include "rs_page_allocator.h"
 
 namespace grc {
 namespace rs {
@@ -79,6 +80,7 @@ class TextureCache {
   // and every row naming it are gone and the caller derives the bytes again. Miss: no row, or the
   // file is missing (its row is dropped).
   CacheResult get(const CacheKey &key, std::vector<std::uint8_t> *bytes, std::string *hash);
+  CacheResult get(const CacheKey &key, PageBytes *bytes, std::string *hash);
 
   // Stores `size` bytes whose SHA-256 is `hash` (the caller's, not recomputed) under `key`, then
   // applies the byte budget. `ext` is "grt" or "ktx2". False when the key, hash or ext is invalid

@@ -382,13 +382,13 @@ void test_stop_and_ledger() {
 }
 
 struct MapSource final : grc::live::ResourceSource {
-  std::map<std::string, std::shared_ptr<const std::vector<std::uint8_t>>> bodies;
-  std::shared_ptr<const std::vector<std::uint8_t>> lookup(std::string_view hash) override {
+  std::map<std::string, std::shared_ptr<const grc::rs::PageBytes>> bodies;
+  std::shared_ptr<const grc::rs::PageBytes> lookup(std::string_view hash) override {
     auto it = bodies.find(std::string(hash));
     return it == bodies.end() ? nullptr : it->second;
   }
-  std::map<std::string, std::shared_ptr<const std::vector<std::uint8_t>>> zstd;
-  std::shared_ptr<const std::vector<std::uint8_t>> lookup_coded(std::string_view hash,
+  std::map<std::string, std::shared_ptr<const grc::rs::PageBytes>> zstd;
+  std::shared_ptr<const grc::rs::PageBytes> lookup_coded(std::string_view hash,
                                                                 grc::live::Coding coding) override {
     auto it = zstd.find(std::string(hash));
     return coding != grc::live::Coding::Zstd || it == zstd.end() ? nullptr : it->second;
@@ -398,7 +398,7 @@ struct MapSource final : grc::live::ResourceSource {
 void test_resources_and_services() {
   MapSource source;
   const std::string h(64, 'a');
-  source.bodies[h] = std::make_shared<const std::vector<std::uint8_t>>(std::vector<std::uint8_t>{5, 6, 7});
+  source.bodies[h] = std::make_shared<const grc::rs::PageBytes>(std::vector<std::uint8_t>{5, 6, 7});
   CarrierServices s;
   s.resources = &source;
   s.auth_token = "secret";
@@ -437,8 +437,8 @@ void test_resources_and_services() {
   check(host->lookup(host->host, miss.data(), GRC_CODING_IDENTITY, &buf) == 0, "host: lookup miss");
   // lookup_coded: the held coded body with its identity size; 2 when servable in another form.
   const std::string hz(64, 'c');
-  source.bodies[hz] = std::make_shared<const std::vector<std::uint8_t>>(std::vector<std::uint8_t>(40, 1));
-  source.zstd[hz] = std::make_shared<const std::vector<std::uint8_t>>(std::vector<std::uint8_t>{9, 9});
+  source.bodies[hz] = std::make_shared<const grc::rs::PageBytes>(std::vector<std::uint8_t>(40, 1));
+  source.zstd[hz] = std::make_shared<const grc::rs::PageBytes>(std::vector<std::uint8_t>{9, 9});
   std::uint64_t identity_bytes = 0;
   grc_buf held{};
   check(host->size >= offsetof(grc_carrier_host_v1, lookup_coded) + sizeof(void *) && host->lookup_coded != nullptr,

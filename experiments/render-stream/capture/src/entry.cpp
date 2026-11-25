@@ -1,4 +1,5 @@
 #include "rs_platform.h"
+#include "rs_detach_release.h"
 // GDExtension entry point and the arming decision.
 //
 // Nothing is written into the engine's memory until every check in
@@ -6953,7 +6954,7 @@ void attachment_callbacks(bool frame) {
   g_frame_registered = frame;
 }
 
-bool attachment_detach() {
+bool attachment_detach_free() {
   // No new thunk may touch attachment data, even if its vptr was fetched before restoration.
   hooks_attachment_close();
   if (g_state.shadow.built() && !g_state.shadow.publish(ShadowVtable::Table::Lean)) return false;
@@ -6991,6 +6992,20 @@ bool attachment_detach() {
   perf_finish();
   attachment_callbacks(false);
   return true;
+}
+
+uint64_t g_detach_release_us = 0;
+uint64_t g_detach_release_count = 0;
+bool attachment_detach() {
+  return cap::detach_release(attachment_detach_free, [] {
+    // Initial lean loading has never attached; leave the host allocator alone.
+    // An explicit attach replaces this mode with standby before any arm.
+    if (g_state.mode == "detached") return;
+    const uint64_t start = monotonic_ns();
+    rs::heap_trim();
+    g_detach_release_us = (monotonic_ns() - start) / 1000;
+    ++g_detach_release_count;
+  });
 }
 
 bool attachment_attach() {
@@ -7052,7 +7067,28 @@ bool attachment_attach() {
   return true;
 }
 
+// Explicit state calls from the opt-in memory probe; no detached frame callback is installed.
+void test_memory_snapshot() {
+  if (env_string("GRC_TEST_MEMORY_ACCOUNTING") != "1") return;
+  const auto phase = env_string("GRC_TEST_MEMORY_PHASE");
+  static std::string previous;
+  if (phase == previous || (phase != "lean" && phase != "armed" && phase != "detached")) return;
+  previous = phase;
+  const auto prefix = path_join(g_rearm.evidence_root, "memory-" + phase);
+  const bool dumped = rs::dump_memory_info(prefix);
+  JsonWriter json;
+  json.object_begin();
+  json.field("phase", phase);
+  json.field("memory_dump_ok", dumped);
+  json.field("detach_release_us", static_cast<int64_t>(g_detach_release_us));
+  json.field("detach_release_count", static_cast<int64_t>(g_detach_release_count));
+  accounting_fields(&json);
+  json.object_end();
+  emit_load("memory-" + phase + ".json", json.take());
+}
+
 cap::Value api_invoke(const std::string &method, const cap::Value::Object &options) {
+  if (method == "state" && std::this_thread::get_id() == g_api_main) test_memory_snapshot();
   cap::Value result;
   if (method == "state") result = api_state();
   else if (method == "detach") result = g_api->detach(options, attachment_detach);

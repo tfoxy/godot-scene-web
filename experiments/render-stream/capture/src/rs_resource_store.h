@@ -45,6 +45,7 @@
 #ifndef GRC_RS_RESOURCE_STORE_H
 #define GRC_RS_RESOURCE_STORE_H
 
+#include "rs_page_allocator.h"
 #include <algorithm>
 #include <array>
 #include <cstdint>
@@ -115,14 +116,14 @@ class ResourceStore {
 
   // The offset of a GRT1 payload's first data byte (magic, meta length, meta, data length), or
   // 0 when the payload is too short to say.
-  static std::size_t first_data_offset(const std::vector<std::uint8_t> &payload);
+  static std::size_t first_data_offset(const PageBytes &payload);
 
  private:
   Put put_bytes(const std::string &hash, const char *extension, const std::string &index_fields,
                 const PayloadPtr &payload, std::uint64_t frame, std::string *error);
   // The payload file (temp + rename) and its index line; runs on the writer thread when one is set.
   static bool write_payload_file(const std::string &final_path,
-                                 const std::vector<std::uint8_t> &payload, bool corrupt,
+                                 const PageBytes &payload, bool corrupt,
                                  std::FILE *index, const std::string &line,
                                  const std::string &index_path, std::string *error);
 
@@ -265,11 +266,11 @@ class ServedResources : public live::ResourceSource {
 
   // I/O thread: the identity bytes to serve for `hash`, or null (404). TDR: a body coded at rest
   // is inflated for the caller (counted, rs_payload_rest.h `get`), outside the mutex.
-  std::shared_ptr<const std::vector<std::uint8_t>> lookup(std::string_view hash) override;
+  std::shared_ptr<const PageBytes> lookup(std::string_view hash) override;
   // G8kz, TDR: the stored body of a retained payload when it is held coded with `coding` (made
   // once where it was built, rs_payload_rest.h), or its sibling body when `coding` is the host's
   // second coding and that is made (queued at pin); null otherwise. Never compresses or waits.
-  std::shared_ptr<const std::vector<std::uint8_t>> lookup_coded(std::string_view hash,
+  std::shared_ptr<const PageBytes> lookup_coded(std::string_view hash,
                                                                 live::Coding coding) override;
   // TDR: one probe for a GET: the stored body when `accepted` is its coding, the sibling body
   // when `accepted` is the second coding and it is made (or its encode in progress, as `stream`),

@@ -145,9 +145,9 @@ const char *basis_decline_reason(const std::string &format, std::int64_t width,
 // The mip levels of a GRT1 payload of `format` (RGBA8 or RGB8), as straight RGBA8 (RGB8 gains
 // alpha 255), level 0 first, each max(1, w >> i) x max(1, h >> i). False on a payload whose
 // header or size disagrees.
-bool grt1_rgba8_levels(const std::vector<std::uint8_t> &grt1, const std::string &format,
+bool grt1_rgba8_levels(const PageBytes &grt1, const std::string &format,
                        std::int64_t width, std::int64_t height, bool mipmaps,
-                       std::vector<std::vector<std::uint8_t>> *levels);
+                       std::vector<PageBytes> *levels);
 
 // One lazy encode (D6): the entry's decoded payload at the version it was taken from. Header-only:
 // the mirror creates it, the encode pool (rs_texture_basis.h) finishes it exactly once.

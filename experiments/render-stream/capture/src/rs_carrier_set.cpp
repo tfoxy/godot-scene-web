@@ -73,8 +73,8 @@ struct StringOwner final : BufOwner {
   std::string text;
 };
 struct SharedOwner final : BufOwner {
-  explicit SharedOwner(std::shared_ptr<const std::vector<std::uint8_t>> p) : bytes(std::move(p)) {}
-  std::shared_ptr<const std::vector<std::uint8_t>> bytes;
+  explicit SharedOwner(std::shared_ptr<const rs::PageBytes> p) : bytes(std::move(p)) {}
+  std::shared_ptr<const rs::PageBytes> bytes;
 };
 
 const char *coding_name(grc_coding coding) {
@@ -514,7 +514,7 @@ struct AbiCarrier::Thunks {
     ResourceSource *source = c->ctx_->services().resources;
     if (source == nullptr) return 0;
     const std::string_view h(hash, 64);
-    std::shared_ptr<const std::vector<std::uint8_t>> body;
+    std::shared_ptr<const rs::PageBytes> body;
     if (coding == GRC_CODING_IDENTITY) {
       body = source->lookup(h);
     } else if (coding == GRC_CODING_GZIP) {

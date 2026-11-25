@@ -138,6 +138,7 @@
 #ifndef GRC_RS_WS_H
 #define GRC_RS_WS_H
 
+#include "rs_page_allocator.h"
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -288,7 +289,7 @@ bool parse_allowed_origins(std::string_view text, std::vector<std::string> *out,
 // `stream` (lookup_body only): the body in `coding` is still being made; `bytes` is then null and
 // the GET follows the stream (rs_body_stream.h) with a chunked response instead of waiting.
 struct ResourceBody {
-  std::shared_ptr<const std::vector<std::uint8_t>> bytes;
+  std::shared_ptr<const rs::PageBytes> bytes;
   Coding coding = Coding::Identity;
   std::uint64_t identity_bytes = 0;
   std::shared_ptr<rs::BodyStream> stream;
@@ -305,13 +306,13 @@ class ResourceSource {
   // never block on anything slower than memory -- the I/O thread serves
   // every other connection, WebSocket included, from the same poll() loop.
   // Returns the payload bytes, or null to answer 404.
-  virtual std::shared_ptr<const std::vector<std::uint8_t>> lookup(std::string_view hash) = 0;
+  virtual std::shared_ptr<const rs::PageBytes> lookup(std::string_view hash) = 0;
 
   // G8kz: the body of `hash` coded with `coding` (never Identity), computed once and kept, or
   // null when the identity body is to be served instead (not a payload the coding applies to, or
   // no smaller). Same threading rules as lookup(); the first call per (hash, coding) compresses
   // on the I/O thread.
-  virtual std::shared_ptr<const std::vector<std::uint8_t>> lookup_coded(std::string_view hash,
+  virtual std::shared_ptr<const rs::PageBytes> lookup_coded(std::string_view hash,
                                                                         Coding coding) {
     (void)hash;
     (void)coding;
@@ -326,7 +327,7 @@ class ResourceSource {
   // probe and inflates only for an identity reader; this default composes the two calls above.
   virtual ResourceBody lookup_body(std::string_view hash, Coding accepted) {
     ResourceBody out;
-    const std::shared_ptr<const std::vector<std::uint8_t>> identity = lookup(hash);
+    const std::shared_ptr<const rs::PageBytes> identity = lookup(hash);
     if (identity == nullptr) {
       return out;
     }
@@ -349,7 +350,7 @@ class ResourceSource {
   // lookup_coded(). This default composes lookup() and lookup_coded(); ServedResources answers
   // from the held body's header.
   virtual bool lookup_coded_body(std::string_view hash, Coding coding, ResourceBody *out) {
-    const std::shared_ptr<const std::vector<std::uint8_t>> identity = lookup(hash);
+    const std::shared_ptr<const rs::PageBytes> identity = lookup(hash);
     if (identity == nullptr) {
       return false;
     }

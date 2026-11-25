@@ -18,6 +18,7 @@
 #include <cstdint>
 #include <string>
 #include <vector>
+#include "rs_page_allocator.h"
 
 namespace grc {
 namespace rs {
@@ -57,6 +58,7 @@ std::uint64_t payload_size(const std::string &meta, std::uint64_t data_bytes);
 // and reserves room for the data, which the caller appends.
 void payload_header(const std::string &meta, std::uint64_t data_bytes,
                     std::vector<std::uint8_t> *out);
+void payload_header(const std::string &meta, std::uint64_t data_bytes, PageBytes *out);
 
 // The whole payload in one call (tests, and any caller that has the bytes).
 std::vector<std::uint8_t> encode_payload(std::int64_t format, std::int64_t width,

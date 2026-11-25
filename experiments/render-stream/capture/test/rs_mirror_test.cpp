@@ -3508,7 +3508,7 @@ void test_v11_mesh_classification() {
   check(e->dynamic && e->surfaces.size() == 1 && e->surfaces[0].body != nullptr,
         "the second change within 4 frames makes it dynamic, with a body per surface");
   const auto in = mesh_input(5);
-  const std::vector<uint8_t> &payload = *in.bytes;
+  const auto &payload = *in.bytes;
   const uint32_t meta = payload[8] | (payload[9] << 8) | (payload[10] << 16) | (payload[11] << 24);
   check(e->surfaces[0].body->size() == payload.size() - 12 - meta &&
             std::equal(e->surfaces[0].body->begin(), e->surfaces[0].body->end(),
@@ -3541,7 +3541,7 @@ void test_v11_mesh_classification() {
 // The vertex-region write the hook makes: the 8*n vertex bytes of `to` at the payload's data
 // offset (12 + meta + 40), the AABB untouched. `to` must outlive the call.
 grc::rs::MeshRegionWrite vertex_write(const grc::rs::MeshSurfaceInput &to) {
-  const std::vector<uint8_t> &p = *to.bytes;
+  const auto &p = *to.bytes;
   const uint32_t meta = p[8] | (p[9] << 8) | (p[10] << 16) | (p[11] << 24);
   grc::rs::MeshRegionWrite w;
   w.offset = 12 + meta + 40;
@@ -3553,7 +3553,7 @@ grc::rs::MeshRegionWrite vertex_write(const grc::rs::MeshSurfaceInput &to) {
 // `base`'s payload with `to`'s vertex bytes (what the engine's buffers hold after vertex_write).
 std::vector<uint8_t> with_vertices(const grc::rs::MeshSurfaceInput &base,
                                    const grc::rs::MeshSurfaceInput &to) {
-  std::vector<uint8_t> out = *base.bytes;
+  std::vector<uint8_t> out(base.bytes->begin(), base.bytes->end());
   const grc::rs::MeshRegionWrite w = vertex_write(to);
   std::memcpy(out.data() + w.offset, w.data, w.size);
   return out;
@@ -3681,7 +3681,7 @@ void test_hc3_lazy_mesh_surfaces() {
   pv.mesh_surface_update_region(0x800, "mesh_surface_update_vertex_region", 0, true, &same, 10);
   grc::rs::Captured p2 = pv.snapshot(2, 10);
   const auto *pe = mesh(p2.state, 1);
-  std::vector<uint8_t> perturbed = *a.bytes;
+  std::vector<uint8_t> perturbed(a.bytes->begin(), a.bytes->end());
   {
     const grc::rs::MeshRegionWrite w = vertex_write(a);
     float x = 0;

@@ -29,7 +29,7 @@ void init() {
 	std::call_once(g_init_once, [] { basisu::basisu_encoder_init(false, false); });
 }
 
-bool transcode_rgba8(const std::vector<uint8_t> &ktx2, uint32_t level, std::vector<uint8_t> *rgba,
+bool transcode_rgba8(const grc::rs::PageBytes &ktx2, uint32_t level, std::vector<uint8_t> *rgba,
 		uint32_t *width, uint32_t *height) {
 	init();
 	try {

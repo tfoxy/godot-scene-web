@@ -97,13 +97,13 @@ rs::basis::EncodeResult encode(const std::vector<Img> &levels) {
 	return rs::basis::encode_uastc_ktx2(l.data(), l.size());
 }
 
-uint32_t rd32(const std::vector<uint8_t> &b, size_t o) {
+uint32_t rd32(const grc::rs::PageBytes &b, size_t o) {
 	return uint32_t(b[o]) | uint32_t(b[o + 1]) << 8 | uint32_t(b[o + 2]) << 16 | uint32_t(b[o + 3]) << 24;
 }
-uint64_t rd64(const std::vector<uint8_t> &b, size_t o) { return rd32(b, o) | uint64_t(rd32(b, o + 4)) << 32; }
+uint64_t rd64(const grc::rs::PageBytes &b, size_t o) { return rd32(b, o) | uint64_t(rd32(b, o + 4)) << 32; }
 
 // The `ktx2-header` rules of render-stream-9.md, plus `ktx2-shape` against the source chain.
-void validate(const std::string &name, const std::vector<uint8_t> &b, const std::vector<Img> &src) {
+void validate(const std::string &name, const grc::rs::PageBytes &b, const std::vector<Img> &src) {
 	static const uint8_t id[12] = {0xAB, 0x4B, 0x54, 0x58, 0x20, 0x32, 0x30, 0xBB, 0x0D, 0x0A, 0x1A, 0x0A};
 	CHECK(b.size() >= 80 && std::memcmp(b.data(), id, 12) == 0, "%s: identifier", name.c_str());
 	if (b.size() < 80) return;
@@ -177,7 +177,7 @@ int main(int argc, char **argv) {
 		CHECK(!rs::basis::encode_uastc_ktx2(nopix, 1).ok, "null pixels refused");
 	}
 
-	std::vector<std::vector<uint8_t>> single;
+	std::vector<grc::rs::PageBytes> single;
 	std::vector<std::vector<Img>> chains;
 	FILE *man = nullptr;
 	if (!emit.empty()) man = std::fopen((emit + "/manifest.tsv").c_str(), "w");

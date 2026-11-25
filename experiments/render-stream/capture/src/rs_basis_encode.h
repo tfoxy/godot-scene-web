@@ -19,6 +19,7 @@
 #include <cstdint>
 #include <string>
 #include <vector>
+#include "rs_page_allocator.h"
 
 namespace rs::basis {
 
@@ -32,7 +33,7 @@ struct Level {
 struct EncodeResult {
 	bool ok = false;
 	std::string error;
-	std::vector<uint8_t> ktx2;
+	grc::rs::PageBytes ktx2;
 	std::string params_id; // what produced `ktx2`; equals params_id()
 };
 
@@ -62,7 +63,7 @@ EncodeResult encode_uastc_ktx2(const Level *levels, size_t level_count,
 
 // basisu's own transcoder (the revision Godot 4.5.1 links): level `level` of a UASTC or ETC1S KTX2
 // to straight RGBA8, for host-side PSNR and the level bench. False on anything malformed.
-bool transcode_rgba8(const std::vector<uint8_t> &ktx2, uint32_t level, std::vector<uint8_t> *rgba,
+bool transcode_rgba8(const grc::rs::PageBytes &ktx2, uint32_t level, std::vector<uint8_t> *rgba,
                      uint32_t *width, uint32_t *height);
 
 } // namespace rs::basis
