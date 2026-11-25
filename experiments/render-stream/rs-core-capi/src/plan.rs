@@ -4263,7 +4263,13 @@ impl Planner {
             }
         }
         let textures = std::mem::take(&mut self.textures);
-        for m in textures.values() {
+        // RD CanvasTextures own cached uniform sets that reference their channel images.
+        // Release those sets before freeing images, whose RD dependencies free the sets too.
+        let ordered_textures = textures
+            .values()
+            .filter(|m| m.kind == TexKind::Canvas)
+            .chain(textures.values().filter(|m| m.kind != TexKind::Canvas));
+        for m in ordered_textures {
             ops.op(Op::FreeRid, 1);
             ops.rid(RidRef::Texture(m.handle));
             n += 1;
