@@ -71,6 +71,7 @@ std::string default_net_module_path();
 // True when `m` is a module whose table is big enough to carry `features` and sets
 // GRC_NET_FEATURE_TRACKS (a CAR3-era table, size 40, serves no tracks). False for null.
 bool net_module_serves_tracks(const grc_net_module_table_v1 *m);
+bool net_module_serves_audio(const grc_net_module_table_v1 *m);
 
 class NetWtCarrier final : public Carrier {
  public:
@@ -85,6 +86,11 @@ class NetWtCarrier final : public Carrier {
   }
   bool send_text(std::uint32_t local, std::string message) override {
     return abi_->send_text(local, std::move(message));
+  }
+  bool media_threaded() const override { return net_module_serves_audio(module_) && abi_->media_threaded(); }
+  bool send_media(std::uint32_t local, std::uint8_t cls, std::uint32_t group,
+                  std::uint32_t flags, std::uint64_t deadline_us, std::vector<std::uint8_t> message) override {
+    return media_threaded() && abi_->send_media(local, cls, group, flags, deadline_us, std::move(message));
   }
   void close(std::uint32_t local, std::uint16_t code, std::string reason) override {
     abi_->close(local, code, std::move(reason));

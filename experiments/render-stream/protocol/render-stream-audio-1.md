@@ -221,11 +221,26 @@ or an end.
 
 - **`0x02` take stream:** `u8 0x02`, `u8[16] key_id`, then repeated `u32le length` + block, then
   FIN after the block flagged `last`. The key_id in the stream header removes any ordering
-  dependency on `take-start`.
+  dependency on `take-start`. A `take-unavailable {key_id}` control resets that connection's open
+  take stream for the key with application error `0x03 abandoned`, releases its stream credit,
+  and drops its sender state. The client discards the partial take and keeps the session open,
+  whichever of the reset and control text arrives first. Any other take reset, or FIN without
+  `last`, is fatal. Evidence counts `take_abandoned`.
 - **`0x03` lane segment stream:** `u8 0x03`, `u8 lane`, then up to 8 length-prefixed blocks,
-  then FIN. The carrier resets a segment (application error `0x02 stale`) once its newest block's
-  `deadline_us` has passed while it still holds unsent or unacknowledged bytes, so QUIC stops
-  retransmitting stale audio.
+  then FIN after the eighth block. Blocks are sent immediately, without waiting to fill a segment.
+  Once the newest block's `deadline_us` passes, a segment not known complete (still open, or FIN'd
+  with acknowledgement unresolved) is reset with application error `0x02 stale`. The next block
+  opens a new segment. A FIN'd, acknowledged segment is never reset. Lane `END_GROUP` is ignored.
+  Deadlines are compared only against the optional, size-guarded carrier-host `now_us` callback,
+  which uses the capture's steady-clock epoch. Without it WT does not reset lanes; carrier evidence
+  records `lane_reset: "no-clock"`. Evidence counts `reset_open` and `reset_unacked` separately.
+- **Client selection:** `openAudioTrack` accepts `webTransport: {url, certificateHashes?, features}`
+  alongside its WS `url`. The product passes the loaded net module's feature bitmap. Audio uses
+  WT when bit 1 is set and the carrier is available, otherwise WS; `carrier` selects `auto`,
+  `websocket` or `webtransport`. The descriptor and carrier are forwarded to the audio Worker.
+  Header keys identify take streams independently of `take-start`; control and media may arrive
+  in either order. Stale lane and abandoned take resets keep the audio session open; other take
+  failures do not.
 - **Datagrams** are reserved for a later codec.
 
 ### Inherited track/1 handshake rules

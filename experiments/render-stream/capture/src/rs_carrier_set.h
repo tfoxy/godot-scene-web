@@ -225,6 +225,8 @@ class AbiCarrier final : public Carrier {
   std::uint64_t late_callbacks() const { return late_.load(std::memory_order_acquire); }
 
   struct Thunks;  // the C callbacks (rs_carrier_set.cpp)
+  // Set by the module adapter before start; a legacy wt module must never offer audio.
+  void set_wt_audio_supported(bool supported) { wt_audio_supported_ = supported; }
 
  private:
   explicit AbiCarrier(const grc_carrier_v1 &vtable);
@@ -240,6 +242,8 @@ class AbiCarrier final : public Carrier {
   void doom_locked(std::uint32_t local, const char *fault);
 
   grc_carrier_v1 vt_{};
+  bool wt_audio_supported_ = false;
+  std::string wt_track_subprotocols_;
   std::string name_;
   grc_carrier_host_v1 host_{};
   CarrierContext *ctx_ = nullptr;

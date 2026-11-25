@@ -25,6 +25,12 @@ const HASH_S: &str = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
 const SLOW_MS: u64 = 1500;
 const SP: &str = "render-stream.13";
 
+#[test]
+fn audio_feature_is_advertised() {
+    let module = unsafe { &*render_stream_net::grc_net_module_v1() };
+    assert_eq!(module.features & GRC_NET_FEATURE_AUDIO, GRC_NET_FEATURE_AUDIO, "WT module must advertise audio carriage");
+}
+
 // ------------------------------------------------------------------------------ fake host
 
 #[derive(Clone, Debug, PartialEq)]
@@ -56,6 +62,7 @@ struct Fake {
     slots: Mutex<HashSet<u32>>,
     outstanding: AtomicI64,
     logs: Mutex<Vec<String>>,
+    clock_us: std::sync::atomic::AtomicU64,
 }
 
 enum Owner {
@@ -172,6 +179,9 @@ unsafe extern "C" fn h_release(h: *mut c_void, owner: *mut c_void) {
     fake(h).outstanding.fetch_sub(1, Ordering::AcqRel);
     drop(Box::from_raw(owner as *mut Owner));
 }
+unsafe extern "C" fn h_now_us(h: *mut c_void) -> u64 {
+    fake(h).clock_us.load(Ordering::Acquire)
+}
 unsafe extern "C" fn h_log(h: *mut c_void, _level: c_int, m: *const c_char, n: usize) {
     fake(h).logs.lock().unwrap().push(s(m, n));
 }
@@ -277,6 +287,7 @@ impl Harness {
             slots: Mutex::new(HashSet::new()),
             outstanding: AtomicI64::new(0),
             logs: Mutex::new(vec![]),
+            clock_us: std::sync::atomic::AtomicU64::new(1000),
         });
         let host = Box::new(GrcCarrierHostV1 {
             abi_version: GRC_CARRIER_ABI_VERSION,
@@ -296,6 +307,7 @@ impl Harness {
             log: h_log,
             admit_subprotocol: Some(h_admit_subprotocol),
             lookup_coded: Some(h_lookup_coded),
+            now_us: Some(h_now_us),
         });
         let module = unsafe { &*render_stream_net::grc_net_module_v1() };
         assert_eq!(module.abi_version, GRC_NET_MODULE_ABI_VERSION);
@@ -1106,6 +1118,7 @@ fn start_refusals_are_typed() {
             slots: Mutex::new(HashSet::new()),
             outstanding: AtomicI64::new(0),
             logs: Mutex::new(vec![]),
+            clock_us: std::sync::atomic::AtomicU64::new(1000),
         });
         let host = GrcCarrierHostV1 {
             abi_version: GRC_CARRIER_ABI_VERSION,
@@ -1125,6 +1138,7 @@ fn start_refusals_are_typed() {
             log: h_log,
             admit_subprotocol: Some(h_admit_subprotocol),
             lookup_coded: Some(h_lookup_coded),
+            now_us: Some(h_now_us),
         };
         let module = unsafe { &*render_stream_net::grc_net_module_v1() };
         let mut vt = std::mem::MaybeUninit::<GrcCarrierV1>::zeroed();
@@ -1679,6 +1693,7 @@ fn a_host_struct_shorter_than_the_base_is_refused() {
         slots: Mutex::new(HashSet::new()),
         outstanding: AtomicI64::new(0),
         logs: Mutex::new(vec![]),
+        clock_us: std::sync::atomic::AtomicU64::new(1000),
     });
     let host = GrcCarrierHostV1 {
         abi_version: GRC_CARRIER_ABI_VERSION,
@@ -1698,6 +1713,7 @@ fn a_host_struct_shorter_than_the_base_is_refused() {
         log: h_log,
         admit_subprotocol: None,
         lookup_coded: None,
+            now_us: Some(h_now_us),
     };
     let module = unsafe { &*render_stream_net::grc_net_module_v1() };
     let mut vt = std::mem::MaybeUninit::<GrcCarrierV1>::zeroed();
@@ -1707,4 +1723,455 @@ fn a_host_struct_shorter_than_the_base_is_refused() {
     assert_eq!(unsafe { (vt.start)(vt.self_, &host, err.as_mut_ptr(), err.len()) }, 0);
     assert!(cstr(&err).starts_with("net-module-abi"), "{}", cstr(&err));
     unsafe { (vt.destroy)(vt.self_) };
+}
+
+
+// ------------------------------------------------------------------------------ audio carriage
+
+const AUDIO_SP: &str = "render-stream-audio.1";
+const KEY_A: &str = "0123456789abcdef0123456789abcdef";
+const KEY_B: &str = "fedcba9876543210fedcba9876543210";
+
+fn audio_opts() -> Opts {
+    Opts { extra: vec![("track_subprotocols", AUDIO_SP.into())], ..Default::default() }
+}
+
+async fn connect_audio(h: &Harness) -> Result<Connection, ConnectingError> {
+    connect_with(&h.url.replace(SP, AUDIO_SP), &h.hash, &[("origin", "http://127.0.0.1:5173")]).await
+}
+
+async fn connect_audio_one_take(h: &Harness) -> Connection {
+    let mut config = ClientConfig::builder()
+        .with_bind_default()
+        .with_server_certificate_hashes([digest(&h.hash)])
+        .build();
+    let mut transport = wtransport::quinn::TransportConfig::default();
+    // One HTTP/3 control stream and one media stream: an abandoned take must return credit.
+    transport.max_concurrent_uni_streams(wtransport::quinn::VarInt::from_u32(2));
+    config.quic_config_mut().transport_config(Arc::new(transport));
+    Endpoint::client(config).unwrap().connect(h.url.replace(SP, AUDIO_SP)).await.unwrap()
+}
+
+impl Harness {
+    fn media(&self, local: u32, cls: u8, group: u32, flags: u32, bytes: Vec<u8>) -> bool {
+        self.media_deadline(local, cls, group, flags, 0, bytes)
+    }
+    fn media_deadline(&self, local: u32, cls: u8, group: u32, flags: u32, deadline: u64, bytes: Vec<u8>) -> bool {
+        let b = self.buf(bytes);
+        unsafe { (self.vt.send_media.expect("media ABI tail"))(self.vt.self_, local, cls, group, flags, deadline, b) == 1 }
+    }
+
+    fn take_start(&self, local: u32, stream: u32, key: &str) -> String {
+        let text = format!(r#"{{"type":"take-start","key_id":"{key}","stream":{stream},"frames":2}}"#);
+        assert!(self.media(local, MEDIA_CONTROL, 0, MEDIA_TEXT, text.as_bytes().to_vec()));
+        text
+    }
+
+    fn take_unavailable(&self, local: u32, key: &str) {
+        let text = format!(r#"{{"type":"take-unavailable","key_id":"{key}","reason":"link-down"}}"#);
+        assert!(self.media(local, MEDIA_CONTROL, 0, MEDIA_TEXT, text.into_bytes()));
+    }
+
+    fn media_on_thread(&self, local: u32, group: u32, bytes: Vec<u8>) -> bool {
+        let buf = self.buf(bytes);
+        let (data, len, owner) = (buf.data as usize, buf.len, buf.owner as usize);
+        let send = self.vt.send_media.unwrap();
+        let self_ = self.vt.self_ as usize;
+        std::thread::spawn(move || unsafe {
+            let buf = GrcBuf { data: data as *const u8, len, owner: owner as *mut c_void };
+            send(self_ as *mut c_void, local, MEDIA_TAKE, group, 0, 0, buf) == 1
+        }).join().unwrap()
+    }
+}
+
+fn take_block(stream: u32, block: u32, flags: u8) -> Vec<u8> {
+    let mut b = vec![0u8; 52];
+    b[..8].copy_from_slice(&[0x47, 0x41, 1, 1, flags, 0, 0, 2]);
+    b[8..12].copy_from_slice(&stream.to_le_bytes());
+    b[12..16].copy_from_slice(&block.to_le_bytes());
+    b[16..20].copy_from_slice(&48000u32.to_le_bytes());
+    b[20..22].copy_from_slice(&1u16.to_le_bytes());
+    b[48..].copy_from_slice(&block.to_le_bytes());
+    b
+}
+
+async fn take_header(c: &Connection) -> (String, RecvStream) {
+    let mut r = tokio::time::timeout(Duration::from_secs(5), c.accept_uni()).await.expect("take stream").unwrap();
+    let mut head = [0u8; 17];
+    r.read_exact(&mut head).await.unwrap();
+    assert_eq!(head[0], 0x02);
+    (head[1..].iter().map(|b| format!("{b:02x}")).collect(), r)
+}
+
+async fn read_block(r: &mut RecvStream) -> Vec<u8> {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let mut len = [0u8; 4];
+        r.read_exact(&mut len).await.unwrap();
+        let mut b = vec![0; u32::from_le_bytes(len) as usize];
+        r.read_exact(&mut b).await.unwrap();
+        b
+    }).await.expect("take block")
+}
+
+#[test]
+fn audio_controls_and_uplink_use_the_live_framing_and_track_pool() {
+    let h = Harness::start(audio_opts());
+    let rt = rt();
+    let c = rt.block_on(connect_audio(&h)).unwrap();
+    let local = h.wait_opened(0);
+    assert_eq!(*h.fake.admits.lock().unwrap(), vec![(local, Some(AUDIO_SP.into()))]);
+    let (mut live, mut r) = rt.block_on(open_live(&c));
+    rt.block_on(async {
+        uplink(&c, 1, &[r#"{"type":"clock","c":2}"#]).await;
+        uplink(&c, 0, &[r#"{"type":"have","key_ids":[]}"#]).await;
+        live.write_all(&frame(1, b"audio-hello")).await.unwrap();
+    });
+    h.wait("hello and audio uplinks", |_| (h.texts(local).len() == 3).then_some(()));
+    assert_eq!(h.texts(local), vec!["audio-hello", r#"{"type":"have","key_ids":[]}"#, r#"{"type":"clock","c":2}"#]);
+    for text in ["track-ready", "audio-state", "clock"] {
+        assert!(h.media(local, MEDIA_CONTROL, 0, MEDIA_TEXT, text.as_bytes().to_vec()));
+    }
+    h.close(local, 1000, "done");
+    let (messages, error) = rt.block_on(read_messages(&mut r));
+    assert_eq!(error, None);
+    assert_eq!(messages, ["track-ready", "audio-state", "clock"].map(|t| (1, t.as_bytes().to_vec())));
+    h.wait_closed(local);
+}
+
+#[test]
+fn audio_takes_are_keyed_ordered_independent_and_fin_only_after_end_group() {
+    let h = Harness::start(audio_opts());
+    let rt = rt();
+    let c = rt.block_on(connect_audio(&h)).unwrap();
+    let local = h.wait_opened(0);
+    let (_live, mut controls) = rt.block_on(open_live(&c));
+    let start_a = h.take_start(local, 7, KEY_A);
+    let start_b = h.take_start(local, 9, KEY_B);
+    assert!(h.media(local, MEDIA_TAKE, 7, 0, take_block(7, 0, 1)));
+    assert!(h.media(local, MEDIA_TAKE, 9, MEDIA_END_GROUP, take_block(9, 0, 3)));
+    let (mut a, mut b) = rt.block_on(async {
+        let (key1, r1) = take_header(&c).await;
+        let (key2, r2) = take_header(&c).await;
+        if key1 == KEY_A { assert_eq!(key2, KEY_B); (r1, r2) }
+        else { assert_eq!(key1, KEY_B); assert_eq!(key2, KEY_A); (r2, r1) }
+    });
+    // Read the media before the controls: no receiver-side dependency on take-start order.
+    rt.block_on(async {
+        assert_eq!(read_block(&mut a).await, take_block(7, 0, 1));
+        assert_eq!(read_block(&mut b).await, take_block(9, 0, 3));
+        let mut byte = [0u8; 1];
+        assert_eq!(tokio::time::timeout(Duration::from_secs(5), b.read(&mut byte)).await.unwrap().unwrap(), None);
+        assert!(tokio::time::timeout(Duration::from_millis(100), a.read(&mut byte)).await.is_err(), "no premature FIN");
+    });
+    assert!(h.media_on_thread(local, 7, take_block(7, 1, 0)));
+    assert!(h.media(local, MEDIA_TAKE, 7, MEDIA_END_GROUP, take_block(7, 2, 2)));
+    assert!(!h.media(local, MEDIA_TAKE, 7, MEDIA_END_GROUP, take_block(7, 3, 2)), "no second stream for an ended group");
+    h.close(local, 1000, "done");
+    rt.block_on(async {
+        assert_eq!(read_block(&mut a).await, take_block(7, 1, 0));
+        assert_eq!(read_block(&mut a).await, take_block(7, 2, 2));
+        assert_eq!(a.read(&mut [0]).await.unwrap(), None);
+        let (texts, error) = read_messages(&mut controls).await;
+        assert_eq!(error, None);
+        assert_eq!(texts, vec![(1, start_a.into_bytes()), (1, start_b.into_bytes())]);
+    });
+    h.wait_closed(local);
+}
+
+#[test]
+fn audio_abandoned_take_resets_releases_state_and_returns_stream_credit() {
+    let mut h = Harness::start(audio_opts());
+    let rt = rt();
+    let c = rt.block_on(connect_audio_one_take(&h));
+    let local = h.wait_opened(0);
+    let (_live, _controls) = rt.block_on(open_live(&c));
+    for group in 1..=3 {
+        h.take_start(local, group, KEY_A);
+        assert!(h.media(local, MEDIA_TAKE, group, 0, take_block(group, 0, 1)));
+        rt.block_on(async {
+            let (key, mut stream) = take_header(&c).await;
+            assert_eq!(key, KEY_A);
+            assert_eq!(read_block(&mut stream).await, take_block(group, 0, 1));
+            // Another key must not cancel this stream.
+            h.take_unavailable(local, KEY_B);
+            assert!(tokio::time::timeout(Duration::from_millis(30), stream.read(&mut [0])).await.is_err());
+            h.take_unavailable(local, KEY_A);
+            let error = tokio::time::timeout(Duration::from_secs(2), stream.read(&mut [0])).await
+                .expect("abandoned take must reset and return stream credit").unwrap_err();
+            assert!(matches!(error, StreamReadError::Reset(code) if code.into_inner() == wt_error_to_h3(3)), "{error:?}");
+        });
+        assert!(!h.media(local, MEDIA_TAKE, group, 0, take_block(group, 1, 0)), "abandoned map entry removed");
+        wait_for("abandoned take task ended", || h.fake.logs.lock().unwrap().iter()
+            .filter(|line| line.contains("audio take abandoned")).count() == group as usize);
+    }
+    h.take_start(local, 4, KEY_B);
+    assert!(h.media(local, MEDIA_TAKE, 4, MEDIA_END_GROUP, take_block(4, 0, 3)));
+    rt.block_on(async {
+        let (key, mut stream) = take_header(&c).await;
+        assert_eq!(key, KEY_B);
+        assert_eq!(read_block(&mut stream).await, take_block(4, 0, 3));
+        assert_eq!(stream.read(&mut [0]).await.unwrap(), None);
+    });
+    assert!(!h.events().iter().any(|e| matches!(e, Ev::Closed { .. })));
+    assert_eq!(lane_evidence(&mut h)["take_abandoned"], 3);
+}
+
+#[test]
+fn sabotage_no_take_reset_exhausts_stream_credit() {
+    let mut opts = audio_opts();
+    opts.extra.push(("net_fault", "no-take-reset".into()));
+    let mut h = Harness::start(opts);
+    let rt = rt();
+    let c = rt.block_on(connect_audio_one_take(&h));
+    let local = h.wait_opened(0);
+    let (_live, _controls) = rt.block_on(open_live(&c));
+    h.take_start(local, 1, KEY_A);
+    assert!(h.media(local, MEDIA_TAKE, 1, 0, take_block(1, 0, 1)));
+    let mut held = rt.block_on(async {
+        let (_, mut stream) = take_header(&c).await;
+        assert_eq!(read_block(&mut stream).await, take_block(1, 0, 1));
+        stream
+    });
+    h.take_unavailable(local, KEY_A);
+    h.take_start(local, 2, KEY_B);
+    assert!(h.media(local, MEDIA_TAKE, 2, MEDIA_END_GROUP, take_block(2, 0, 3)));
+    rt.block_on(async {
+        assert!(tokio::time::timeout(Duration::from_millis(200), held.read(&mut [0])).await.is_err(), "sabotage retains abandoned stream");
+        assert!(tokio::time::timeout(Duration::from_millis(200), c.accept_uni()).await.is_err(), "later take has no stream credit");
+    });
+    assert!(unsafe { (h.vt.queued_bytes)(h.vt.self_, local) } > 0, "later take remains queued");
+    println!("sabotage: abandoned take retained the only media stream credit; later take stalled");
+    assert_eq!(lane_evidence(&mut h)["take_abandoned"], 0);
+}
+
+#[test]
+fn audio_media_rejects_closed_locals_and_ungranted_sessions() {
+    let h = Harness::start(audio_opts());
+    let rt = rt();
+    let c = rt.block_on(connect_audio(&h)).unwrap();
+    let old = h.wait_opened(0);
+    c.close(wtransport::VarInt::from_u32(0), b"done");
+    h.wait_closed(old);
+    let _new = rt.block_on(connect_audio(&h)).unwrap();
+    let new = h.wait_opened(1);
+    assert!(new > old);
+    assert!(!h.media(old, MEDIA_CONTROL, 0, MEDIA_TEXT, b"stale".to_vec()));
+    let _view = rt.block_on(connect(&h));
+    let view = h.wait_opened(2);
+    assert!(!h.media(view, MEDIA_CONTROL, 0, MEDIA_TEXT, b"wrong session".to_vec()));
+    let no_audio = Harness::start(Opts::default());
+    assert_eq!(status_of(rt.block_on(connect_audio(&no_audio))), 400);
+}
+
+#[test]
+fn audio_blocked_take_does_not_block_controls_or_another_take() {
+    let mut h = Harness::start(audio_opts());
+    let rt = rt();
+    let c = rt.block_on(connect_audio(&h)).unwrap();
+    let local = h.wait_opened(0);
+    let (_live, mut controls) = rt.block_on(open_live(&c));
+    let start_a = h.take_start(local, 1, KEY_A);
+    // More than the default QUIC stream window; the receiver never reads this take's body.
+    for i in 0..1024 {
+        let mut block = take_block(1, i, if i == 0 { 1 } else { 0 });
+        block.resize(8240, 0);
+        block[20..22].copy_from_slice(&2048u16.to_le_bytes());
+        assert!(h.media(local, MEDIA_TAKE, 1, 0, block));
+    }
+    let (key, _blocked) = rt.block_on(take_header(&c));
+    assert_eq!(key, KEY_A);
+    let start_b = h.take_start(local, 2, KEY_B);
+    assert!(h.media(local, MEDIA_TAKE, 2, MEDIA_END_GROUP, take_block(2, 0, 3)));
+    assert!(h.media(local, MEDIA_CONTROL, 0, MEDIA_TEXT, b"control-after-takes".to_vec()));
+    rt.block_on(async {
+        let (key, mut take) = take_header(&c).await;
+        assert_eq!(key, KEY_B);
+        assert_eq!(read_block(&mut take).await, take_block(2, 0, 3));
+        assert_eq!(take.read(&mut [0]).await.unwrap(), None);
+        for text in [start_a, start_b, "control-after-takes".into()] {
+            let mut header = [0u8; 5];
+            tokio::time::timeout(Duration::from_secs(5), controls.read_exact(&mut header)).await.expect("control bypasses blocked take").unwrap();
+            assert_eq!(header[0], 1);
+            let mut body = vec![0u8; u32::from_le_bytes(header[1..].try_into().unwrap()) as usize];
+            controls.read_exact(&mut body).await.unwrap();
+            assert_eq!(body, text.as_bytes());
+        }
+    });
+    assert!(unsafe { (h.vt.queued_bytes)(h.vt.self_, local) } > 0, "the first take is still backpressured");
+    c.close(wtransport::VarInt::from_u32(0), b"done");
+    h.wait_closed(local);
+    h.stop(); // also proves queued buffers are released on disconnect
+}
+
+#[test]
+fn audio_resources_use_the_existing_authorization_and_codings() {
+    let h = Harness::start(Opts { token: TOKEN.into(), ..audio_opts() });
+    let rt = rt();
+    let c = rt.block_on(connect_audio(&h)).unwrap();
+    h.wait_opened(0);
+    rt.block_on(async {
+        let path = format!("/resources/sha256/{HASH_A}");
+        assert_eq!(get(&c, 0, &path, "").await.0, 401, "audio resources still require a token");
+        let (status, coding, bytes) = get(&c, 0, &path, TOKEN).await;
+        assert_eq!((status, coding), (200, 0));
+        assert_eq!(bytes, body(300_000, 7));
+        let (status, coding, bytes) = get(&c, 1, &path, TOKEN).await;
+        assert_eq!((status, coding), (200, 1));
+        assert_eq!(bytes, gzip(&body(300_000, 7)));
+    });
+    assert_eq!(h.info().streams_refused, 0);
+}
+
+
+fn lane_block(lane: u8, block: u32) -> Vec<u8> {
+    let mut b = take_block(0, block, 0);
+    b[3] = 2;
+    b[5] = lane;
+    b
+}
+
+async fn lane_header(c: &Connection) -> (u8, RecvStream) {
+    let mut r = tokio::time::timeout(Duration::from_secs(5), c.accept_uni()).await.expect("lane stream").unwrap();
+    let mut head = [0u8; 2];
+    r.read_exact(&mut head).await.unwrap();
+    assert_eq!(head[0], 0x03);
+    (head[1], r)
+}
+
+#[test]
+fn audio_lanes_segment_at_eight_blocks_and_finish_partial_on_close() {
+    let h = Harness::start(audio_opts());
+    let rt = rt();
+    let c = rt.block_on(connect_audio(&h)).unwrap();
+    let local = h.wait_opened(0);
+    let (_live, _controls) = rt.block_on(open_live(&c));
+    for i in 0..19 {
+        // END_GROUP is ignored for lanes: only the eight-block boundary segments them.
+        assert!(h.media(local, MEDIA_LANE, 3, MEDIA_END_GROUP, lane_block(3, i)));
+    }
+    assert!(h.media(local, MEDIA_LANE, 7, 0, lane_block(7, 0)));
+    assert!(!h.media(local, MEDIA_LANE, 0, 0, lane_block(0, 0)));
+    assert!(!h.media(local, MEDIA_LANE, 16, 0, lane_block(16, 0)));
+    // Start every receive before host close, to hold the connection until they drain.
+    rt.block_on(async {
+        let mut streams = Vec::new();
+        for _ in 0..4 { streams.push(lane_header(&c).await); }
+        h.close(local, 1000, "done");
+        let mut segments = Vec::new();
+        for (lane, mut stream) in streams {
+            let mut bytes = Vec::new();
+            let mut buf = [0u8; 1024];
+            while let Some(n) = tokio::time::timeout(Duration::from_secs(5), stream.read(&mut buf)).await.unwrap().unwrap() {
+                bytes.extend_from_slice(&buf[..n]);
+            }
+            let mut blocks = Vec::new();
+            while !bytes.is_empty() {
+                let len = u32::from_le_bytes(bytes[..4].try_into().unwrap()) as usize;
+                let block = u32::from_le_bytes(bytes[16..20].try_into().unwrap());
+                assert_eq!(&bytes[4..4 + len], lane_block(lane, block));
+                blocks.push(block);
+                bytes.drain(..4 + len);
+            }
+            segments.push((lane, blocks));
+        }
+        segments.sort();
+        assert_eq!(segments, vec![(3, (0..8).collect()), (3, (8..16).collect()), (3, (16..19).collect()), (7, vec![0])]);
+    });
+    assert_eq!(h.wait_closed(local), (1000, "done".into()));
+}
+
+
+fn lane_evidence(h: &mut Harness) -> serde_json::Value {
+    h.stop();
+    serde_json::from_slice(&std::fs::read(h.evidence.0.join("wt-audio.json")).unwrap()).unwrap()
+}
+
+#[test]
+fn audio_open_lane_expires_and_next_block_opens_a_fresh_segment() {
+    let mut h = Harness::start(audio_opts());
+    let rt = rt();
+    let c = rt.block_on(connect_audio(&h)).unwrap();
+    let local = h.wait_opened(0);
+    let (_live, _controls) = rt.block_on(open_live(&c));
+    assert!(h.media_deadline(local, MEDIA_LANE, 3, 0, 2000, lane_block(3, 0)));
+    rt.block_on(async {
+        let (_, mut stream) = lane_header(&c).await;
+        assert_eq!(read_block(&mut stream).await, lane_block(3, 0));
+        h.fake.clock_us.store(3000, Ordering::Release);
+        let err = tokio::time::timeout(Duration::from_secs(3), stream.read(&mut [0u8; 1])).await
+            .expect("stale open segment must reset instead of retaining backlog").unwrap_err();
+        assert!(matches!(err, wtransport::error::StreamReadError::Reset(code) if code.into_inner() == wt_error_to_h3(2)), "{err:?}");
+        assert!(h.media_deadline(local, MEDIA_LANE, 3, 0, 0, lane_block(3, 1)));
+        let (_, mut fresh) = lane_header(&c).await;
+        assert_eq!(read_block(&mut fresh).await, lane_block(3, 1));
+    });
+    let evidence = lane_evidence(&mut h);
+    assert_eq!(evidence["reset_open"], 1);
+    assert_eq!(evidence["reset_unacked"], 0);
+}
+
+#[test]
+fn audio_finished_acked_lane_never_expires() {
+    let mut h = Harness::start(audio_opts());
+    let rt = rt();
+    let c = rt.block_on(connect_audio(&h)).unwrap();
+    let local = h.wait_opened(0);
+    let (_live, _controls) = rt.block_on(open_live(&c));
+    for i in 0..8 { assert!(h.media_deadline(local, MEDIA_LANE, 3, 0, 2000, lane_block(3, i))); }
+    rt.block_on(async {
+        let (_, mut stream) = lane_header(&c).await;
+        for i in 0..8 { assert_eq!(read_block(&mut stream).await, lane_block(3, i)); }
+        assert_eq!(stream.read(&mut [0u8; 1]).await.unwrap(), None);
+    });
+    // Wait for acknowledgement evidence, rather than relying on a guessed loopback RTT.
+    wait_for("lane ACK", || h.fake.logs.lock().unwrap().iter().any(|l| l.contains("audio lane acked")));
+    h.fake.clock_us.store(3000, Ordering::Release);
+    let evidence = lane_evidence(&mut h);
+    assert_eq!(evidence["reset_open"], 0);
+    assert_eq!(evidence["reset_unacked"], 0);
+    assert_eq!(evidence["acked"], 1);
+}
+
+#[test]
+fn audio_finished_unacked_lane_expires() {
+    let mut h = Harness::start(audio_opts());
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    // QUIC packet processing only advances while this current-thread runtime is polled.
+    let c = rt.block_on(connect_audio(&h)).unwrap();
+    let local = h.wait_opened(0);
+    let (_live, _controls) = rt.block_on(open_live(&c));
+    for i in 0..8 { assert!(h.media_deadline(local, MEDIA_LANE, 3, 0, 2000, lane_block(3, i))); }
+    wait_for("lane FIN without ACK", || h.fake.logs.lock().unwrap().iter().any(|l| l.contains("audio lane fin")));
+    h.fake.clock_us.store(3000, Ordering::Release);
+    wait_for("unacked reset", || h.fake.logs.lock().unwrap().iter().any(|l| l.contains("stale lane=3 fin=true")));
+    let evidence = lane_evidence(&mut h);
+    assert_eq!(evidence["reset_open"], 0);
+    assert_eq!(evidence["reset_unacked"], 1);
+    drop(c);
+}
+
+#[test]
+fn audio_old_host_does_not_expire_lanes_or_read_clock_tail() {
+    let mut h = Harness::start(Opts { host_size: Some(128), ..audio_opts() });
+    let rt = rt();
+    let c = rt.block_on(connect_audio(&h)).unwrap();
+    let local = h.wait_opened(0);
+    let (_live, _controls) = rt.block_on(open_live(&c));
+    assert!(h.media_deadline(local, MEDIA_LANE, 3, 0, 1, lane_block(3, 0)));
+    rt.block_on(async {
+        let (_, mut stream) = lane_header(&c).await;
+        assert_eq!(read_block(&mut stream).await, lane_block(3, 0));
+        assert!(tokio::time::timeout(Duration::from_millis(30), stream.read(&mut [0u8; 1])).await.is_err());
+    });
+    let evidence = lane_evidence(&mut h);
+    assert_eq!(evidence["lane_reset"], "no-clock");
+    assert_eq!(evidence["reset_open"], 0);
+}
+
+fn wait_for(what: &str, mut predicate: impl FnMut() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !predicate() {
+        assert!(Instant::now() < deadline, "timed out waiting for {what}");
+        std::thread::sleep(Duration::from_millis(2));
+    }
 }

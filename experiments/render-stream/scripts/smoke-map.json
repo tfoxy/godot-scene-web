@@ -213,6 +213,20 @@
       "exclusive": true
     },
     {
+      "why": "Audio WT carriage correctness uses the pure stream parser self-test, package tests, capture loader and rs-net crate. run-audio-wt-browser.sh is the manual impaired UDP acceptance (main and Worker audio paths); it records no timings.",
+      "paths": [
+        "experiments/render-stream/scripts/*audio-wt*",
+        "experiments/render-stream/scripts/test/*audio-wt*"
+      ],
+      "reach": [
+        "pure",
+        "pnpm-test",
+        "capture-build",
+        "cargo:experiments/render-stream/rs-net"
+      ],
+      "exclusive": true
+    },
+    {
       "why": "The opt-in audio client has no import edge from the view or tracks entries; its session, PCM engine and wire codec are covered by package tests and pure self-tests",
       "paths": [
         "packages/render-stream-client/src/audio/**",

@@ -35,6 +35,10 @@ impl Host {
         *alive = false;
     }
 
+    pub fn now_us(&self) -> Option<u64> {
+        self.with(None, |h| h.now_us.map(|f| unsafe { f(h.host) }))
+    }
+
     pub fn outstanding(&self) -> i64 {
         self.outstanding.load(Ordering::Acquire)
     }

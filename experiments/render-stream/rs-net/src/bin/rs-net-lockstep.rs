@@ -147,6 +147,7 @@ fn main() {
         log: h_log,
         admit_subprotocol: None, // a view-only bench
         lookup_coded: None,
+            now_us: None,
     }));
     let module = unsafe { &*render_stream_net::grc_net_module_v1() };
     let mut vt = std::mem::MaybeUninit::<GrcCarrierV1>::zeroed();

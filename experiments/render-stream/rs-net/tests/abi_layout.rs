@@ -6,12 +6,14 @@ use std::mem::{offset_of, size_of};
 #[test]
 fn layouts_match_the_c_headers() {
     assert_eq!(size_of::<GrcBuf>(), 24);
-    assert_eq!(size_of::<GrcCarrierHostV1>(), 128);
+    assert_eq!(size_of::<GrcCarrierHostV1>(), 136);
     assert_eq!(offset_of!(GrcCarrierHostV1, log), 104);
     assert_eq!(offset_of!(GrcCarrierHostV1, admit_subprotocol), 112);
     assert_eq!(offset_of!(GrcCarrierHostV1, lookup_coded), 120);
+    assert_eq!(offset_of!(GrcCarrierHostV1, now_us), 128);
     assert_eq!(HOST_V1_BASE_SIZE, 112);
-    assert_eq!(size_of::<GrcCarrierV1>(), 88);
+    assert_eq!(offset_of!(GrcCarrierV1, send_media), 88);
+    assert_eq!(size_of::<GrcCarrierV1>(), 96);
     assert_eq!(size_of::<GrcNetWtInfoV1>(), 184);
     assert_eq!(offset_of!(GrcNetWtInfoV1, port), 72);
     assert_eq!(offset_of!(GrcNetWtInfoV1, sessions_refused), 160);

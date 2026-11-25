@@ -341,6 +341,8 @@ export function openAudioTrack(options: OpenAudioTrackOptions): AudioTrack {
         kind: "init",
         options: {
           url,
+          webTransport: options.webTransport,
+          carrier: options.carrier,
           credential:
             typeof options.credential === "string" ? options.credential : "",
           client: options.client,

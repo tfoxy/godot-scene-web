@@ -87,6 +87,11 @@ bool net_module_serves_tracks(const grc_net_module_table_v1 *m) {
   return (m->features & GRC_NET_FEATURE_TRACKS) != 0;
 }
 
+bool net_module_serves_audio(const grc_net_module_table_v1 *m) {
+  return m != nullptr && m->size >= offsetof(grc_net_module_table_v1, features) + sizeof(std::uint32_t) &&
+         (m->features & GRC_NET_FEATURE_AUDIO) != 0;
+}
+
 const grc_net_module_table_v1 *load_net_module(const char *explicit_path, std::string *error,
                                          std::string *path_out) {
   std::lock_guard<std::mutex> lock(load_mu());
@@ -224,6 +229,7 @@ std::unique_ptr<NetWtCarrier> NetWtCarrier::create(const grc_net_module_table_v1
 
 bool NetWtCarrier::start(CarrierContext &ctx, std::string *error) {
   ctx_ = &ctx;
+  abi_->set_wt_audio_supported(media_threaded());
   return abi_->start(ctx, error);
 }
 
@@ -275,7 +281,7 @@ CarrierInfo NetWtCarrier::info() const {
 static_assert(sizeof(grc_buf) == 24, "grc_buf layout");
 // admit_subprotocol and lookup_coded were appended (abi_version stays 1, the size rule): the
 // module's mirror carries both, and reads only what a host's `size` covers.
-static_assert(sizeof(grc_carrier_host_v1) == 128, "grc_carrier_host_v1 layout");
+static_assert(sizeof(grc_carrier_host_v1) == 136, "grc_carrier_host_v1 layout");
 static_assert(offsetof(grc_carrier_host_v1, admit_subprotocol) == 112, "grc_carrier_host_v1 layout");
 static_assert(offsetof(grc_carrier_host_v1, lookup_coded) == 120, "grc_carrier_host_v1 layout");
 static_assert(GRC_CARRIER_V1_MIN_SIZE == 88, "grc_carrier_v1 layout");
@@ -287,3 +293,5 @@ static_assert(offsetof(grc_net_module_table_v1, features) == 40, "grc_net_module
 static_assert(sizeof(grc_net_tls_table_v1) == 112, "grc_net_tls_table_v1 layout");
 static_assert(offsetof(grc_net_tls_table_v1, feed) == 56, "grc_net_tls_table_v1 layout");
 static_assert(offsetof(grc_net_tls_table_v1, close_notify) == 104, "grc_net_tls_table_v1 layout");
+
+static_assert(offsetof(grc_carrier_host_v1, now_us) == 128, "grc_carrier_host_v1 layout");

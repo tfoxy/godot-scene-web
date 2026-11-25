@@ -147,6 +147,19 @@ unsafe extern "C" fn wt_send_text(self_: *mut c_void, local: u32, msg: GrcBuf) -
     send(self_, local, msg, wt::KIND_TEXT)
 }
 
+unsafe extern "C" fn wt_send_media(
+    self_: *mut c_void, local: u32, cls: u8, group: u32, flags: u32, deadline_us: u64, msg: GrcBuf,
+) -> c_int {
+    let c = carrier(self_);
+    let host = c.and_then(|c| c.host.lock().unwrap_or_else(|e| e.into_inner()).clone());
+    let Some(host) = host else { return 0 };
+    let buf = HostBuf::adopt(host, msg);
+    guarded(c, 0, "send_media", move || {
+        let Some(s) = c.and_then(|c| c.shared()) else { return 0 };
+        c_int::from(s.send_media(local, cls, group, flags, deadline_us, buf))
+    })
+}
+
 unsafe extern "C" fn wt_close(self_: *mut c_void, local: u32, code: u16, reason: *const c_char, len: usize) {
     let c = carrier(self_);
     guarded(c, (), "close", || {
@@ -204,6 +217,7 @@ unsafe extern "C" fn wt_create(out: *mut GrcCarrierV1, error: *mut c_char, cap: 
             queued_bytes: wt_queued_bytes,
             max_queued_bytes: wt_max_queued_bytes,
             destroy: wt_destroy,
+            send_media: Some(wt_send_media),
         };
         1
     }))
@@ -249,7 +263,7 @@ static MODULE: GrcNetModuleV1 = GrcNetModuleV1 {
     module_version: MODULE_VERSION.as_ptr() as *const c_char,
     wt_create,
     wt_info,
-    features: GRC_NET_FEATURE_TRACKS,
+    features: GRC_NET_FEATURE_TRACKS | GRC_NET_FEATURE_AUDIO,
     features_reserved: 0,
 };
 

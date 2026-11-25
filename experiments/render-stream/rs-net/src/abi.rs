@@ -15,6 +15,14 @@ pub const GRC_CODING_ZSTD: c_int = 2;
 
 /// grc_net_module_table_v1.features bit 0 (TRK3): the wt carrier admits track subprotocols.
 pub const GRC_NET_FEATURE_TRACKS: u32 = 1;
+/// Bit 1: the wt carrier implements render-stream-audio.1 media streams.
+pub const GRC_NET_FEATURE_AUDIO: u32 = 2;
+
+pub const MEDIA_CONTROL: u8 = 0;
+pub const MEDIA_TAKE: u8 = 2;
+pub const MEDIA_LANE: u8 = 3;
+pub const MEDIA_TEXT: u32 = 1;
+pub const MEDIA_END_GROUP: u32 = 2;
 
 pub const GRC_REJECT_AUTH: c_int = 1;
 pub const GRC_REJECT_ORIGIN: c_int = 2;
@@ -58,6 +66,8 @@ pub struct GrcCarrierHostV1 {
     /// building the identity body. A host whose `size` stops before it (120 bytes or less) gets
     /// `None` from `read_host`, and the carrier answers a coded fetch with `lookup` alone.
     pub lookup_coded: Option<unsafe extern "C" fn(*mut c_void, *const c_char, c_int, *mut GrcBuf, *mut u64) -> c_int>,
+    /// Optional capture clock in the same epoch as send_media deadlines.
+    pub now_us: Option<unsafe extern "C" fn(*mut c_void) -> u64>,
 }
 
 /// Bytes of grc_carrier_host_v1 before TRK1's `admit_subprotocol` (the CAR1 struct).
@@ -76,8 +86,14 @@ pub unsafe fn read_host(host: *const GrcCarrierHostV1) -> Option<GrcCarrierHostV
         return None;
     }
     let mut raw = std::mem::MaybeUninit::<GrcCarrierHostV1>::zeroed();
-    std::ptr::copy_nonoverlapping(host as *const u8, raw.as_mut_ptr() as *mut u8, size.min(std::mem::size_of::<GrcCarrierHostV1>()));
-    Some(raw.assume_init())
+    let readable = [HOST_V1_BASE_SIZE,
+        std::mem::offset_of!(GrcCarrierHostV1, lookup_coded),
+        std::mem::offset_of!(GrcCarrierHostV1, now_us),
+        std::mem::size_of::<GrcCarrierHostV1>()]
+        .into_iter().filter(|n| *n <= size).max().unwrap();
+    std::ptr::copy_nonoverlapping(host as *const u8, raw.as_mut_ptr() as *mut u8, readable);
+    let raw = raw.assume_init();
+    Some(raw)
 }
 
 #[repr(C)]
@@ -95,6 +111,7 @@ pub struct GrcCarrierV1 {
     pub queued_bytes: unsafe extern "C" fn(*mut c_void, u32) -> u64,
     pub max_queued_bytes: unsafe extern "C" fn(*mut c_void, u32) -> u64,
     pub destroy: unsafe extern "C" fn(*mut c_void),
+    pub send_media: Option<unsafe extern "C" fn(*mut c_void, u32, u8, u32, u32, u64, GrcBuf) -> c_int>,
 }
 
 #[repr(C)]

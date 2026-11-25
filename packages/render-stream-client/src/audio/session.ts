@@ -5,7 +5,8 @@ import {
   type TrackSink,
 } from "../track";
 import {
-  createWebSocketTransport,
+  carrierTransport,
+  type RenderStreamCarrier,
   type RenderStreamTransportFactory,
 } from "../transport";
 import { AudioClockEstimator } from "./clock";
@@ -16,6 +17,7 @@ import {
 } from "./mainEngine";
 import { type FetchAudioAsset, GodotSampleEngine } from "./sampleEngine";
 import { TakeStore } from "./takeStore";
+import { createWebTransportTransport } from "./webtransport";
 import {
   AUDIO_SUBPROTOCOL,
   type AudioClientMessage,
@@ -58,6 +60,13 @@ export interface OpenAudioTrackOptions
     | "onState"
   > {
   url: string;
+  /** WT descriptor and the loaded net module's features; bit 1 grants audio carriage. */
+  webTransport?: {
+    url: string;
+    certificateHashes?: string[];
+    features: number;
+  };
+  carrier?: RenderStreamCarrier;
   context: AudioContextLike;
   /** Sample asset codecs in preference order; PCM16 blocks and WAV assets are always accepted. */
   codecs?: readonly ("ogg-vorbis" | "mp3" | "wav")[];
@@ -79,7 +88,7 @@ export interface AudioTrack {
   close(): void;
 }
 
-/** A WS audio session. The context belongs to the caller and is never closed by the track. */
+/** An independent audio session. The context belongs to the caller and is never closed by the track. */
 export interface AudioSessionRuntime {
   engine: Omit<
     Pick<
@@ -137,6 +146,14 @@ export function openAudioTrack(
   const advertised = new Set<string>();
   const takeStreams = new Map<number, string>();
   const abortedStreams = new Set<number>();
+  const takeLast = new Set<number>();
+  const pendingReady = new Map<
+    number,
+    Extract<AudioEvent, { type: "take-ready" }>
+  >();
+  const earlyTakes = new Map<string, ArrayBuffer[]>();
+  let earlyLanes: ArrayBuffer[] = [];
+  let receiveBlock: (data: ArrayBuffer, key?: string) => void;
   let timers: unknown[] = [];
   let outbox: AudioClientMessage[] = [];
   let flushTimer: unknown = null;
@@ -169,6 +186,10 @@ export function openAudioTrack(
     advertised.clear();
     takeStreams.clear();
     abortedStreams.clear();
+    takeLast.clear();
+    pendingReady.clear();
+    earlyTakes.clear();
+    earlyLanes = [];
     requestedLanes = [];
     store.resetStreams();
     sampleEngine.reset();
@@ -240,6 +261,19 @@ export function openAudioTrack(
       pendingCues.set(event.key_id, pending);
     }
   };
+  const abandonTake = (keyId: string): void => {
+    earlyTakes.delete(keyId);
+    pendingCues.delete(keyId);
+    for (const [stream, key] of takeStreams) {
+      if (key !== keyId) continue;
+      pendingReady.delete(stream);
+      takeLast.delete(stream);
+      store.abort(stream);
+      engine.abortTake(stream);
+      takeStreams.delete(stream);
+      abortedStreams.add(stream);
+    }
+  };
   const event = (m: AudioEvent): void => {
     switch (m.type) {
       case "audio-state":
@@ -256,6 +290,8 @@ export function openAudioTrack(
           }
         advertise(true, bankset ? store.ids(bankset) : []);
         subscribe();
+        for (const block of earlyLanes) receiveBlock(block);
+        earlyLanes = [];
         break;
       case "sample":
         samples.set(m.id, m);
@@ -301,8 +337,18 @@ export function openAudioTrack(
         abortedStreams.delete(m.stream);
         engine.beginTake(m.stream, pendingCues.get(m.key_id) ?? []);
         pendingCues.delete(m.key_id);
+        {
+          const blocks = earlyTakes.get(m.key_id) ?? [];
+          earlyTakes.delete(m.key_id);
+          for (const block of blocks) receiveBlock(block, m.key_id);
+        }
         break;
       case "take-ready": {
+        if (options.webTransport && !takeLast.has(m.stream)) {
+          pendingReady.set(m.stream, m);
+          return;
+        }
+        takeLast.delete(m.stream);
         const take = store.finish(m.stream, m.key_id, m.hash);
         takeStreams.delete(m.stream);
         engine.loadTake(take);
@@ -313,14 +359,7 @@ export function openAudioTrack(
         break;
       }
       case "take-unavailable":
-        pendingCues.delete(m.key_id);
-        for (const [stream, key] of takeStreams) {
-          if (key !== m.key_id) continue;
-          store.abort(stream);
-          engine.abortTake(stream);
-          takeStreams.delete(stream);
-          abortedStreams.add(stream);
-        }
+        abandonTake(m.key_id);
         break;
       case "lanes":
         for (const lane of m.lanes)
@@ -332,9 +371,101 @@ export function openAudioTrack(
     }
     call(options.onEvent, m);
   };
-  const factory = options.transport ?? createWebSocketTransport();
+  let mediaSession = 0;
+  let sinkActivity = (): void => {};
+  receiveBlock = (data, key) => {
+    if (!snapshot || !ready) {
+      if (key) {
+        const pending = earlyTakes.get(key) ?? [];
+        pending.push(data);
+        earlyTakes.set(key, pending);
+      } else earlyLanes.push(data);
+      return;
+    }
+    const block = decodeBlock(new Uint8Array(data), {
+      lanes: ready.lanes.map((l) => l.id),
+      lane_block_frames: ready.lane_block_frames,
+    });
+    sinkActivity();
+    stage?.({
+      type: block.header.kind === 1 ? "take-block" : "lane-block",
+      handledMs: now(),
+      stream: block.header.stream,
+      block: block.header.block,
+      lane: block.header.lane,
+      made_us: Number(block.header.made_us),
+      due_us: Number(block.header.due_us),
+      sent_us: Number(block.header.sent_us),
+    });
+    if (block.header.kind === 1) {
+      if (abortedStreams.has(block.header.stream)) return;
+      if (key && !takeStreams.has(block.header.stream)) {
+        const pending = earlyTakes.get(key) ?? [];
+        pending.push(data);
+        earlyTakes.set(key, pending);
+        return;
+      }
+      if (key && takeStreams.get(block.header.stream) !== key)
+        throw new Error("audio-protocol");
+      engine.takeBlock(block, store.append(block));
+      if (block.header.flags & 2) {
+        takeLast.add(block.header.stream);
+        const waiting = pendingReady.get(block.header.stream);
+        if (waiting) {
+          pendingReady.delete(block.header.stream);
+          event(waiting);
+        }
+      }
+    } else {
+      const lane = ready.lanes.find((l) => l.id === block.header.lane);
+      if (!lane) throw new Error("audio-protocol");
+      if (requestedLanes.includes(lane.id))
+        engine.laneBlock(
+          block,
+          lane,
+          clock.contextTime(
+            Number(block.header.due_us),
+            options.context,
+            now(),
+          ),
+        );
+    }
+  };
+  const mediaBlock = (data: ArrayBuffer, key?: string): void => {
+    try {
+      receiveBlock(data, key);
+    } catch {
+      failAudio();
+    }
+  };
+  const factory =
+    options.transport ??
+    carrierTransport(
+      options.webTransport && (options.webTransport.features & 2) !== 0
+        ? (options.carrier ?? "auto")
+        : "websocket",
+      {
+        webtransport: async () => (endpoint, protocol, on) => {
+          const generation = mediaSession;
+          return createWebTransportTransport({
+            cacheBytes: 0,
+            onTake: (key, block) => {
+              if (mediaSession === generation) mediaBlock(block, key);
+            },
+            onTakeAbandoned: (key) => {
+              if (mediaSession === generation) abandonTake(key);
+            },
+            onLane: (block) => {
+              if (mediaSession === generation) mediaBlock(block);
+            },
+          })(endpoint, protocol, on);
+        },
+      },
+    );
   const transport: RenderStreamTransportFactory = (endpoint, _protocol, on) => {
+    const generation = ++mediaSession;
     overflowClose = false;
+    sinkActivity = () => on.message("");
     let opened = false;
     let ended = false;
     let hello = true;
@@ -342,6 +473,7 @@ export function openAudioTrack(
     const fail = (): void => {
       if (!ended) {
         ended = true;
+        if (mediaSession === generation) mediaSession++;
         link.close(1000, "audio-protocol");
         on.close(1002, "audio-protocol");
       }
@@ -387,38 +519,7 @@ export function openAudioTrack(
           } else {
             if (!opened || !snapshot || !ready)
               throw new Error("audio-protocol");
-            const block = decodeBlock(new Uint8Array(data), {
-              lanes: ready.lanes.map((l) => l.id),
-              lane_block_frames: ready.lane_block_frames,
-            });
-            on.message("");
-            stage?.({
-              type: block.header.kind === 1 ? "take-block" : "lane-block",
-              handledMs: now(),
-              stream: block.header.stream,
-              block: block.header.block,
-              lane: block.header.lane,
-              made_us: Number(block.header.made_us),
-              due_us: Number(block.header.due_us),
-              sent_us: Number(block.header.sent_us),
-            });
-            if (block.header.kind === 1) {
-              if (!abortedStreams.has(block.header.stream))
-                engine.takeBlock(block, store.append(block));
-            } else {
-              const lane = ready.lanes.find((l) => l.id === block.header.lane);
-              if (!lane) throw new Error("audio-protocol");
-              if (requestedLanes.includes(lane.id))
-                engine.laneBlock(
-                  block,
-                  lane,
-                  clock.contextTime(
-                    Number(block.header.due_us),
-                    options.context,
-                    now(),
-                  ),
-                );
-            }
+            receiveBlock(data);
           }
         } catch {
           fail();
@@ -427,6 +528,7 @@ export function openAudioTrack(
       close(code, reason) {
         if (ended) return;
         ended = true;
+        if (mediaSession === generation) mediaSession++;
         // Audio overflow inherits track-rate's >=1s retry floor without changing track.ts.
         if ((reason || pendingError?.reason) === "audio-overflow") {
           overflowClose = true;
@@ -444,13 +546,24 @@ export function openAudioTrack(
       },
       close(code, reason) {
         ended = true;
+        if (mediaSession === generation) mediaSession++;
         link.close(code, reason);
       },
       fetchResource: (path, init) => link.fetchResource(path, init),
     };
   };
   sink = openTrack(
-    { url: options.url },
+    {
+      url: options.url,
+      ...(options.webTransport
+        ? {
+            webTransport: {
+              url: options.webTransport.url,
+              certificateHashes: options.webTransport.certificateHashes,
+            },
+          }
+        : {}),
+    },
     {
       ...options,
       credential:

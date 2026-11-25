@@ -60,9 +60,16 @@ int main(int argc, char **argv) {
     check(!net_module_serves_tracks(&t), "TRK3: size 48 with features 0 serves no tracks");
     t.features = 2u;
     check(!net_module_serves_tracks(&t), "TRK3: size 48 with only another bit serves no tracks");
+    check(net_module_serves_audio(&t), "audio: bit 1 enables audio independently of generic tracks");
     t.features = GRC_NET_FEATURE_TRACKS;
+    check(!net_module_serves_audio(&t), "audio: tracks bit alone never enables audio");
+    t.features |= GRC_NET_FEATURE_AUDIO;
+    check(net_module_serves_audio(&t), "audio: both bits enable audio");
+    t.size = 43;
+    check(!net_module_serves_audio(&t), "audio: a partial features field is never read");
     t.size = 40;
     check(!net_module_serves_tracks(&t), "TRK3: a size-40 table is never read for features");
+    check(!net_module_serves_audio(nullptr), "audio: a null module never enables audio");
     check(!net_module_serves_tracks(nullptr), "TRK3: a null table serves no tracks");
   }
   // CAR4: the TLS entry is looked up on its own; the bad-ABI fake (a CAR3-shaped module) has none.
@@ -132,6 +139,7 @@ int main(int argc, char **argv) {
     return 1;
   }
   NetWtCarrier *raw = wt.get();
+  check(net_module_serves_audio(m) && raw->media_threaded(), "audio: module adapter forwards the media ABI tail");
   check(set.add(kCarrierWt, std::move(wt), &error), "added as index 1 (" + error + ")");
   check(set.start(&error), "started (" + error + ")");
   const std::string json = set.carriers_json();

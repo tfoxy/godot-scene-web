@@ -307,10 +307,10 @@ struct AbiCarrier::Thunks {
     if (c->ctx_ == nullptr || key == nullptr) return nullptr;
     const auto &map = c->ctx_->services().config;
     const auto it = map.find(key);
-    // The current net module serves generic tracks only. Audio carriage is a separate feature.
+    // Audio carriage requires the module's independently negotiated feature bit.
     if (it != map.end() && c->name_ == "wt" && std::strcmp(key, "track_subprotocols") == 0 &&
-        comma_list_has(map, "track_subprotocols", "render-stream-audio.1")) {
-      return "render-stream-track.1";
+        !c->wt_audio_supported_) {
+      return c->wt_track_subprotocols_.c_str();
     }
     return it == map.end() ? nullptr : it->second.c_str();
   }
@@ -609,7 +609,11 @@ AbiCarrier::AbiCarrier(const grc_carrier_v1 &vt) : name_(vt.name) {
   host_.config = &Thunks::config;
   host_.admit = &Thunks::admit;
   host_.admit_subprotocol = &Thunks::admit_subprotocol;  // TRK1
-  host_.lookup_coded = &Thunks::lookup_coded;            // at the struct's end
+  host_.lookup_coded = &Thunks::lookup_coded;
+  host_.now_us = [](void *) -> uint64_t {
+    return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count());
+  };
   host_.opened = &Thunks::opened;
   host_.text = &Thunks::text;
   host_.closed = &Thunks::closed;
@@ -637,6 +641,22 @@ AbiCarrier::~AbiCarrier() {
 
 bool AbiCarrier::start(CarrierContext &ctx, std::string *error) {
   ctx_ = &ctx;
+  if (name_ == "wt" && !wt_audio_supported_) {
+    const auto it = ctx.services().config.find("track_subprotocols");
+    if (it != ctx.services().config.end()) {
+      std::size_t at = 0;
+      while (at < it->second.size()) {
+        const auto end = it->second.find(',', at);
+        const auto item = it->second.substr(at, end == std::string::npos ? end : end - at);
+        if (item != "render-stream-audio.1") {
+          if (!wt_track_subprotocols_.empty()) wt_track_subprotocols_ += ',';
+          wt_track_subprotocols_ += item;
+        }
+        if (end == std::string::npos) break;
+        at = end + 1;
+      }
+    }
+  }
   char buf[256] = {0};
   if (vt_.start(vt_.self, &host_, buf, sizeof(buf)) == 0) {
     buf[sizeof(buf) - 1] = '\0';

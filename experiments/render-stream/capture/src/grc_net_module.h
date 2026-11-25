@@ -73,6 +73,8 @@ typedef struct grc_net_module_table_v1 {
 /* Bit 0: the `wt` carrier admits track subprotocols through grc_carrier_host_v1.admit_subprotocol
  * Without it the capture does not report wt as serving tracks. */
 #define GRC_NET_FEATURE_TRACKS 1u
+/* Bit 1: the wt carrier supports render-stream-audio.1 and send_media. */
+#define GRC_NET_FEATURE_AUDIO 2u
 
 typedef const grc_net_module_table_v1 *(*grc_net_module_table_v1_fn)(void);
 

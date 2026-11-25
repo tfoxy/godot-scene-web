@@ -850,16 +850,19 @@ void test_audio_media_abi() {
   set.stop();
 }
 
-void test_audio_offer() {
+void test_audio_offer(bool audio_supported, bool audio_only) {
   Fake wt("wt"), ext("ext");
   CarrierServices services;
-  services.config["track_subprotocols"] = "render-stream-track.1,render-stream-audio.1";
+  services.config["track_subprotocols"] = audio_only ? "render-stream-audio.1" : "render-stream-track.1,render-stream-audio.1";
   CarrierSet set(1, services, 1);
   std::string error;
-  check(set.add(1, adopt(wt), &error) && set.add(2, adopt(ext), &error), "audio carrier setup");
+  auto wt_carrier = adopt(wt);
+  wt_carrier->set_wt_audio_supported(audio_supported);
+  check(set.add(1, std::move(wt_carrier), &error) && set.add(2, adopt(ext), &error), "audio carrier setup");
   check(set.start(&error), "audio carriers start");
-  check(std::string(wt.host->config(wt.host->host, "track_subprotocols")) == "render-stream-track.1",
-        "wt without audio carriage never offers audio");
+  const std::string expected = audio_supported ? services.config["track_subprotocols"] : audio_only ? "" : "render-stream-track.1";
+  check(std::string(wt.host->config(wt.host->host, "track_subprotocols")) == expected,
+        "wt offers granted audio only with audio carriage support; no extra track grant");
   check(std::string(ext.host->config(ext.host->host, "track_subprotocols")) == services.config["track_subprotocols"],
         "consumer carrier sees the granted audio subprotocol");
   set.stop();
@@ -867,7 +870,8 @@ void test_audio_offer() {
 
 int main() {
   test_audio_media_abi();
-  test_audio_offer();
+  for (bool supported : {false, true})
+    for (bool only : {false, true}) test_audio_offer(supported, only);
   test_split_stop();
   test_routing_and_sabotage();
   test_admission_and_sabotage();

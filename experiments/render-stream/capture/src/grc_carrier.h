@@ -170,6 +170,9 @@ typedef struct grc_carrier_host_v1 {
      answers a coded fetch with lookup() alone. */
   int (*lookup_coded)(void *host, const char hash[64], grc_coding coding, grc_buf *out,
                       uint64_t *identity_bytes);
+  /* Optional capture steady-clock time in microseconds, in send_media deadline_us's epoch.
+     Read only when size covers this field. Without it a carrier must not expire lane streams. */
+  uint64_t (*now_us)(void *host);
 } grc_carrier_host_v1;
 
 /* The carrier's side. */

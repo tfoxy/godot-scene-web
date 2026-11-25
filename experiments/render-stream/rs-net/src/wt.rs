@@ -1,6 +1,6 @@
 //! The `wt` carrier: render-stream-wt/1 over wtransport.
 //!
-//! Threads. The hub's hot calls (send, close, queued bytes) run on the capture's main thread and
+//! Threads. The hub's hot calls (send, close, queued bytes), and audio-thread send_media,
 //! only touch memory: a message goes into its connection's unbounded channel, counted in
 //! `queued`. Everything else runs on a private two-thread tokio runtime: one accept loop, and per
 //! session a control task (streams, datagrams, the session's end) and a writer task (the live
@@ -35,6 +35,11 @@ use crate::host::{Coded, Host, HostBuf};
 
 pub const STREAM_LIVE: u8 = 0x00;
 pub const STREAM_RESOURCE: u8 = 0x01;
+pub const STREAM_TAKE: u8 = 0x02;
+pub const STREAM_LANE: u8 = 0x03;
+pub const ERR_STALE: u32 = 0x02;
+pub const ERR_ABANDONED: u32 = 0x03;
+pub const AUDIO_PROTOCOL: &str = "render-stream-audio.1";
 /// CAR10: a client-opened unidirectional stream carrying one batch of client-to-host messages.
 pub const STREAM_UPLINK: u8 = 0x10;
 pub const KIND_BINARY: u8 = 0;
@@ -79,6 +84,8 @@ pub enum Fault {
     PanicSend,
     /// A session task panics once the session is open (D17 containment off the main thread).
     PanicSession,
+    NoLaneReset,
+    NoTakeReset,
 }
 
 impl Fault {
@@ -89,6 +96,8 @@ impl Fault {
             "no-drain-close" => Fault::NoDrainClose,
             "panic-send" => Fault::PanicSend,
             "panic-session" => Fault::PanicSession,
+            "no-lane-reset" => Fault::NoLaneReset,
+            "no-take-reset" => Fault::NoTakeReset,
             other => return Err(format!("GRC_NET_FAULT {other} is not a net-module sabotage")),
         })
     }
@@ -207,6 +216,11 @@ pub struct Conn {
     local: u32,
     /// A track session (TRK3): its subprotocol is one of `track_subprotocols`.
     track: bool,
+    audio: bool,
+    /// Serializes hot calls, including send-vs-close, and the take key/stream registry.
+    media: Mutex<Media>,
+    takes_active: AtomicU32,
+    takes_done: tokio::sync::Notify,
     connection: Connection,
     tx: mpsc::UnboundedSender<Out>,
     queued: AtomicU64,
@@ -221,10 +235,101 @@ pub struct Conn {
     /// Client-to-host live stream: bytes read and text messages handed to the host (CAR10).
     in_bytes: AtomicU64,
     in_texts: AtomicU64,
-    /// Host-to-client live messages written into quinn's send buffer.
+    /// Host-to-client live messages and take blocks written into quinn's send buffer.
     out_msgs: AtomicU64,
     /// CAR10: the order in which client-to-host texts reach the host (Q4.3a).
     uplink: Mutex<Uplink>,
+}
+
+#[derive(Default)]
+struct Media {
+    takes: HashMap<u32, Take>,
+    lanes: HashMap<u8, Lane>,
+}
+
+struct Lane {
+    tx: mpsc::UnboundedSender<TakeBlock>,
+    state: Arc<LaneState>,
+    blocks: u8,
+}
+
+#[derive(Default)]
+struct LaneState {
+    // Synchronized with send_media: an expired segment never accepts another block.
+    expiry: Mutex<(u64, bool)>,
+    changed: tokio::sync::Notify,
+}
+
+async fn lane_expired(host: &Host, state: &LaneState) {
+    loop {
+        let changed = state.changed.notified();
+        let delay = {
+            let mut expiry = state.expiry.lock().unwrap();
+            match (expiry.0, host.now_us()) {
+                (0, _) | (_, None) => None,
+                (deadline, Some(now)) if now >= deadline => {
+                    expiry.1 = true;
+                    return;
+                }
+                (deadline, Some(now)) => Some(Duration::from_micros(deadline - now)),
+            }
+        };
+        match delay {
+            Some(delay) => tokio::select! { _ = changed => {}, _ = tokio::time::sleep(delay) => {} },
+            None => changed.await,
+        }
+    }
+}
+
+struct Take {
+    key: [u8; 16],
+    tx: Option<mpsc::UnboundedSender<TakeBlock>>,
+    abandoned: Arc<tokio::sync::Notify>,
+}
+
+/// Releases queue credit and host ownership even if a task or session is cancelled.
+struct TakeBlock {
+    conn: Arc<Conn>,
+    buf: HostBuf,
+    counted: u64,
+    end: bool,
+}
+
+impl Drop for TakeBlock {
+    fn drop(&mut self) {
+        self.conn.queued.fetch_sub(self.counted, Ordering::AcqRel);
+    }
+}
+
+/// Exhaustion is permanent: an audio-thread send must never hit a reused local id.
+fn alloc_local(next: &AtomicU32) -> Option<u32> {
+    next.fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+        (n <= GRC_CARRIER_LOCAL_MAX).then_some(n + 1)
+    }).ok()
+}
+
+/// The sender hands take-start to the carrier before that take's first block. The key is
+/// copied into the uni-stream header so receivers need no ordering across QUIC streams.
+enum TakeControl {
+    Start(u32, [u8; 16]),
+    Unavailable([u8; 16]),
+}
+
+fn take_control(bytes: &[u8]) -> Option<TakeControl> {
+    let v: serde_json::Value = serde_json::from_slice(bytes).ok()?;
+    let kind = v.get("type")?.as_str()?;
+    if kind != "take-start" && kind != "take-unavailable" { return None; }
+    let key = v.get("key_id")?.as_str()?.as_bytes();
+    if key.len() != 32 || !key.iter().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(b)) {
+        return None;
+    }
+    let mut decoded = [0u8; 16];
+    for (out, pair) in decoded.iter_mut().zip(key.chunks_exact(2)) {
+        *out = u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok()?;
+    }
+    if kind == "take-unavailable" { return Some(TakeControl::Unavailable(decoded)); }
+    let stream = u32::try_from(v.get("stream")?.as_u64()?).ok().filter(|n| *n != 0)?;
+    Some(TakeControl::Start(stream, decoded))
 }
 
 /// Client-to-host delivery order (Q4.3a). The live stream's first text (the hello) goes first;
@@ -258,6 +363,10 @@ pub struct Shared {
     pub sessions_refused: AtomicU64,
     pub streams_refused: AtomicU64,
     pub datagrams_dropped: AtomicU64,
+    reset_open: AtomicU64,
+    reset_unacked: AtomicU64,
+    lanes_acked: AtomicU64,
+    take_abandoned: AtomicU64,
     rt: tokio::runtime::Handle,
     endpoint: Mutex<Option<Arc<Endpoint<Server>>>>,
     accept_stop: tokio::sync::Notify,
@@ -276,16 +385,8 @@ pub fn truncate_utf8(s: &str, max: usize) -> &str {
 }
 
 impl Shared {
-    fn alloc_local(&self) -> u32 {
-        loop {
-            let l = self.next_local.fetch_add(1, Ordering::AcqRel) & GRC_CARRIER_LOCAL_MAX;
-            if l == 0 {
-                continue;
-            }
-            if !self.conns.lock().unwrap().contains_key(&l) {
-                return l;
-            }
-        }
+    fn alloc_local(&self) -> Option<u32> {
+        alloc_local(&self.next_local)
     }
 
     fn conn(&self, local: u32) -> Option<Arc<Conn>> {
@@ -302,6 +403,13 @@ impl Shared {
 
     /// Starts a close of `conn` (host or carrier initiated); the writer does the rest in order.
     fn close_conn(&self, conn: &Conn, code: u16, reason: &str) {
+        let mut media = conn.media.lock().unwrap();
+        for take in media.takes.values_mut() { take.tx.take(); }
+        media.lanes.clear();
+        self.close_locked(conn, code, reason);
+    }
+
+    fn close_locked(&self, conn: &Conn, code: u16, reason: &str) {
         if conn.closing.swap(true, Ordering::AcqRel) {
             return;
         }
@@ -327,20 +435,106 @@ impl Shared {
         if conn.closing.load(Ordering::Acquire) {
             return false;
         }
+        let _media = conn.media.lock().unwrap();
+        self.enqueue(&conn, kind, buf)
+    }
+
+    fn enqueue(&self, conn: &Conn, kind: u8, buf: HostBuf) -> bool {
+        if conn.closing.load(Ordering::Acquire) { return false; }
         let counted = buf.len() as u64 + 5;
-        let queued = conn.queued.load(Ordering::Acquire);
-        if queued + counted > self.cfg.max_queued_bytes {
-            drop(buf);
-            self.close_conn(&conn, 1008, "send queue over max_queued_bytes");
-            return false;
-        }
-        let now = conn.queued.fetch_add(counted, Ordering::AcqRel) + counted;
-        conn.high.fetch_max(now, Ordering::AcqRel);
+        if !self.reserve(conn, counted) { return false; }
         if conn.tx.send(Out::Msg { kind, buf, counted }).is_err() {
             conn.queued.fetch_sub(counted, Ordering::AcqRel);
             return false;
         }
         true
+    }
+
+    fn reserve(&self, conn: &Conn, counted: u64) -> bool {
+        if conn.queued.load(Ordering::Acquire) + counted > self.cfg.max_queued_bytes {
+            self.close_locked(conn, 1008, "send queue over max_queued_bytes");
+            return false;
+        }
+        let now = conn.queued.fetch_add(counted, Ordering::AcqRel) + counted;
+        conn.high.fetch_max(now, Ordering::AcqRel);
+        true
+    }
+
+    /// Any thread, memory-only: one ordered channel for each take, separate from controls.
+    pub fn send_media(self: &Arc<Self>, local: u32, cls: u8, group: u32, flags: u32, deadline_us: u64, buf: HostBuf) -> bool {
+        if self.faulted.load(Ordering::Acquire) || self.stopping.load(Ordering::Acquire) { return false; }
+        let Some(conn) = self.conn(local) else { return false };
+        let mut media = conn.media.lock().unwrap();
+        if !conn.audio || conn.closing.load(Ordering::Acquire) { return false; }
+        match cls {
+            MEDIA_CONTROL if flags & MEDIA_TEXT != 0 => {
+                match take_control(buf.bytes()) {
+                    Some(TakeControl::Start(stream, key)) => {
+                        if media.takes.contains_key(&stream) { return false; }
+                        media.takes.insert(stream, Take { key, tx: None, abandoned: Arc::new(tokio::sync::Notify::new()) });
+                    }
+                    Some(TakeControl::Unavailable(key)) if self.cfg.fault != Fault::NoTakeReset => {
+                        media.takes.retain(|_, take| {
+                            if take.key != key { return true; }
+                            take.abandoned.notify_one();
+                            false
+                        });
+                    }
+                    _ => {}
+                }
+                self.enqueue(&conn, KIND_TEXT, buf)
+            }
+            MEDIA_TAKE => {
+                let Some(take) = media.takes.get_mut(&group) else { return false };
+                let counted = buf.len() as u64 + 4 + if take.tx.is_none() { 17 } else { 0 };
+                if !self.reserve(&conn, counted) { return false; }
+                if take.tx.is_none() {
+                    let (tx, rx) = mpsc::unbounded_channel();
+                    take.tx = Some(tx);
+                    conn.takes_active.fetch_add(1, Ordering::AcqRel);
+                    self.spawn_guarded(take_writer(self.clone(), conn.clone(), take.key, take.abandoned.clone(), rx));
+                }
+                let end = flags & MEDIA_END_GROUP != 0;
+                let block = TakeBlock { conn: conn.clone(), buf, counted, end };
+                let sent = take.tx.as_ref().unwrap().send(block).is_ok();
+                if end { media.takes.remove(&group); }
+                sent
+            }
+            MEDIA_LANE if (1..=15).contains(&group) => {
+                let lane = group as u8;
+                if media.lanes.get(&lane).is_some_and(|l| l.state.expiry.lock().unwrap().1) {
+                    media.lanes.remove(&lane);
+                }
+                let counted = buf.len() as u64 + 4 + if media.lanes.contains_key(&lane) { 0 } else { 2 };
+                if !self.reserve(&conn, counted) { return false; }
+                let entry = media.lanes.entry(lane).or_insert_with(|| {
+                    let (tx, rx) = mpsc::unbounded_channel();
+                    let state = Arc::new(LaneState::default());
+                    conn.takes_active.fetch_add(1, Ordering::AcqRel);
+                    self.spawn_guarded(lane_writer(self.clone(), conn.clone(), lane, state.clone(), rx));
+                    Lane { tx, state, blocks: 0 }
+                });
+                // Expiry and enqueue must share the state lock; otherwise a block can be
+                // accepted by a stream just selected for reset on a runtime thread.
+                let mut expiry = entry.state.expiry.lock().unwrap();
+                if expiry.1 {
+                    conn.queued.fetch_sub(counted, Ordering::AcqRel);
+                    drop(expiry);
+                    media.lanes.remove(&lane);
+                    drop(media);
+                    return self.send_media(local, cls, group, flags, deadline_us, buf);
+                }
+                expiry.0 = deadline_us;
+                entry.blocks += 1;
+                let end = entry.blocks == 8;
+                let sent = entry.tx.send(TakeBlock { conn: conn.clone(), buf, counted, end }).is_ok();
+                entry.state.changed.notify_one();
+                drop(expiry);
+                if end { media.lanes.remove(&lane); }
+                sent
+            }
+            _ => false,
+        }
     }
 
     pub fn close(&self, local: u32, code: u16, reason: &str) {
@@ -461,6 +655,10 @@ impl Running {
             sessions_refused: AtomicU64::new(0),
             streams_refused: AtomicU64::new(0),
             datagrams_dropped: AtomicU64::new(0),
+            reset_open: AtomicU64::new(0),
+            reset_unacked: AtomicU64::new(0),
+            lanes_acked: AtomicU64::new(0),
+            take_abandoned: AtomicU64::new(0),
             rt: rt.handle().clone(),
             endpoint: Mutex::new(Some(endpoint.clone())),
             accept_stop: tokio::sync::Notify::new(),
@@ -505,6 +703,18 @@ impl Running {
             s.report_closed(&c, 1006, "carrier stopped");
         }
         s.conns.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        if let Some(dir) = &s.cfg.evidence_dir {
+            let evidence = serde_json::json!({
+                "lane_reset": if s.host.now_us().is_some() { "clock" } else { "no-clock" },
+                "reset_open": s.reset_open.load(Ordering::Acquire),
+                "reset_unacked": s.reset_unacked.load(Ordering::Acquire),
+                "acked": s.lanes_acked.load(Ordering::Acquire),
+                "take_abandoned": s.take_abandoned.load(Ordering::Acquire),
+            });
+            if let Err(e) = std::fs::write(dir.join("wt-audio.json"), evidence.to_string()) {
+                s.host.log(GRC_LOG_WARN, &format!("wt: cannot write audio evidence: {e}"));
+            }
+        }
     }
 }
 
@@ -584,8 +794,9 @@ async fn run_session(shared: Arc<Shared>, incoming: IncomingSession) {
     if let Some(o) = origin.as_deref() {
         if !o.is_empty() && !shared.host.origin_ok(o) {
             refuse(&shared);
-            let local = shared.alloc_local();
-            shared.host.rejected(local, GRC_REJECT_ORIGIN, o);
+            if let Some(local) = shared.alloc_local() {
+                shared.host.rejected(local, GRC_REJECT_ORIGIN, o);
+            }
             req.forbidden().await;
             return;
         }
@@ -613,7 +824,11 @@ async fn run_session(shared: Arc<Shared>, incoming: IncomingSession) {
             return;
         }
     }
-    let local = shared.alloc_local();
+    let Some(local) = shared.alloc_local() else {
+        refuse(&shared);
+        req.reject_with_status(503).await;
+        return;
+    };
     // A view subprotocol is admitted exactly as before TRK3 (admit); a track one from the track
     // pool. The view list wins when a name is in both (Config::from_host removes the overlap).
     let track = shared.cfg.track_subprotocols.contains(&protocol);
@@ -641,6 +856,10 @@ async fn run_session(shared: Arc<Shared>, incoming: IncomingSession) {
     let conn = Arc::new(Conn {
         local,
         track,
+        audio: track && protocol == AUDIO_PROTOCOL,
+        media: Mutex::new(Media::default()),
+        takes_active: AtomicU32::new(0),
+        takes_done: tokio::sync::Notify::new(),
         connection: connection.clone(),
         tx,
         queued: AtomicU64::new(0),
@@ -741,8 +960,8 @@ async fn dispatch(shared: Arc<Shared>, conn: Arc<Conn>, mut send: SendStream, mu
             }
             live_reader(shared, conn, recv).await;
         }
-        // TRK3: a track session serves no resources; the type is refused like an unknown one.
-        STREAM_RESOURCE if !conn.track => resource(shared, conn, send, recv).await,
+        // Opaque tracks refuse resources; audio sessions serve their content-addressed assets.
+        STREAM_RESOURCE if !conn.track || conn.audio => resource(shared, conn, send, recv).await,
         _ => {
             shared.streams_refused.fetch_add(1, Ordering::AcqRel);
             let code = VarInt::try_from_u64(wt_error_to_h3(ERR_UNKNOWN_STREAM_TYPE)).unwrap_or(VarInt::from_u32(0));
@@ -986,6 +1205,122 @@ async fn writer(
     }
 }
 
+/// Each take opens and writes independently, so blocked QUIC flow control for one take
+/// cannot hold up another take or the live stream. No deadline applies to reliable takes.
+async fn take_writer(shared: Arc<Shared>, conn: Arc<Conn>, key: [u8; 16], abandoned: Arc<tokio::sync::Notify>, mut rx: mpsc::UnboundedReceiver<TakeBlock>) {
+    let abandoned = abandoned.notified();
+    tokio::pin!(abandoned);
+    let mut was_abandoned = false;
+    let mut stream = tokio::select! {
+        biased;
+        _ = &mut abandoned => { was_abandoned = true; None },
+        s = async { conn.connection.open_uni().await.ok()?.await.ok() } => s,
+        _ = conn.connection.closed() => None,
+    };
+    let result = if let Some(ref mut stream) = stream {
+        let write = async {
+            let mut header = [STREAM_TAKE; 17];
+            header[1..].copy_from_slice(&key);
+            stream.write_all(&header).await.ok()?;
+            while let Some(block) = rx.recv().await {
+                stream.write_all(&(block.buf.len() as u32).to_le_bytes()).await.ok()?;
+                stream.write_all(block.buf.bytes()).await.ok()?;
+                conn.out_msgs.fetch_add(1, Ordering::AcqRel);
+                if block.end {
+                    // finish() sends FIN and waits for acknowledgement. Retain the task until then
+                    // so a following host close drains the take as well as the live stream.
+                    stream.finish().await.ok()?;
+                    return Some(());
+                }
+            }
+            None
+        };
+        tokio::select! {
+            biased;
+            _ = &mut abandoned => {
+                was_abandoned = true;
+                stream.reset(VarInt::try_from_u64(wt_error_to_h3(ERR_ABANDONED)).unwrap()).ok();
+                Some(())
+            },
+            r = write => r,
+            _ = conn.connection.closed() => Some(()),
+        }
+    } else if was_abandoned || conn.connection.quic_connection().close_reason().is_some() {
+        Some(())
+    } else {
+        None
+    };
+    drop(rx); // release any queued buffers before stop kills the host callbacks
+    conn.takes_active.fetch_sub(1, Ordering::AcqRel);
+    conn.takes_done.notify_one();
+    if was_abandoned {
+        shared.take_abandoned.fetch_add(1, Ordering::AcqRel);
+        shared.host.log(GRC_LOG_INFO, "wt: audio take abandoned");
+    }
+    if result.is_none() && !conn.closing.load(Ordering::Acquire) {
+        shared.close_conn(&conn, 1001, "audio-stalled");
+    }
+}
+
+/// Every segment has its own task: a stale or flow-controlled segment cannot block
+/// a new segment, a reliable take, or the control stream.
+async fn lane_writer(shared: Arc<Shared>, conn: Arc<Conn>, lane: u8, state: Arc<LaneState>, mut rx: mpsc::UnboundedReceiver<TakeBlock>) {
+    let expired = async {
+        if shared.cfg.fault == Fault::NoLaneReset {
+            std::future::pending::<()>().await;
+        }
+        lane_expired(&shared.host, &state).await;
+    };
+    tokio::pin!(expired);
+    let mut stream = tokio::select! {
+        s = async { conn.connection.open_uni().await.ok()?.await.ok() } => s,
+        _ = &mut expired => None,
+        _ = conn.connection.closed() => None,
+    };
+    if let Some(ref mut stream) = stream {
+        let mut fin = false;
+        let write = async {
+            stream.write_all(&[STREAM_LANE, lane]).await.ok()?;
+            while let Some(block) = rx.recv().await {
+                stream.write_all(&(block.buf.len() as u32).to_le_bytes()).await.ok()?;
+                stream.write_all(block.buf.bytes()).await.ok()?;
+                conn.out_msgs.fetch_add(1, Ordering::AcqRel);
+                if block.end { break; }
+            }
+            // Use Quinn's synchronous FIN so ACK completion and expiry can be selected
+            // separately, and cancellation leaves the stream available for reset.
+            stream.quic_stream_mut().finish().ok()?;
+            fin = true;
+            shared.host.log(GRC_LOG_INFO, "wt: audio lane fin");
+            match stream.quic_stream().stopped().await.ok()? {
+                None => Some(()),
+                Some(_) => None,
+            }
+        };
+        let stale = tokio::select! {
+            biased;
+            result = write => {
+                if result.is_some() {
+                    shared.lanes_acked.fetch_add(1, Ordering::AcqRel);
+                    shared.host.log(GRC_LOG_INFO, "wt: audio lane acked");
+                }
+                false
+            },
+            _ = &mut expired => true,
+            _ = conn.connection.closed() => false,
+        };
+        if stale {
+            let _ = stream.reset(VarInt::try_from_u64(wt_error_to_h3(ERR_STALE)).unwrap());
+            let counter = if fin { &shared.reset_unacked } else { &shared.reset_open };
+            counter.fetch_add(1, Ordering::AcqRel);
+            shared.host.log(GRC_LOG_INFO, &format!("wt: audio stale lane={lane} fin={fin}"));
+        }
+    }
+    drop(rx);
+    conn.takes_active.fetch_sub(1, Ordering::AcqRel);
+    conn.takes_done.notify_one();
+}
+
 /// GRC_NET_DEBUG_STATS_MS: one line per period while the session lives.
 async fn debug_stats(shared: Arc<Shared>, conn: Arc<Conn>) {
     let period = Duration::from_millis(shared.cfg.debug_stats_ms);
@@ -1051,6 +1386,11 @@ fn discard(conn: &Conn, pending: VecDeque<Out>) {
 /// CLOSE_WEBTRANSPORT_SESSION(code, reason); the QUIC connection closes once that is acknowledged.
 async fn finish_close(conn: &Conn, live: Option<SendStream>) {
     let (code, reason) = conn.local_close.lock().unwrap().clone().unwrap_or((1000, String::new()));
+    let _ = tokio::time::timeout(DRAIN_WAIT, async {
+        while conn.takes_active.load(Ordering::Acquire) != 0 {
+            conn.takes_done.notified().await;
+        }
+    }).await;
     if let Some(mut s) = live {
         let _ = tokio::time::timeout(DRAIN_WAIT, s.finish()).await;
     }
@@ -1207,5 +1547,19 @@ pub fn coding_name(c: c_int) -> &'static str {
         GRC_CODING_GZIP => "gzip",
         GRC_CODING_ZSTD => "zstd",
         _ => "identity",
+    }
+}
+
+#[cfg(test)]
+mod audio_tests {
+    use super::*;
+
+    #[test]
+    fn local_ids_exhaust_instead_of_wrapping_or_reusing() {
+        let next = AtomicU32::new(GRC_CARRIER_LOCAL_MAX - 1);
+        assert_eq!(alloc_local(&next), Some(GRC_CARRIER_LOCAL_MAX - 1));
+        assert_eq!(alloc_local(&next), Some(GRC_CARRIER_LOCAL_MAX));
+        for _ in 0..4 { assert_eq!(alloc_local(&next), None); }
+        assert_eq!(next.load(Ordering::Acquire), GRC_CARRIER_LOCAL_MAX + 1);
     }
 }
