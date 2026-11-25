@@ -441,9 +441,20 @@ func _check_resource_base() -> void:
 
 class TapCore extends RefCounted:
 	var point := PackedFloat64Array()
+	var dispose_calls: int = 0
 
 	func to_game(_x: float, _y: float) -> PackedFloat64Array:
 		return point
+
+	func counters() -> Dictionary:
+		var out: Dictionary = {"rs_calls": 0, "created_rids": 0, "freed_by_apply": 0}
+		for key: String in ["staged", "refused", "unstaged", "provided_staged", "provided_in_frame", "provided_in_frame_bytes", "staged_now"]:
+			out["payloads_" + key] = 0
+		return out
+
+	func dispose() -> int:
+		dispose_calls += 1
+		return 0
 
 
 func _check_tapped() -> void:
@@ -877,6 +888,9 @@ func _check_view_tapped() -> void:
 	if events != [7, 7]:
 		_fail("a real left mouse release must still emit one tapped (got %d total)" % events.size())
 	view.free()
+	_checked += 1
+	if core.dispose_calls != 1:
+		_fail("receiver tree exit must dispose its core once")
 
 
 ## Every native live allow-list entry offers and announces the same protocol version.

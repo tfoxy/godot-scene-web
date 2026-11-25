@@ -3377,11 +3377,18 @@ func _quit(code: int) -> void:
 	_io.finish(get_tree(), _out_path, code, _dispose_applier)
 
 
+## Hosted views can leave the tree without taking the standalone receiver's _quit path.
+## Dispose while the viewport's borrowed canvas still exists, before its owner exits.
+func _exit_tree() -> void:
+	_dispose_applier()
+
+
 func _dispose_applier() -> void:
 	if _applier != null:
 		_note_payload_counters()
 		var freed: int = _applier.dispose()
 		_log("disposed: %d RIDs freed" % freed)
+		_applier = null
 	_cache.stager = null
 
 
