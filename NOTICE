@@ -1,0 +1,9 @@
+Optional host FMOD module
+
+GSW does not include or license FMOD. The optional libgrc_fmod module only drives
+an opt-in title's own licensed FMOD inside that host game's process. Any other
+deployment needs its own licence determination. FMOD SDK headers, libraries,
+examples and game audio banks are not distributed with GSW.
+
+Before a release ships this module, re-diff the FMOD EULA and FAQ against the
+maintainer's archived copies.

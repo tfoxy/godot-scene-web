@@ -202,6 +202,17 @@
   },
   "rules": [
     {
+      "why": "Optional host FMOD module: its standalone CMake/ctest suite covers takes, host links, live lanes and error latches; check-fmod-licence.sh is separate acceptance. No existing capture or receiver leg loads it",
+      "paths": [
+        "experiments/render-stream/fmod/**",
+        "experiments/render-stream/scripts/*fmod*",
+        "experiments/render-stream/scripts/test/*fmod*",
+        "NOTICE*"
+      ],
+      "reach": ["none"],
+      "exclusive": true
+    },
+    {
       "why": "The opt-in audio client has no import edge from the view or tracks entries; its session, PCM engine and wire codec are covered by package tests and pure self-tests",
       "paths": [
         "packages/render-stream-client/src/audio/**",
