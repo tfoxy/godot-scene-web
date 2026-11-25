@@ -50,19 +50,75 @@ std::vector<LaneConfig> parse_lanes(const std::string &config, const std::functi
   }
   return out;
 }
-void LaneState::apply(const Observation &op) {
+bool LaneState::apply(const Observation &op) {
+  if (op.op == 10 || op.op == 11) {
+    const auto split = op.text.find('\0');
+    if (split == std::string::npos || op.text.find('\0', split + 1) != std::string::npos) {
+      ++label_malformed; return false;
+    }
+    const auto name = op.text.substr(0, split), label = op.text.substr(split + 1);
+    const bool global = op.op == 11;
+    if (!global && !events_.contains(op.instance)) return true;
+    auto &values = global ? globals_ : events_.at(op.instance).parameters;
+    auto &labels = global ? global_labels_ : events_.at(op.instance).labels;
+    auto &fallbacks = global ? global_label_fallbacks_ : events_.at(op.instance).label_fallbacks;
+    // Until FMOD checks a dormant label, any earlier assignment may be the fallback.
+    auto &prior = fallbacks[name];
+    if (auto i = values.find(name); i != values.end()) prior.push_back({global ? 8u : 7u, op.instance, name, i->second});
+    else if (auto i = labels.find(name); i != labels.end()) prior.push_back({op.op, op.instance, name + '\0' + i->second, 0});
+    labels[name] = label; values.erase(name);
+    return true;
+  }
   switch (op.op) {
     case 1: ++bank_loads; bank_unknown += !banks_.contains(op.text); break;
     case 2: ++bank_unloads; bank_unknown += !banks_.contains(op.text); break;
-    case 3: events_[op.instance] = Event{op.text, {}, false, false}; break;
+    case 3: events_[op.instance] = Event{op.text, {}, {}, {}, false, false}; break;
     case 4: if (auto i = events_.find(op.instance); i != events_.end()) i->second.playing = true; break;
     case 5: if (auto i = events_.find(op.instance); i != events_.end()) i->second.playing = false; break;
     case 6: events_.erase(op.instance); break;
-    case 7: if (auto i = events_.find(op.instance); i != events_.end()) i->second.parameters[op.text] = op.value; break;
-    case 8: globals_[op.text] = op.value; break;
+    case 7: if (auto i = events_.find(op.instance); i != events_.end()) {
+      i->second.parameters[op.text] = op.value; i->second.labels.erase(op.text); i->second.label_fallbacks.erase(op.text);
+    } break;
+    case 8: globals_[op.text] = op.value; global_labels_.erase(op.text); global_label_fallbacks_.erase(op.text); break;
     case 9: if (auto i = events_.find(op.instance); i != events_.end()) i->second.paused = op.value != 0; break;
     default: throw std::runtime_error("observe-protocol");
   }
+  return true;
+}
+std::vector<Observation> LaneState::take_parameters(std::uint64_t instance, bool global) {
+  auto &values = global ? globals_ : events_.at(instance).parameters;
+  auto &labels = global ? global_labels_ : events_.at(instance).labels;
+  auto &fallbacks = global ? global_label_fallbacks_ : events_.at(instance).label_fallbacks;
+  std::vector<Observation> replay;
+  for (const auto &[name, value] : values) replay.push_back({global ? 8u : 7u, instance, name, value});
+  for (const auto &[name, label] : labels) {
+    if (auto i = fallbacks.find(name); i != fallbacks.end()) replay.insert(replay.end(), i->second.begin(), i->second.end());
+    replay.push_back({global ? 11u : 10u, instance, name + '\0' + label, 0});
+  }
+  // Replay rebuilds only accepted assignments, collapsing dormant candidates.
+  values.clear(); labels.clear(); fallbacks.clear();
+  return replay;
+}
+void LaneState::label_result(const Observation &op, bool accepted) {
+  const bool global = op.op == 11;
+  if (!global && !events_.contains(op.instance)) return;
+  const auto split = op.text.find('\0');
+  const auto name = op.text.substr(0, split);
+  auto &values = global ? globals_ : events_.at(op.instance).parameters;
+  auto &labels = global ? global_labels_ : events_.at(op.instance).labels;
+  auto &fallbacks = global ? global_label_fallbacks_ : events_.at(op.instance).label_fallbacks;
+  const auto prior = fallbacks.find(name);
+  if (accepted) {
+    labels[name] = op.text.substr(split + 1); values.erase(name);
+  } else if (prior != fallbacks.end()) {
+    labels.erase(name); values.erase(name);
+    if (!prior->second.empty()) {
+      const auto &last = prior->second.back();
+      if (last.op == 7 || last.op == 8) values[name] = last.value;
+      else labels[name] = last.text.substr(last.text.find('\0') + 1);
+    }
+  }
+  fallbacks.erase(name);
 }
 struct LaneSystem::Capture {
   static inline std::array<std::atomic<Capture *>, 15> slots{};
@@ -96,7 +152,7 @@ struct LaneSystem::Capture {
     return functions[slot];
   }
 };
-LaneSystem::LaneSystem(const RenderConfig &config, const std::vector<LaneConfig> &lanes, const LaneState &state) {
+LaneSystem::LaneSystem(const RenderConfig &config, const std::vector<LaneConfig> &lanes, LaneState &state) : state_(state) {
   try {
     api_.bind(config.core_lib.c_str(), config.studio_lib.c_str()); api_.bind_render(); api_.bind_lane();
     studio_ = api_.create();
@@ -114,10 +170,16 @@ LaneSystem::LaneSystem(const RenderConfig &config, const std::vector<LaneConfig>
       desc.version = 1; desc.numinputbuffers = desc.numoutputbuffers = 1; desc.read = capture.callback();
       check(api_.create_dsp(core_, &desc, &capture.dsp)); check(api_.add_dsp(capture.group, -2, capture.dsp));
     }
-    for (const auto &[name, value] : state.globals()) observe({8, 0, name, value});
+    const auto replay_parameters = [&](std::uint64_t id, bool global) {
+      for (const auto &op : state.take_parameters(id, global)) {
+        if (op.op == 7 || op.op == 8) state.apply(op);
+        observe(op);
+      }
+    };
+    replay_parameters(0, true);
     for (const auto &[id, event] : state.events()) {
       observe({3, id, event.path, 0});
-      for (const auto &[name, value] : event.parameters) observe({7, id, name, value});
+      replay_parameters(id, false);
       observe({9, id, "", event.paused ? 1.f : 0.f});
       if (event.playing) observe({4, id, "", 0});
     }
@@ -135,6 +197,18 @@ void LaneSystem::cleanup() noexcept {
 }
 void LaneSystem::observe(const Observation &op) {
   auto it = events_.find(op.instance);
+  if (op.op == 10 || op.op == 11) {
+    const auto split = op.text.find('\0');
+    if (split == std::string::npos || op.text.find('\0', split + 1) != std::string::npos) return;
+    const auto *name = op.text.c_str(), *label = name + split + 1;
+    Result result = ok;
+    if (op.op == 11) result = api_.global_parameter_label(studio_, name, label, 0);
+    else if (it != events_.end()) result = api_.parameter_label(it->second, name, label, 0);
+    if (result == event_notfound) ++state_.parameter_unknown;
+    else check(result);
+    state_.label_result(op, result == ok);
+    return;
+  }
   if (op.op == 3) {
     if (it != events_.end()) { check(api_.event_stop(it->second, 1)); check(api_.event_release(it->second)); events_.erase(it); }
     Description *description = nullptr; check(api_.get_event(studio_, op.text.c_str(), &description));

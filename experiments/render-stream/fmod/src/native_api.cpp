@@ -78,6 +78,8 @@ void Api::bind_render() {
 }
 void Api::bind_lane() {
   symbol(studio_lib_, "FMOD_Studio_System_SetParameterByName", global_parameter);
+  symbol(studio_lib_, "FMOD_Studio_EventInstance_SetParameterByNameWithLabel", parameter_label);
+  symbol(studio_lib_, "FMOD_Studio_System_SetParameterByNameWithLabel", global_parameter_label);
   symbol(studio_lib_, "FMOD_Studio_EventInstance_SetPaused", event_paused);
 }
 Studio *Api::create() {

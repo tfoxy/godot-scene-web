@@ -44,8 +44,12 @@ the 60 MiB renderer RSS bound and zero allocations in file/DSP callbacks. First-
 timing acceptance is opt-in with `GRC_FMOD_TEST_TIMING=1` on an otherwise quiet host;
 do not use timing observations from a loaded machine. The native endpoint test
 checks take delivery, refusals, lane subscriptions, dormancy, fresh epochs on rejoin,
-observation replay and cache isolation. Synthetic tests check link mismatches and
-that a worker failure keeps answering pending and future wants with `fmod-off`.
+observation replay and cache isolation. The label install test needs only
+`GRC_FMOD_TEST_GAME_DIR`; it discovers labelled music parameters through public
+metadata APIs, checks their setters and rejoin replay, and skips if none exists.
+Synthetic tests check label replay, malformed payloads, nonfatal lookup evidence,
+link mismatches and that a worker failure keeps answering pending and future wants
+with `fmod-off`.
 
 Host config keys used at startup are `core_lib`, `studio_lib` (loaded library names),
 `pck_path`, and `banks` (comma-separated `res://` paths; empty selects all banks).
@@ -76,8 +80,34 @@ domain mismatches disable that seat and log its first failure. An FMOD failure
 latches the module off for the process, logs once, and keeps the endpoint alive to
 answer wants with `fmod-off`. A new process is required to retry FMOD.
 
-`observe` accepts operations 1–9 documented in the header. Forward event creation,
-start, stop, release, named parameters, global parameters and pause state using the
+`observe` accepts operations 1–11 documented in the header:
+
+| Op  | Operation          | `s`                     | `value`                |
+| --- | ------------------ | ----------------------- | ---------------------- |
+| 1   | bank-load          | Bank path               | Ignored                |
+| 2   | bank-unload        | Bank path               | Ignored                |
+| 3   | event-create       | Event path              | Ignored                |
+| 4   | event-start        | Empty                   | Ignored                |
+| 5   | event-stop         | Empty                   | 0 fadeout, 1 immediate |
+| 6   | event-release      | Empty                   | Ignored                |
+| 7   | event-param        | Parameter name          | Numeric value          |
+| 8   | global-param       | Parameter name          | Numeric value          |
+| 9   | event-paused       | Empty                   | 0 unpaused, 1 paused   |
+| 10  | event-param-label  | Name + NUL byte + label | Ignored                |
+| 11  | global-param-label | Name + NUL byte + label | Ignored                |
+
+For ops 10/11, `len` includes the name, separator and label, without a trailing
+terminator. Both use the public FMOD by-label setters. Labels are retained for
+rejoin like numeric parameters; a rejected label does not replace the previous
+assignment for that name. While dormant, unvalidated labels keep prior assignments
+as fallbacks. Rejoin replays those assignments before the labels and retains the
+last accepted value. Missing separators or extra NUL bytes are ignored and
+counted as `label-malformed`. An unknown parameter or label reported by FMOD is
+ignored and counted as `parameter-unknown`. Teardown logs these evidence totals
+through the host's `log` callback.
+
+Forward event creation, start, stop, release, named parameters, global parameters
+and pause state using the
 product's instance IDs. The module retains current live state while dormant and
 starts from that snapshot on rejoin; it does not retain PCM or an event timeline.
 In v1, op 6 removes the instance from lane state and rejoin replay. Send op 6 only

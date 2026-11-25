@@ -77,11 +77,12 @@ class Module {
     post([seat, bytes = Bytes(msg, msg + len)](Link &link, LaneState &, LaneSystem *) { link.input(seat, bytes); });
   }
   void observe(std::uint32_t op, std::uint64_t instance, const char *s, std::size_t len, float value) {
-    if (op < 1 || op > 9 || (!s && len) || len > 4096 || !std::isfinite(value)) return;
+    const bool label = op == 10 || op == 11;
+    if (op < 1 || op > 11 || (!s && len) || len > 4096 || (!label && !std::isfinite(value))) return;
     Observation observation{op, instance, len ? std::string(s, len) : std::string{}, value};
-    if (observation.text.find('\0') != std::string::npos) return;
+    if (!label && observation.text.find('\0') != std::string::npos) return;
     post([observation = std::move(observation)](Link &, LaneState &state, LaneSystem *lanes) {
-      state.apply(observation); if (lanes) lanes->observe(observation);
+      if (state.apply(observation) && lanes) lanes->observe(observation);
     });
   }
   void release(void *owner) { buffers_.release(owner); }
@@ -241,6 +242,11 @@ class Module {
           catch (...) { disable("fmod-off"); }
       }
       link.disable(); pool->stop();
+      if (host.log && (live.label_malformed || live.parameter_unknown)) {
+        const auto line = "grc_fmod parameters: label-malformed=" + std::to_string(live.label_malformed) +
+          " parameter-unknown=" + std::to_string(live.parameter_unknown);
+        host.log(host.host, 0, line.data(), line.size());
+      }
       if (host.log && (live.bank_loads || live.bank_unloads)) {
         const auto line = "grc_fmod banks: load=" + std::to_string(live.bank_loads) +
           " unload=" + std::to_string(live.bank_unloads) + " bank-unknown=" + std::to_string(live.bank_unknown);

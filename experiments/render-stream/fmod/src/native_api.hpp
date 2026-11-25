@@ -16,7 +16,7 @@ using Result = int;
 struct Core;
 struct Studio;
 struct Bank;
-constexpr Result ok = 0, file_eof = 16, header_mismatch = 20;
+constexpr Result ok = 0, file_eof = 16, header_mismatch = 20, event_notfound = 74;
 constexpr std::uint32_t header_version = 0x00020306;
 using Open = Result (GRC_NATIVE_CALL *)(const char *, unsigned *, void **, void *);
 using Close = Result (GRC_NATIVE_CALL *)(void *, void *);
@@ -103,6 +103,8 @@ class Api {
   Result (GRC_NATIVE_CALL *instance_create)(Description *, Instance **) = nullptr;
   Result (GRC_NATIVE_CALL *parameter)(Instance *, const char *, float, int) = nullptr;
   Result (GRC_NATIVE_CALL *global_parameter)(Studio *, const char *, float, int) = nullptr;
+  Result (GRC_NATIVE_CALL *parameter_label)(Instance *, const char *, const char *, int) = nullptr;
+  Result (GRC_NATIVE_CALL *global_parameter_label)(Studio *, const char *, const char *, int) = nullptr;
   Result (GRC_NATIVE_CALL *event_paused)(Instance *, int) = nullptr;
   Result (GRC_NATIVE_CALL *event_start)(Instance *) = nullptr;
   Result (GRC_NATIVE_CALL *event_stop)(Instance *, int) = nullptr;

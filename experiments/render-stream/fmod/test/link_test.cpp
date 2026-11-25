@@ -73,6 +73,14 @@ int main() {
   link.open(6);send(6,hello());send(6,want);require(out.back().second.reason==3,"late seat hangs after disable");
   LaneState state; state.apply({3,55,"event:/music/test",0}); state.apply({7,55,"Progress",.5f}); state.apply({4,55,"",0}); state.apply({9,55,"",1}); state.apply({8,0,"Global",1});
   require(state.events().at(55).playing && state.events().at(55).paused && state.events().at(55).parameters.at("Progress")==.5f && state.globals().at("Global")==1,"dormant snapshot");
+  state.apply({10,55,std::string("Mood\0Combat",11),0});
+  state.apply({11,0,std::string("GlobalMood")+'\0'+"Menu",0});
+  require(state.events().at(55).labels.at("Mood")=="Combat" && state.global_labels().at("GlobalMood")=="Menu", "label snapshot");
+  require(!state.apply({10,55,"Mood",0}) && state.label_malformed==1 && state.events().at(55).labels.at("Mood")=="Combat", "malformed label changed snapshot");
+  state.apply({7,55,"Mood",2}); state.apply({8,0,"GlobalMood",2});
+  require(state.events().at(55).labels.empty() && state.global_labels().empty(), "numeric parameter left stale label");
+  state.apply({10,55,std::string("Mood\0Combat",11),0}); state.apply({11,0,std::string("GlobalMood")+'\0'+"Menu",0});
+  require(!state.events().at(55).parameters.contains("Mood") && !state.globals().contains("GlobalMood"), "label parameter left stale numeric value");
   LaneState banks({"res://known.bank"});
   banks.apply({1,0,"res://known.bank",0});banks.apply({2,0,"res://known.bank",0});
   banks.apply({1,0,"res://unknown.bank",0});banks.apply({2,0,"res://unknown.bank",0});

@@ -58,7 +58,12 @@ typedef struct grc_fmod_v1 {
   void (*seat_close)(void *self, uint32_t seat);
   void (*link_in)(void *self, uint32_t seat, const uint8_t *msg, size_t len);
   /* 1 bank-load, 2 bank-unload, 3 event-create, 4 event-start, 5 event-stop,
-   * 6 event-release, 7 event-param, 8 global-param, 9 event-paused.
+   * 6 event-release, 7 event-param, 8 global-param, 9 event-paused,
+   * 10 event-param-label, 11 global-param-label.
+   * For 10/11, s is name followed by one NUL byte and label; len covers both
+   * strings and the separator, excluding a trailing terminator. value is ignored.
+   * Label parameters are retained for rejoin like 7/8. Malformed label payloads
+   * and unknown parameters/labels are counted in evidence and ignored, not fatal.
    * instance is the observer's id, never an FMOD handle. Bank ops are evidence only;
    * the configured bankset stays fixed until process exit. Paused uses value 0/1;
    * stop uses FMOD stop mode (0 fadeout, 1 immediate). In v1, op 6 removes the

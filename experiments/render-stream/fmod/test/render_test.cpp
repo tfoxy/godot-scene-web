@@ -26,7 +26,8 @@ int main(int argc,char **argv) {
   grc::fmod::RenderConfig changed{core,studio,pck.string(),""};changed.bankset=std::string(32,'0');
   unsigned rejected=0;
   try {grc::fmod::TakeSystem refused(changed);}catch(const std::exception &e){if(std::string(e.what())!="bank-load")throw;++rejected;}
-  try {grc::fmod::LaneSystem refused(changed,{},grc::fmod::LaneState{});}catch(const std::exception &e){if(std::string(e.what())!="bank-load")throw;++rejected;}
+  grc::fmod::LaneState state;
+  try {grc::fmod::LaneSystem refused(changed,{},state);}catch(const std::exception &e){if(std::string(e.what())!="bank-load")throw;++rejected;}
   if(rejected!=2)throw std::runtime_error("changed bankset reached render systems");
   const auto before=rss();
   grc::fmod::TakeSystem renderer({core,studio,pck.string(),""});
