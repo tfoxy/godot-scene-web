@@ -434,6 +434,8 @@ struct TexM {
     /// P3-CT: the serial of the diffuse texture RID the last `canvas_texture_set_channel` bound
     /// (0: none, or `RID()`).
     canvas_diffuse_serial: u64,
+    /// The image id actually bound to this CanvasTexture, mirrored in `canvas_channel_users`.
+    canvas_diffuse: Option<Id>,
     /// G8ku (D6 `keep`): the entry version the resident image was uploaded for.
     version: i64,
     /// The size the Godot texture draws at: its image's after a create or replace (Godot starts
@@ -876,6 +878,8 @@ pub struct Planner {
     mattex: BTreeSet<Id>,
     /// P3-CT: the texture ids whose entry was a canvas texture as of the last apply.
     canvas_ids: BTreeSet<Id>,
+    /// Resident image -> live CanvasTextures currently binding it (diffuse is the supported channel).
+    canvas_channel_users: BTreeMap<Id, BTreeSet<Id>>,
     /// G8kf (render-stream-9.md "Texture reasons"): texture id -> the items whose last replay
     /// skipped a command naming it as undrawable. When an apply uploads that texture (a
     /// `delivery-pending` entry returning as `ok`), those items replay their content, since no
@@ -1632,7 +1636,9 @@ impl Planner {
             if !gone {
                 continue;
             }
+            self.clear_channel_caches(id, ops);
             let t = self.textures.remove(&id).unwrap();
+            self.remove_channel_user(id, t.canvas_diffuse);
             ops.op(Op::FreeRid, 1);
             ops.rid(RidRef::Texture(t.handle));
             self.freed_by_apply += 1;
@@ -1659,6 +1665,7 @@ impl Planner {
                     {
                         continue;
                     }
+                    self.clear_channel_caches(id, ops);
                     if let Some(t) = self.textures.get_mut(&id) {
                         let h = t.handle;
                         t.kind = TexKind::Placeholder;
@@ -1684,6 +1691,7 @@ impl Planner {
                                 mipmaps: false,
                                 canvas_version: -1,
                                 canvas_diffuse_serial: 0,
+                                canvas_diffuse: None,
                                 version: -1,
                                 logical: [0, 0],
                             },
@@ -1719,6 +1727,7 @@ impl Planner {
                                 mipmaps: false,
                                 canvas_version: -1,
                                 canvas_diffuse_serial: 0,
+                                canvas_diffuse: None,
                                 version: -1,
                                 logical: [0, 0],
                             },
@@ -1800,6 +1809,7 @@ impl Planner {
                                     mipmaps: false,
                                     canvas_version: -1,
                                     canvas_diffuse_serial: 0,
+                                    canvas_diffuse: None,
                                     version: -1,
                                     logical: [0, 0],
                                 },
@@ -1823,6 +1833,7 @@ impl Planner {
                                 c.tex_updated += 1;
                                 op_name = "update";
                             } else {
+                                self.clear_channel_caches(id, ops);
                                 ops.op(Op::TextureReplaceWithImage, 2);
                                 ops.rid(RidRef::Texture(h));
                                 image(ops);
@@ -1879,11 +1890,21 @@ impl Planner {
                 .and_then(|d| self.textures.get(&d))
                 .map(|d| (RidRef::Texture(d.handle), d.serial))
                 .unwrap_or((RidRef::None, 0));
-            let rebind = serial != 0 && serial != t.canvas_diffuse_serial;
+            // A channel whose image was freed must be cleared even without an entry-version change.
+            let rebind = serial != t.canvas_diffuse_serial;
             if t.canvas_version == e.version && !rebind {
                 continue;
             }
             let h = t.handle;
+            let previous_diffuse = t.canvas_diffuse;
+            self.remove_channel_user(id, previous_diffuse);
+            let bound_diffuse = info.diffuse.filter(|_| serial != 0);
+            if let Some(diffuse_id) = bound_diffuse {
+                self.canvas_channel_users
+                    .entry(diffuse_id)
+                    .or_default()
+                    .insert(id);
+            }
             ops.op(Op::CanvasTextureSetChannel, 1);
             ops.rid(RidRef::Texture(h));
             ops.u(0); // CANVAS_TEXTURE_CHANNEL_DIFFUSE
@@ -1897,6 +1918,7 @@ impl Planner {
             let t = self.textures.get_mut(&id).unwrap();
             t.canvas_version = e.version;
             t.canvas_diffuse_serial = serial;
+            t.canvas_diffuse = bound_diffuse;
         }
 
         // Meshes.
@@ -4243,6 +4265,34 @@ impl Planner {
         }
     }
 
+    /// Invalidate CanvasTexture caches while the channel image's RD uniform sets are still valid.
+    /// Replacing or freeing the image implicitly frees those sets; a later CanvasTexture cache
+    /// invalidation would otherwise try to free the stale IDs again. Visit only actual bindings.
+    fn clear_channel_caches(&self, image: Id, ops: &mut OpBuf) {
+        let Some(users) = self.canvas_channel_users.get(&image) else {
+            return;
+        };
+        let image = &self.textures[&image];
+        for canvas in users {
+            let canvas = &self.textures[canvas];
+            ops.op(Op::CanvasTextureSetChannel, 1);
+            ops.rid(RidRef::Texture(canvas.handle));
+            ops.u(0); // CANVAS_TEXTURE_CHANNEL_DIFFUSE
+            ops.rid(RidRef::Texture(image.handle));
+        }
+    }
+
+    fn remove_channel_user(&mut self, canvas: Id, image: Option<Id>) {
+        if let Some(image) = image {
+            if let Some(users) = self.canvas_channel_users.get_mut(&image) {
+                users.remove(&canvas);
+                if users.is_empty() {
+                    self.canvas_channel_users.remove(&image);
+                }
+            }
+        }
+    }
+
     /// `dispose()`: frees every RID this planner created (items, owned canvases, textures, meshes,
     /// materials, shaders), puts canvas 1's modulate back to white, forgets all state.
     pub fn dispose(&mut self, ops: &mut OpBuf) -> i64 {
@@ -4328,6 +4378,7 @@ impl Planner {
         self.rid_param_items.clear();
         self.mattex.clear();
         self.canvas_ids.clear();
+        self.canvas_channel_users.clear();
         self.skipped_items.clear();
         self.tex_skips.borrow_mut().clear();
         self.touched.clear();

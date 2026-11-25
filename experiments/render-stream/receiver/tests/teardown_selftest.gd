@@ -87,14 +87,16 @@ func _canvas_transaction(data: PackedByteArray, record: Dictionary, seq: int = 1
 	for texture: Dictionary in textures:
 		if texture["id"] == 1:
 			texture["version"] = seq
-			if placeholder:
+			if seq == 4:
+				texture.merge({"status": "freed", "hash": null, "format": null, "width": 0, "height": 0, "payload_bytes": 0}, true)
+			elif placeholder:
 				texture.merge({"kind": "placeholder", "hash": null, "format": null, "width": 0, "height": 0, "payload_bytes": 0}, true)
 	for id: int in [8, 9]:
 		textures.append({
 			"id": id, "origin": "created", "kind": "canvas", "status": "ok", "reason": null,
 			"version": 1, "hash": null, "format": null, "width": 0, "height": 0,
 			"mipmaps": false, "payload_bytes": 0,
-			"canvas": {"diffuse": id - 7, "filter": "default", "repeat": "default"},
+			"canvas": {"diffuse": 1, "filter": "default", "repeat": "default"},
 		})
 	meta["textures"] = textures
 	var shader: PackedByteArray = _shader_payload()
@@ -188,8 +190,12 @@ func _run() -> void:
 		_check(mode + " creates both CanvasTextures", canvas_uploads == 2)
 		var material_resources: Dictionary = stats["material_resources"]
 		_check(mode + " creates a material with a texture parameter", material_resources["materials_created"] == 1 and material_resources["param_sets"] == 1)
-		# Exercise both texture_replace paths and their consumed temporary RIDs before drawing.
-		for seq: int in [2, 3]:
+		# Draw each channel image before replacing it, so RD has cached dependent uniform sets.
+		for seq: int in [2, 3, 4]:
+			await process_frame
+			if DisplayServer.get_name() != "headless":
+				await RenderingServer.frame_post_draw
+				print("[teardown-selftest] %s seq %d pixels %s" % [mode, seq - 1, RsWire.sha256_hex(viewport.get_texture().get_image().get_data())])
 			accepted = applier.accept(_canvas_transaction(data, transaction_record, seq, seq == 2), 0)
 			errors = accepted["errors"]
 			_check(mode + " accepts replacement %d" % seq, errors.is_empty())
@@ -197,7 +203,7 @@ func _run() -> void:
 			_check(mode + " applies replacement %d" % seq, applied["ok"])
 			stats = applied["stats"]
 			var texture_resources: Dictionary = stats["resources"]
-			_check(mode + " replaces one texture %d" % seq, texture_resources["replaced"] == 1)
+			_check(mode + " changes one texture %d" % seq, texture_resources["freed" if seq == 4 else "replaced"] == 1)
 		if mode == "reconnect":
 			var before: int = applier.owned_rids()
 			view.set("_reconnect_record", {})
@@ -212,6 +218,7 @@ func _run() -> void:
 		await process_frame
 		if DisplayServer.get_name() != "headless":
 			await RenderingServer.frame_post_draw
+			print("[teardown-selftest] %s final pixels %s" % [mode, RsWire.sha256_hex(viewport.get_texture().get_image().get_data())])
 		if mode in ["disconnect", "reconnect"]:
 			# An unopened local peer has the same closed transport state as a lost host.
 			view.set("_live_phase", "streaming")
