@@ -15,13 +15,14 @@ struct Fake : grc::rs2::LiveTransport, a::MediaTransport {
   bool threaded = false;
   bool reject = false;
   std::vector<std::string> texts;
+  std::vector<std::uint32_t> text_conns;
   std::vector<a::Bytes> blocks;
   std::vector<unsigned> classes;
   std::vector<std::thread::id> threads;
   bool send_binary(std::uint32_t, a::Bytes v) override { if (reject) return false; blocks.push_back(std::move(v)); classes.push_back(2); return true; }
-  bool send_text(std::uint32_t, std::string v) override {
+  bool send_text(std::uint32_t conn, std::string v) override {
     // Test-only sabotage: losing a stop control must break the voice-pairing oracle.
-    if (!(std::getenv("AUDIO_DROP_CUES") && v.find("\"stop\"") != std::string::npos)) texts.push_back(std::move(v));
+    if (!(std::getenv("AUDIO_DROP_CUES") && v.find("\"stop\"") != std::string::npos)) { texts.push_back(std::move(v)); text_conns.push_back(conn); }
     classes.push_back(0); return true;
   }
   void close(std::uint32_t, std::uint16_t, std::string) override {}
@@ -192,6 +193,37 @@ int main() {
     check(e.get("assets")->items.size() == 2, "registered zero-hit assets and served codecs are retained");
     check(text.find("event:/") == std::string::npos && text.find("key_id") == std::string::npos,
         "audio evidence does not disclose cue keys");
+  }
+  {
+    auto &source = a::godot_slab(); source.arm();
+    a::SampleState sample; sample.key = 123; sample.ready = true;
+    source.sample(sample, 1);
+    a::VoiceState voice; voice.key = 456; source.start(voice, sample.key, 2);
+    source.volumes(voice.key, {0, 1, 2, 3, 4, 5}, {}, 6, 3);
+    source.drop(sample.key, 4);
+    Fake t; auto config = cfg; config.godot_sample = true;
+    a::Hub h(config, t); h.sender().add(1); h.opened(1); h.sender().frame();
+    check(t.texts.size() == 3 && t.texts[0].find("\"voice\":1") != std::string::npos &&
+          t.texts[1].find("\"type\":\"sample\"") != std::string::npos &&
+          t.texts[2].find("\"bus\":5") != std::string::npos, "Hub joins restore retained sample and every route");
+    h.sender().add(2); h.opened(2); h.sender().frame();
+    const auto before_stop = t.texts.size();
+    source.stop(voice.key, 5); h.sender().frame();
+    for (unsigned conn : {1u, 2u}) {
+      std::vector<std::string> types;
+      for (size_t i = before_stop; i < t.texts.size(); ++i) if (t.text_conns[i] == conn) {
+        j::JValue message;
+        if (j::Reader(t.texts[i]).parse(&message) && message.get("type")) types.push_back(message.get("type")->text);
+      }
+      check(types == std::vector<std::string>({"stop", "sample-drop"}), "every client joining after unregister gets stop followed by deferred sample-drop");
+    }
+    source.bus("count", 0, 33, 0, false, 6); h.sender().frame();
+    const auto closed = h.sender().take_closes();
+    check(closed.size() == 2 && closed[0].reason == "audio-overflow" && closed[1].reason == "audio-overflow",
+          "bus overflow resync closes every open audio connection");
+    h.removed(1); h.removed(2); const auto before = t.texts.size();
+    h.sender().add(3); h.opened(3); h.sender().frame();
+    check(t.texts.size() > before && t.texts[before].find("\"godot\":null") != std::string::npos, "reconnect after bus overflow contains null Godot source");
   }
   std::printf("rs_audio_test: %d checks, %d failures\n", checks, failures);
   return failures ? 1 : 0;

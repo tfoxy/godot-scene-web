@@ -1034,7 +1034,7 @@ struct Server::Impl {
   // is queued by reference (send_q holds the shared buffer until it is sent), never copied.
   void send_http_ok(Conn &c, const std::string &hash, std::shared_ptr<const std::vector<std::uint8_t>> body_ref,
                     bool keep_alive, const std::vector<std::pair<std::string, std::string>> &cors,
-                    Coding coding = Coding::Identity) {
+                    Coding coding = Coding::Identity, bool no_store = false) {
     const std::vector<std::uint8_t> &body = *body_ref;
     std::string resp = "HTTP/1.1 200 OK\r\n";
     // G8ku (render-stream-9.md "KTX2 payload"): a KTX2 body is `image/ktx2` (and never coded: only
@@ -1046,7 +1046,7 @@ struct Server::Impl {
     resp += ktx2 ? "Content-Type: image/ktx2\r\n" : "Content-Type: application/octet-stream\r\n";
     if (coding != Coding::Identity) resp += std::string("Content-Encoding: ") + coding_token(coding) + "\r\n";
     resp += "Content-Length: " + std::to_string(body.size()) + "\r\n";
-    resp += "Cache-Control: private, max-age=31536000, immutable\r\n";
+    resp += no_store ? "Cache-Control: no-store\r\n" : "Cache-Control: private, max-age=31536000, immutable\r\n";
     resp += "ETag: " + etag_for(hash, coding) + "\r\n";
     if (!config.codings.empty()) resp += "Vary: Accept-Encoding\r\n";
     for (const auto &h : cors) resp += h.first + ": " + h.second + "\r\n";
@@ -1233,7 +1233,8 @@ struct Server::Impl {
     const Coding coding = negotiate_coding(header_value(req, "accept-encoding"), config.codings);
     // If-None-Match: any validator of this hash (identity or either coding) matches, and the 304
     // carries the one that matched.
-    for (const std::string &candidate : split_commas(header_value(req, "if-none-match"))) {
+    const bool no_store = resource_source->no_store(hash);
+    for (const std::string &candidate : split_commas(no_store ? std::string() : header_value(req, "if-none-match"))) {
       const std::string tag = unquote(candidate);
       if (tag == hash || (!config.codings.empty() && (tag == hash + "-zstd" || tag == hash + "-gzip"))) {
         send_http_not_modified(c, "\"" + tag + "\"", keep_alive, cors);
@@ -1272,7 +1273,7 @@ struct Server::Impl {
       body = std::make_shared<const std::vector<std::uint8_t>>(std::move(sabotaged));
     }
     const std::uint64_t coded_bytes = body->size();
-    send_http_ok(c, hash, std::move(body), keep_alive, cors, used);
+    send_http_ok(c, hash, std::move(body), keep_alive, cors, used, no_store);
     Event event = make_http_get_event(c.id, hash, 200, found.identity_bytes, req);
     event.coding = coding_token(used);
     event.coded_bytes = coded_bytes;

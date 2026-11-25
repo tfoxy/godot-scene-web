@@ -32,6 +32,7 @@
 // Emscripten glue and the position worklet are replaced by the track's capture-clock timeline.
 import type { AudioContextLike, AudioStage } from "./mainEngine";
 import { SampleBuses, type SampleRoute } from "./sampleBuses";
+import { sampleLoopFrames } from "./sampleLoop";
 import type {
   AudioSample,
   AudioSnapshot,
@@ -257,16 +258,11 @@ export class GodotSampleEngine {
     if (mode === "disabled")
       return { buffer, loopStart: 0, loopEnd: 0, offset: (s) => s };
     const rate = buffer.sampleRate;
-    // decodeAudioData may resample WAVs to the context's rate; loop frames are at native rate.
-    const scale = codec === "wav" ? rate / info.rate : rate;
-    const begin = Math.min(
-      buffer.length - 1,
-      Math.round(info.loop.begin * scale),
-    );
+    // decodeAudioData may resample the native-rate WAV fallback.
+    const points = sampleLoopFrames(info, codec, rate);
+    const begin = Math.min(buffer.length - 1, points.begin);
     const end =
-      info.loop.end === 0
-        ? buffer.length
-        : Math.min(buffer.length, Math.round(info.loop.end * scale));
+      info.loop.end === 0 ? buffer.length : Math.min(buffer.length, points.end);
     if (end <= begin) throw new Error("audio-protocol");
     if (mode === "forward")
       return {

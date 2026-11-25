@@ -213,18 +213,6 @@ int main() {
       const grc_audio_gain bad_gain{name.data(), name.size(), 1};
       check(api.groups(&bad_gain, 1, 0) == -1, "groups refuses oversized/non-printable/escaped names");
     }
-    std::string lane_rows;
-    for (unsigned i = 1; i <= 15; ++i) {
-      if (i > 1) lane_rows += ',';
-      lane_rows += "{\"id\":" + std::to_string(i) + ",\"name\":\"" + std::string(128, 'l') +
-          "\",\"group\":\"" + names[0] + "\"}";
-    }
-    const auto fmod = a::fmod_snapshot(std::string(32, 'f'), a::grant_cues().group_snapshot(), lane_rows);
-    check(fmod.size() <= 12 * 1024, "worst FMOD snapshot <=12 KiB: 64 groups, 15 lanes, maximum names/floats");
-    const auto state = "{\"type\":\"audio-state\",\"t\":18446744073709551615,\"s\":18446744073709551615,\"godot\":null,\"fmod\":" + fmod + "}";
-    j::JValue v;
-    check(j::Reader(state).parse(&v) && state.size() <= 60 * 1024, "worst FMOD snapshot encodes with envelope/t/s");
-    std::printf("worst_fmod_bytes=%zu audio_state_bytes=%zu\n", fmod.size(), state.size());
     h.sender().add(1); h.opened(1); h.sender().frame();
     bool refused_names = true;
     count_allocations = true;

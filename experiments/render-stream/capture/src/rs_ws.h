@@ -297,6 +297,7 @@ struct ResourceBody {
 class ResourceSource {
  public:
   virtual ~ResourceSource() = default;
+  virtual bool no_store(std::string_view hash) { (void)hash; return false; }
 
   // Called on the I/O thread for every resource GET whose hash is already
   // validated (exactly 64 lowercase hex characters). Must be thread-safe

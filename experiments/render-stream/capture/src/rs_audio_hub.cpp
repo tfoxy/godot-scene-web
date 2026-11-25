@@ -25,6 +25,11 @@ Hub::Hub(Config config, rs2::LiveTransport &transport, bool synthetic_demo, bool
       godot_sample_(config.godot_sample) {
   sender_.source([this] { drain_cues(); });
   cues_.bind(&sender_, [](void *self) { static_cast<Sender *>(self)->wake_source(); });
+  if (!demo_ && godot_sample_) {
+    auto &source = godot_slab();
+    auto guard = source.lock();
+    if (source.available()) { godot_ = &source; source.attach(this); source_armed_ = true; }
+  }
   if (demo_) {
     const auto wav = synthetic_wav();
     sample(",\"variants\":[{\"codec\":\"wav\",\"hash\":\"" + sha256_hex(wav.data(), wav.size()) +
@@ -37,6 +42,10 @@ Hub::~Hub() { shutdown(); }
 void Hub::shutdown() {
   link_.shutdown();
   cues_.unbind();
+  {
+    auto source_lock = godot_slab().lock();
+    if (godot_) { godot_->connected(false); godot_->attach(nullptr); }
+  }
   { std::lock_guard lock(mu_); stopping_ = true; }
   cv_.notify_all();
   if (clock_.joinable()) clock_.join();
@@ -46,11 +55,14 @@ std::string Hub::event(std::string type, std::string members, std::uint64_t at_u
   return "{\"type\":" + json_quoted(type) + ",\"t\":" + std::to_string(at_us ? at_us : now_us()) + members + "}";
 }
 std::string Hub::ready(std::uint32_t conn) {
+  auto source_lock = godot_slab().lock();
   std::lock_guard lock(mu_);
-  return ",\"rate\":48000,\"lane_block_frames\":512,\"codec\":\"pcm16\",\"godot\":true,\"fmod\":" +
+  return ",\"rate\":48000,\"lane_block_frames\":512,\"codec\":\"pcm16\",\"godot\":" +
+      std::string((godot_ ? godot_->available() : source_armed_) ? "true" : "false") + ",\"fmod\":" +
       std::string(demo_ || cue_attached() ? "true" : "false") + ",\"lanes\":[" + (demo_ ? lane : link_.advertise(conn)) + "]}";
 }
-void Hub::opened(std::uint32_t conn) {
+void Hub::opened(std::uint32_t conn, unsigned codecs) {
+  auto source_lock = godot_slab().lock();
   std::lock_guard lock(mu_);
   conns_[conn];
   link_.groups(cues_.group_snapshot());
@@ -65,15 +77,40 @@ void Hub::opened(std::uint32_t conn) {
 #if defined(GRC_AUDIO_LINK_TESTING)
     if (test_before_snapshot) test_before_snapshot();
 #endif
+    if (godot_) {
+      sender_.text(conn, godot_->snapshot(now_us(), cue_attached() ?
+          fmod_snapshot(bank, cues_.group_snapshot(), lanes) : "null"), true);
+      return;
+    }
     sender_.text(conn, event("audio-state", ",\"godot\":{\"buses\":[],\"voices\":[" + voices + "]},\"fmod\":" +
         (demo_ || cue_attached() ? fmod_snapshot(demo_ ? bankset : bank, cues_.group_snapshot(), demo_ ? lane : lanes) : "null")), true);
   });
+  if (godot_) {
+    for (const auto &text : godot_->samples(now_us())) sender_.text(conn, text, true);
+    for (const auto &text : godot_->snapshot_updates(now_us())) sender_.text(conn, text, true);
+    godot_->connected(true, now_us());
+    godot_->prepare_variants(codecs);
+  }
   for (const auto &[id, text] : samples_) { (void)id; sender_.text(conn, text, true); }
   if (demo_) demo(conn);
 }
 void Hub::removed(std::uint32_t conn) {
-  { std::lock_guard lock(mu_); conns_.erase(conn); link_.removed(conn); if (conns_.empty()) cues_.connections(false); }
+  auto source_lock = godot_slab().lock();
+  {
+    std::lock_guard lock(mu_);
+    conns_.erase(conn);
+    if (godot_) godot_->connected(!conns_.empty());
+    link_.removed(conn);
+    if (conns_.empty()) cues_.connections(false);
+  }
   sender_.remove(conn); cv_.notify_all();
+}
+void Hub::godot_text(const std::string &text) {
+  std::lock_guard lock(mu_); broadcast(text);
+}
+void Hub::godot_overflow() {
+  std::lock_guard lock(mu_);
+  for (const auto &[conn, c] : conns_) { (void)c; sender_.close(conn, 1013, "audio-overflow"); }
 }
 void Hub::broadcast(const std::string &text) {
   for (const auto &[conn, state] : conns_) { (void)state; sender_.text(conn, text, true); }
@@ -209,13 +246,17 @@ void Hub::asset_served(const std::string &hash, const std::string &codec, std::u
   auto &s = assets_[{hash, codec}]; ++s.hits; s.bytes += bytes;
 }
 std::string Hub::json() const {
+  auto source_lock = godot_slab().lock();
   std::lock_guard lock(mu_);
   const auto connections = sender_.evidence();
   grc::JsonWriter j;
   j.object_begin().field("schema", std::string("render-stream-live-audio/1"));
-  j.key("godot").object_begin();
-  j.field("state", std::string(source_armed_ ? "synthetic" : godot_sample_ ? "unavailable" : "off"));
-  j.key("unsampled").unsigned_integer(0).object_end();
+  j.key("godot");
+  if (godot_sample_ && !demo_ && (godot_ || !source_armed_)) godot_slab().write_evidence(j);
+  else {
+    j.object_begin().field("state", std::string(source_armed_ ? "synthetic" : "off"));
+    j.key("unsampled").unsigned_integer(0).object_end();
+  }
   j.key("cue").object_begin().field("attached", cue_attached());
   j.key("ring_high_water").unsigned_integer(cues_.high_water());
   j.key("groups_full").unsigned_integer(cues_.groups_full());

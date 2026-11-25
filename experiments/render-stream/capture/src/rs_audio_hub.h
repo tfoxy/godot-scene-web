@@ -4,16 +4,17 @@
 #include "rs_audio_sender.h"
 #include "rs_audio_cue.h"
 #include "rs_audio_link.h"
+#include "rs_audio_slab.h"
 #include <set>
 namespace grc::audio {
-class Hub {
+class Hub : public GodotSink {
  public:
   Hub(Config config, rs2::LiveTransport &transport, bool synthetic_demo = false, bool source_armed = false, bool automatic = true);
   ~Hub();
   static Bytes synthetic_wav();
   Sender &sender() { return sender_; }
   std::string ready(std::uint32_t conn = 0);
-  void opened(std::uint32_t conn);
+  void opened(std::uint32_t conn, unsigned codecs = 1);
   void removed(std::uint32_t conn);
   bool message(std::uint32_t conn, const std::string &text);
   // Event producers enqueue without touching the carrier. No engine API is called here.
@@ -38,6 +39,9 @@ class Hub {
   static std::string event(std::string type, std::string members, std::uint64_t at_us = 0);
   void broadcast(const std::string &text);
   void demo(std::uint32_t conn);
+  void godot_text(const std::string &text) override;
+  void godot_overflow() override;
+  AudioSlab *godot_ = nullptr;
   void media_clock();
   CueIngress &cues_;
   Sender sender_;

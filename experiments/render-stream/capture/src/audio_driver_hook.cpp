@@ -1,5 +1,8 @@
 #include "audio_driver_probe.h"
 #include "audio_driver_log.h"
+#include "audio_driver_sample.h"
+#include "rs_audio_config.h"
+#include "rs_audio_slab.h"
 #include "iface.h"
 #include "report.h"
 #include "rs_file.h"
@@ -66,15 +69,31 @@ class Live final : public CalibMemoryReader {
 #endif
 }  // namespace
 void initialize(const std::string &evidence_dir) {
+  sample_bench_configure();
   const char *mode=rs::env("GRC_AUDIO");
+  const char *grant_env = rs::env("GRC_LIVE_TRACKS");
+  const std::string grants = "," + std::string(grant_env ? grant_env : "") + ",";
+  const bool granted = grants.find(",audio,") != std::string::npos;
+  Config config; std::string config_error;
+  if (!configure(granted, &config, &config_error)) return;
+  if ((!mode || !*mode) && granted && config.godot_sample) mode = "sample";
   if (!mode || !*mode) return;
-  const char *path=rs::env("GRC_AUDIO_ABI_TABLE");
+  [[maybe_unused]] const char *path=rs::env("GRC_AUDIO_ABI_TABLE");
   Probe probe; Abi abi; std::string error, bound;
   bool ok=false;
-  if (std::string(mode)!="probe" && std::string(mode)!="log") error="unsupported GRC_AUDIO mode";
-  else if (!path || !*path) error="GRC_AUDIO_ABI_TABLE is required";
+  if (std::string(mode)!="probe" && std::string(mode)!="log" && std::string(mode)!="sample") error="unsupported GRC_AUDIO mode";
+  else if (std::string(mode)=="sample" && !granted) error="audio-not-granted";
 #if defined(__linux__) && defined(__x86_64__)
+  // Extension-list loading can precede both SceneTree and AudioServer singleton registration.
+  // Refuse before asking for AudioServer; global_get_singleton logs an engine error if absent.
+  else if (std::string(mode)=="sample" && [] {
+    void *engine = singleton_object("Engine"), *tree = nullptr;
+    const auto bind = method_bind("Engine", "get_main_loop", 1016888095);
+    if (engine && bind) g_iface.object_method_bind_ptrcall(bind, engine, nullptr, &tree);
+    return !tree;
+  }()) error="no-stop-entry";
   else if (!dummy_name(bound=singleton_string("AudioServer","AudioServer","get_driver_name",201670096),&error)) {}
+  else if (!path || !*path) error="GRC_AUDIO_ABI_TABLE is required";
   else {
     ProcessFingerprint fp;
     if (collect_fingerprint(&fp,&error) && fp.version_string=="Godot Engine v4.5.1.stable.official") {
@@ -102,6 +121,8 @@ void initialize(const std::string &evidence_dir) {
   else error="audio seam supports Linux x86-64 only";
 #endif
   if (ok && std::string(mode)=="log") ok=start_log(probe,abi,evidence_dir,&error);
+  if (ok && std::string(mode)=="sample") ok=start_sample(probe,abi,&error);
+  if (!ok && std::string(mode)=="sample") godot_slab().refuse(bound != "Dummy" && !bound.empty() ? "unavailable:not-dummy" : error == "no-stop-entry" ? "unavailable:no-stop-entry" : "unavailable:seam");
   JsonWriter j; j.object_begin().field("mode",std::string(mode)).field("status",std::string(ok?"found":"refused"))
     .field("reason",error).field("bound_driver",bound).field_hex("object",probe.object)
     .field_hex("vptr",probe.vptr).field("object_matches",int64_t(probe.object_matches)).key("slots").object_begin();
@@ -111,5 +132,5 @@ void initialize(const std::string &evidence_dir) {
   if (!evidence_dir.empty()) write_file(path_join(evidence_dir,"audio-probe.json"),report);
   std::fprintf(stdout,"[grc-audio] %s",report.c_str()); std::fflush(stdout);
 }
-void shutdown() { stop_log(); }
+void shutdown() { stop_sample(); stop_log(); }
 }  // namespace grc::audio

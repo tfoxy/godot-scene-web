@@ -205,6 +205,8 @@
 #include <vector>
 
 #include "audio_driver_probe.h"
+#include "audio_driver_sample.h"
+#include "rs_audio_assets.h"
 #include "calib.h"
 #include "calib_live.h"
 #include "hooks.h"
@@ -446,6 +448,7 @@ struct Live {
   // G2c2: what the server serves over HTTP. Declared before `server`, which holds a pointer to
   // it, so it outlives the server.
   std::unique_ptr<rs::ServedResources> served;
+  std::unique_ptr<audio::AudioResources> audio_resources;
   // wss on `ws`, from the net module, when GRC_LIVE_TLS_CERT/KEY are
   // set. Declared before `carriers`, whose `ws` server holds a pointer to it.
   std::unique_ptr<live::NetTlsContext> tls;
@@ -3795,6 +3798,10 @@ void stream_start() {
       services.allowed_origins = g_live.allowed_origins;
       services.enforce_origins = server_config.enforce_origins;
       services.resources = g_live.served.get();
+      if (std::find(g_live.track_config.kinds.begin(), g_live.track_config.kinds.end(), "audio") != g_live.track_config.kinds.end()) {
+        g_live.audio_resources = std::make_unique<audio::AudioResources>(*g_live.served);
+        services.resources = g_live.audio_resources.get();
+      }
       services.log = [](int, const std::string &line) { log_line(line); };
       // grc_carrier_host_v1.config (grc_carrier.h): what a C ABI carrier may read.
       {
@@ -3831,7 +3838,8 @@ void stream_start() {
           tracks_on ? static_cast<std::size_t>(g_live.max_tracks) : 0);
       bool added = false;
       if (g_live.ws_enabled) {
-        auto ws = std::make_unique<live::WsCarrier>(server_config, g_live.served.get(), 2000);
+        auto ws = std::make_unique<live::WsCarrier>(server_config,
+            g_live.audio_resources ? static_cast<live::ResourceSource *>(g_live.audio_resources.get()) : g_live.served.get(), 2000);
         g_live.ws = ws.get();
         if (g_live.carriers->add(live::kCarrierWs, std::move(ws), &error)) {
           added = true;
@@ -4027,6 +4035,10 @@ void live_drain(uint64_t frame) {
       // connection streaming at the time and logged (http-get) with the I/O thread's time.
       ++g_live.serving.http_gets;
       if (event.http_status == 200) {
+        if (g_live.tracks && g_live.tracks->audio_hub()) {
+          const auto asset = audio::godot_assets().get(event.hash, audio::now_us());
+          if (asset.bytes) g_live.tracks->audio_hub()->asset_served(event.hash, asset.codec, event.bytes);
+        }
         g_live.serving.http_bytes += event.bytes;
         g_live.serving.http_coded_bytes += event.coded_bytes;
         if (event.coding == "zstd") ++g_live.serving.http_gets_zstd;
@@ -6371,6 +6383,7 @@ void arm_release() {
   if (rearm_fault("keep-served") && g_live.served != nullptr) {
     g_rearm.kept_served.push_back(std::move(g_live.served));
   }
+  g_live.audio_resources.reset();
   g_live.served.reset();
   live::carrier_registry().reopen();
   // The stream: the sinks' end already joined the writer.
@@ -7049,6 +7062,7 @@ void evict_frame() {
 }
 
 void on_frame() {
+  audio::sample_frame();
   const uint64_t frame_start_ns = monotonic_ns();
   // P3-TM: the host's shader time follows every iteration from the first, armed or not.
   if (!rs::shader_clock_tick() && !g_state.shader_clock_logged) {

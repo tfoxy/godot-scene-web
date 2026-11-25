@@ -390,7 +390,7 @@ endif()
 # close_all -- plus the four test-only sabotages, each of which must fail its check.
 # Linux-only: POSIX socket helpers and source-tree golden data.
 if(NOT GRC_WINDOWS)
-add_executable(rs_track_test test/rs_track_test.cpp src/rs_audio_link.cpp src/rs_audio_cue.cpp src/rs_audio_hub.cpp src/rs_audio_sender.cpp src/rs_audio_wire.cpp src/rs_tracks.cpp src/rs_track_caps.cpp src/rs_ws.cpp
+add_executable(rs_track_test test/rs_track_test.cpp src/rs_audio_slab.cpp src/rs_audio_assets.cpp src/rs_audio_link.cpp src/rs_audio_cue.cpp src/rs_audio_hub.cpp src/rs_audio_sender.cpp src/rs_audio_wire.cpp src/rs_tracks.cpp src/rs_track_caps.cpp src/rs_ws.cpp
   src/rs_sha1.cpp src/rs_sha256.cpp src/report.cpp)
 target_include_directories(rs_track_test PRIVATE src)
 # TRK5: the capability golden vectors, shared with scripts/test/self-test-track-caps.ts.
@@ -616,7 +616,7 @@ add_executable(rs_live_host
   src/rs_expose.cpp
   src/rs_net_module.cpp
   test/rs_mem_carrier.cpp
-  src/rs_audio_link.cpp src/rs_audio_cue.cpp src/rs_audio_hub.cpp
+  src/rs_audio_slab.cpp src/rs_audio_assets.cpp src/rs_audio_link.cpp src/rs_audio_cue.cpp src/rs_audio_hub.cpp
   src/rs_audio_sender.cpp
   src/rs_audio_wire.cpp
   src/rs_tracks.cpp
@@ -1181,19 +1181,19 @@ target_link_libraries(rs_tweens_gd_test PRIVATE grc_warnings)
 grc_add_test(NAME rs_tweens_gd COMMAND rs_tweens_gd_test)
 
 # Audio sender scheduling and capture-owned state, with a deterministic transport clock.
-add_executable(rs_audio_test test/rs_audio_test.cpp src/rs_audio_link.cpp src/rs_audio_cue.cpp src/rs_audio_hub.cpp src/rs_audio_sender.cpp
+add_executable(rs_audio_test test/rs_audio_test.cpp src/rs_audio_slab.cpp src/rs_audio_assets.cpp src/rs_audio_link.cpp src/rs_audio_cue.cpp src/rs_audio_hub.cpp src/rs_audio_sender.cpp
   src/rs_audio_wire.cpp src/rs_sha256.cpp src/report.cpp)
 target_include_directories(rs_audio_test PRIVATE src)
 target_link_libraries(rs_audio_test PRIVATE grc_warnings grc_platform Threads::Threads)
 grc_add_test(NAME rs_audio COMMAND rs_audio_test)
 
-add_executable(rs_audio_cue_test test/rs_audio_cue_test.cpp src/rs_audio_link.cpp src/rs_audio_cue.cpp
+add_executable(rs_audio_cue_test test/rs_audio_cue_test.cpp src/rs_audio_slab.cpp src/rs_audio_assets.cpp src/rs_audio_link.cpp src/rs_audio_cue.cpp
   src/rs_audio_hub.cpp src/rs_audio_sender.cpp src/rs_audio_wire.cpp src/rs_sha256.cpp src/report.cpp)
 target_include_directories(rs_audio_cue_test PRIVATE src)
 target_link_libraries(rs_audio_cue_test PRIVATE grc_warnings grc_platform Threads::Threads)
 grc_add_test(NAME rs_audio_cue COMMAND rs_audio_cue_test)
 
-add_executable(rs_audio_link_test test/rs_audio_link_test.cpp src/rs_audio_link.cpp src/rs_audio_cue.cpp
+add_executable(rs_audio_link_test test/rs_audio_link_test.cpp src/rs_audio_slab.cpp src/rs_audio_assets.cpp src/rs_audio_link.cpp src/rs_audio_cue.cpp
   src/rs_audio_hub.cpp src/rs_audio_sender.cpp src/rs_audio_wire.cpp src/rs_sha256.cpp src/report.cpp)
 target_include_directories(rs_audio_link_test PRIVATE src)
 target_compile_definitions(rs_audio_link_test PRIVATE GRC_AUDIO_LINK_TESTING=1)
@@ -1209,6 +1209,43 @@ grc_add_test(NAME audio_driver_probe COMMAND audio_driver_probe_test
   ${CMAKE_CURRENT_SOURCE_DIR}/../calibration/abi/godot-4.5.1-audio-driver.json)
 endif()
 
+add_executable(rs_audio_clock_test test/rs_audio_clock_test.cpp)
+target_include_directories(rs_audio_clock_test PRIVATE src)
+target_link_libraries(rs_audio_clock_test PRIVATE grc_warnings)
+grc_add_test(NAME rs_audio_clock COMMAND rs_audio_clock_test)
+
 if(GRC_WINDOWS)
   include(cmake/windows-bundle.cmake)
+endif()
+
+if(NOT GRC_WINDOWS)
+add_executable(rs_audio_slab_test test/rs_audio_slab_test.cpp src/rs_audio_sender.cpp src/rs_audio_cue.cpp src/rs_audio_slab.cpp src/rs_audio_assets.cpp
+  src/rs_audio_wire.cpp src/rs_sha256.cpp src/report.cpp)
+target_include_directories(rs_audio_slab_test PRIVATE src)
+target_link_libraries(rs_audio_slab_test PRIVATE grc_warnings grc_platform Threads::Threads)
+grc_add_test(NAME rs_audio_slab COMMAND rs_audio_slab_test)
+endif()
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
+grc_add_test(NAME rs_audio_samples COMMAND bash
+  ${CMAKE_CURRENT_SOURCE_DIR}/../scripts/test/self-test-audio-samples.sh)
+set_tests_properties(rs_audio_samples PROPERTIES SKIP_RETURN_CODE 77)
+endif()
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
+grc_add_test(NAME rs_audio_clock_gd COMMAND bash
+  ${CMAKE_CURRENT_SOURCE_DIR}/../scripts/test/self-test-audio-clock.sh)
+set_tests_properties(rs_audio_clock_gd PROPERTIES SKIP_RETURN_CODE 77)
+endif()
+
+add_executable(rs_audio_assets_test test/rs_audio_assets_test.cpp src/rs_audio_assets.cpp src/rs_audio_slab.cpp
+  src/rs_audio_wire.cpp src/rs_sha256.cpp src/report.cpp)
+target_include_directories(rs_audio_assets_test PRIVATE src)
+target_link_libraries(rs_audio_assets_test PRIVATE grc_warnings grc_platform Threads::Threads)
+grc_add_test(NAME rs_audio_assets COMMAND rs_audio_assets_test)
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
+grc_add_test(NAME rs_audio_assets_gd COMMAND bash
+  ${CMAKE_CURRENT_SOURCE_DIR}/../scripts/test/self-test-audio-assets.sh)
+set_tests_properties(rs_audio_assets_gd PROPERTIES SKIP_RETURN_CODE 77)
 endif()

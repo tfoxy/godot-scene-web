@@ -1,4 +1,5 @@
 #include "audio_driver_log.h"
+#include "audio_driver_sample.h"
 #include "iface.h"
 #include "report.h"
 #include "rs_file.h"
@@ -186,6 +187,8 @@ bool set_default_sample() {
   return e.error==GDEXTENSION_CALL_OK;
 }
 }  // namespace
+bool sample_preflight(std::string *error) { return preflight(error); }
+bool sample_default() { return set_default_sample(); }
 bool start_log(const Probe &probe,const Abi &abi,const std::string &dir,std::string *error) {
   if(dir.empty()) {*error="GRC_AUDIO=log requires GRC_EVIDENCE_DIR";return false;}
   uint64_t live=0;

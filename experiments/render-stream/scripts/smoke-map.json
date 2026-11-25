@@ -1511,6 +1511,29 @@
       ]
     },
     {
+      "why": "Godot sample capture uses the opt-in audio grant; fixed slab, snapshot and overflow checks run in ctest, and generated tone fixtures exercise the dummy-driver seam",
+      "paths": [
+        "experiments/render-stream/capture/src/audio_driver_sample*",
+        "experiments/render-stream/capture/src/rs_audio_slab.*",
+        "experiments/render-stream/capture/src/rs_audio_clock.*",
+        "experiments/render-stream/capture/test/rs_audio_clock_test.cpp",
+        "experiments/render-stream/scripts/*audio-clock*",
+        "experiments/render-stream/scripts/test/*audio-clock*",
+        "experiments/render-stream/capture/test/rs_audio_slab_test.cpp",
+        "experiments/render-stream/fixtures/audio-samples/**",
+        "experiments/render-stream/scripts/*audio-samples*",
+        "experiments/render-stream/scripts/test/*audio-samples*",
+        "experiments/render-stream/capture/src/audio_driver_assets.*",
+        "experiments/render-stream/capture/src/rs_audio_assets.*",
+        "experiments/render-stream/capture/test/rs_audio_assets_test.cpp",
+        "experiments/render-stream/scripts/*audio-assets*",
+        "experiments/render-stream/scripts/*audio-early*",
+        "experiments/render-stream/scripts/test/*audio-assets*"
+      ],
+      "reach": ["pure", "capture-build"],
+      "exclusive": true
+    },
+    {
       "why": "Audio seam spike (G1): the GRC_AUDIO probe/log fixture, its runner and its checker reach only the capture build (the audio_driver_probe ctest) and the pure self-tests; with GRC_AUDIO unset every other run is unchanged",
       "paths": [
         "experiments/render-stream/fixtures/audio-seam/**",

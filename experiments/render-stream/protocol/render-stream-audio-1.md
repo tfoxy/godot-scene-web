@@ -135,10 +135,10 @@ assigned by the seat from 1 upward per run and never reused. They are never Godo
 
 | `type` | Members | Meaning |
 | ------ | ------- | ------- |
-| `audio-state` | `godot: {buses, voices} \| null`, `fmod: {bankset, groups, lanes} \| null` | The snapshot after every `track-ready`, followed by one `sample` per registered sample. `buses` is in bus-index order (see Buses below). `voices` entries are `start` members plus `position_s` and `paused`. |
-| `sample` | `id, variants: [{codec, hash, bytes}], channels, rate, length_ms, loop: {mode, begin, end}, store` | Registration (`register_sample`) or a re-announce (store class changed). `mode` is `disabled\|forward\|pingpong\|backward`. `begin`/`end` are frames for `wav`, seconds for `mp3`/`ogg-vorbis` (Godot's `loop_offset`). |
+| `audio-state` | `godot: {buses, voices} \| null`, `fmod: {bankset, groups, lanes} \| null` | The snapshot after every `track-ready`, followed by one `sample` per registered or still-playing sample and `voice-volumes` updates restoring every changed route. `buses` is in bus-index order (see Buses below). `voices` entries are `start` members plus `position_s` and `paused`. |
+| `sample` | `id, variants: [{codec, hash, bytes}], channels, rate, length_ms, loop: {mode, begin, end}, store` | Registration (`register_sample`) or a re-announce (store class changed). `mode` is `disabled\|forward\|pingpong\|backward`. `variants[0]` is the original codec. `begin`/`end` use its units: frames for `wav`, seconds for `mp3`/`ogg-vorbis` (Godot's `loop_offset`). A client selecting the native-rate WAV fallback converts seconds to frames with `round(seconds × rate)`. `sample-variant` carries no loop. |
 | `sample-variant` | `id, codec, hash, bytes` | A lazily built `wav` variant is ready. |
-| `sample-drop` | `id` | `unregister_sample`. |
+| `sample-drop` | `id` | `unregister_sample`. While voices retain the sample, defer the drop until immediately after the last voice’s `stop`, including for snapshot recipients; an unannounced sample gets no drop. |
 | `start` | `voice, sample, bus, offset_s, pitch, volumes: [8 floats]` | `start_sample_playback` (the web driver's argument set, `audio_driver_web.cpp:274-299`). `bus` is an integer index; volumes are four linear stereo pairs (L,R × 4 channels). |
 | `stop` | `voice, reason: "stop"\|"end"` | Exactly one per `start` or snapshot voice. |
 | `pause` | `voice, paused` | `set_sample_playback_pause`. |
@@ -175,7 +175,7 @@ not soloed or muted. New buses take these default fields.
 | `remove` | Index | Absent. |
 | `move` | From-index | To-index (int). |
 | `send` | Index | Destination index (int; -1 = none). |
-| `volume_db` | Index | Number. |
+| `volume_db` | Index | Number. Non-finite Godot gains use finite float32 bounds: −∞ and NaN become −3.40282347e38 (exact silence after dB→linear), and +∞ becomes 3.40282347e38. |
 | `solo` | Index | Bool. |
 | `mute` | Index | Bool. |
 

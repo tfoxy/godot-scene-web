@@ -2,6 +2,9 @@ set(GRC_CAPTURE_SOURCES
   src/audio_driver_probe.cpp
   src/audio_driver_hook.cpp
   src/audio_driver_log.cpp
+  src/audio_driver_sample_test.cpp
+  src/audio_driver_sample.cpp
+  src/audio_driver_assets.cpp
   src/rs_platform_posix.cpp
   src/calib.cpp
   src/calib_fingerprint_posix.cpp
@@ -35,6 +38,7 @@ set(GRC_CAPTURE_SOURCES
   src/rs_hints.cpp
   src/rs_audio_link.cpp
   src/rs_audio_cue.cpp
+  src/rs_audio_slab.cpp src/rs_audio_assets.cpp
   src/rs_audio_hub.cpp
   src/rs_audio_sender.cpp
   src/rs_audio_wire.cpp

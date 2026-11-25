@@ -381,5 +381,46 @@ int main() {
     c.release.set_value();
     check(detached.get()==1 && c.thread!=std::this_thread::get_id(),"detach returns after callback on rs-audio");
   }
+  {
+    // A real Godot source must share connection lifecycle with cues and the host link.
+    auto &slab = a::godot_slab(); slab.arm();
+    a::SampleState sample; sample.key = 701; sample.ready = true;
+    sample.hash.fill('a'); sample.hash[64] = 0;
+    slab.sample(sample, 10);
+    a::VoiceState voice; voice.key = 702; voice.volumes.fill(1);
+    slab.start(voice, sample.key, 11);
+    Fake t; a::Hub hub({}, t, false, false, false);
+    cue.groups(nullptr, 0, 1);
+    const grc_audio_gain gain{"Music", 5, 0.5f};
+    cue.groups(&gain, 1, 1);
+    Host host; host.attach(); hub.drain_cues(); input(hello());
+    hub.sender().add(71); hub.ready(71); hub.opened(71); hub.sender().frame();
+    bool combined = false;
+    for (const auto &m : t.messages) if (m.conn == 71 && !m.text.empty()) {
+      j::JValue state;
+      if (!j::Reader(m.text).parse(&state) || !state.get("type") || state.get("type")->text != "audio-state") continue;
+      const auto *godot = state.get("godot"), *fmod = state.get("fmod");
+      combined = godot && godot->get("voices")->items.size() == 1 &&
+          fmod && fmod->get("groups") && fmod->get("groups")->get("Music") &&
+          fmod->get("lanes")->items.size() == 2;
+    }
+    check(combined && t.texts(71, "audio-state") == 1 && t.texts(71, "sample") == 1,
+        "Godot join includes live voice/sample with FMOD groups/lanes in one snapshot");
+    check(cue.active() == 1 && cue.cue(1, id, key.data(), key.size(), "SFX", 3, 123, 1, 1) == 1,
+        "Godot connection activates cue producer");
+    hub.drain_cues(); hub.sender().frame();
+    check(t.texts(71, "cue") == 1 && host.count(5) == 1 &&
+        hub.message(71, "{\"type\":\"lanes\",\"ids\":[1]}"),
+        "Godot connection retains cue relay and lane subscription");
+    hub.drain_cues();
+    check(host.messages.back().type == 6 && host.messages.back().lane_mask == 2,
+        "Godot connection forwards lane subscription to host");
+    slab.stop(voice.key, 12); slab.drop(sample.key, 13); hub.sender().frame();
+    check(t.texts(71, "stop") == 1 && t.texts(71, "sample-drop") == 1,
+        "Godot stop and sample-drop survive the shared hub");
+    hub.removed(71); hub.drain_cues();
+    check(cue.active() == 0 && host.messages.back().lane_mask == 0,
+        "last Godot connection deactivates cues and host lanes");
+  }
   std::printf("rs_audio_link: %u passed, %u failed\n",checks-failures,failures); return failures?1:0;
 }

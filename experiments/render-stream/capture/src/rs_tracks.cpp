@@ -92,6 +92,7 @@ bool formats_valid(const std::vector<std::string> &formats, bool allow_empty) {
 
 // The parsed hello (Q1.2).
 struct Hello {
+  unsigned audio_codecs = 1;
   std::string kind;
   std::vector<std::string> formats;
   std::vector<std::string> down_formats;
@@ -141,6 +142,8 @@ bool parse_hello(const std::string &text, bool audio, Hello *out, std::string *d
               [](const JValue &x) { return x.text == "pcm16"; })) {
         *detail = "audio"; return false;
       }
+      out->audio_codecs = 0;
+      for (const auto &codec : samples->items) out->audio_codecs |= codec.text == "wav" ? 1u : codec.text == "mp3" ? 2u : codec.text == "ogg-vorbis" ? 4u : 0u;
     }
   }
   if (!format_list(root.get("formats"), false, &out->formats)) {
@@ -448,6 +451,7 @@ class TrackHub::AudioReceiver final : public TrackReceiver {
 TrackHub::TrackHub(TrackConfig config, rs2::LiveTransport &transport, Log log)
     : config_(std::move(config)), transport_(transport), log_(std::move(log)) {
   for (const std::string &kind : config_.kinds) kinds_[kind];
+  if (kinds_.count(kKindAudio) && config_.audio.godot_sample && audio::godot_slab().available()) config_.audio_source_armed = true;
   if (kinds_.count(kKindAudio)) audio_ = std::make_unique<audio::Hub>(config_.audio, transport_, config_.audio_synthetic_demo, config_.audio_source_armed);
   if (kinds_.count(kKindAudio) && config_.audio_source_armed) {
     audio_receiver_ = std::make_unique<AudioReceiver>();
@@ -749,7 +753,7 @@ void TrackHub::on_hello(Conn &c, const std::string &text, std::uint64_t now_ns) 
        (c.info.subject.empty() ? std::string() : " subject=" + c.info.subject));
   // Q4: opened() only after track-ready was queued.
   const TrackInfo info = c.info;
-  if (c.audio) { audio_->opened(c.conn); audio_drain(); }
+  if (c.audio) { audio_->opened(c.conn, hello.audio_codecs); audio_drain(); }
   receiver->opened(info);
 }
 
