@@ -1279,6 +1279,12 @@ void test_audio_handshake() {
   dormant.text(1, text, kS);
   check(refused(dormant, 1, 1013, "track-no-receiver", ""), "audio needs an armed source");
   check(!dormant.hub->bind("audio", &dormant.r, &error) && error == "track-kind-bound", "audio script bind reserved even dormant");
+  grc_audio_cue_v1 cue_api{};
+  check(grc_audio_cue_get_v1(&cue_api) == 1, "audio producer discovers cue ABI");
+  dormant.open(2, kS, tr::kAudioSubprotocolV1);
+  dormant.text(2, text, kS);
+  check(dormant.hub->open_tracks() == 1, "attached cue producer arms the audio receiver without Godot");
+  dormant.hub->close_all(1001, "stream-ended");
   config.audio_source_armed = true;
   H armed(config);
   armed.open(1, kS, tr::kAudioSubprotocolV1);

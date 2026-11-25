@@ -390,7 +390,7 @@ endif()
 # close_all -- plus the four test-only sabotages, each of which must fail its check.
 # Linux-only: POSIX socket helpers and source-tree golden data.
 if(NOT GRC_WINDOWS)
-add_executable(rs_track_test test/rs_track_test.cpp src/rs_audio_hub.cpp src/rs_audio_sender.cpp src/rs_audio_wire.cpp src/rs_tracks.cpp src/rs_track_caps.cpp src/rs_ws.cpp
+add_executable(rs_track_test test/rs_track_test.cpp src/rs_audio_link.cpp src/rs_audio_cue.cpp src/rs_audio_hub.cpp src/rs_audio_sender.cpp src/rs_audio_wire.cpp src/rs_tracks.cpp src/rs_track_caps.cpp src/rs_ws.cpp
   src/rs_sha1.cpp src/rs_sha256.cpp src/report.cpp)
 target_include_directories(rs_track_test PRIVATE src)
 # TRK5: the capability golden vectors, shared with scripts/test/self-test-track-caps.ts.
@@ -596,6 +596,7 @@ endif()
 if(NOT GRC_WINDOWS)
 add_executable(rs_live_host
   test/rs_live_host.cpp
+  test/rs_audio_reference.cpp
   src/rs2_codec.cpp
   src/rs2_diff.cpp
   src/rs_canvas_texture_shim.cpp
@@ -615,13 +616,14 @@ add_executable(rs_live_host
   src/rs_expose.cpp
   src/rs_net_module.cpp
   test/rs_mem_carrier.cpp
-  src/rs_audio_hub.cpp
+  src/rs_audio_link.cpp src/rs_audio_cue.cpp src/rs_audio_hub.cpp
   src/rs_audio_sender.cpp
   src/rs_audio_wire.cpp
   src/rs_tracks.cpp
   src/rs_track_caps.cpp
   src/rs_sha256.cpp
 )
+target_compile_definitions(rs_live_host PRIVATE GRC_AUDIO_LINK_TESTING=1)
 target_include_directories(rs_live_host PRIVATE src test)
 target_link_libraries(rs_live_host PRIVATE grc_warnings grc_codecs grc_platform Threads::Threads ${CMAKE_DL_LIBS})
 # CAR6: export grc_carrier_register from the executable, so the host registers its in-memory
@@ -1179,11 +1181,24 @@ target_link_libraries(rs_tweens_gd_test PRIVATE grc_warnings)
 grc_add_test(NAME rs_tweens_gd COMMAND rs_tweens_gd_test)
 
 # Audio sender scheduling and capture-owned state, with a deterministic transport clock.
-add_executable(rs_audio_test test/rs_audio_test.cpp src/rs_audio_hub.cpp src/rs_audio_sender.cpp
+add_executable(rs_audio_test test/rs_audio_test.cpp src/rs_audio_link.cpp src/rs_audio_cue.cpp src/rs_audio_hub.cpp src/rs_audio_sender.cpp
   src/rs_audio_wire.cpp src/rs_sha256.cpp src/report.cpp)
 target_include_directories(rs_audio_test PRIVATE src)
 target_link_libraries(rs_audio_test PRIVATE grc_warnings grc_platform Threads::Threads)
 grc_add_test(NAME rs_audio COMMAND rs_audio_test)
+
+add_executable(rs_audio_cue_test test/rs_audio_cue_test.cpp src/rs_audio_link.cpp src/rs_audio_cue.cpp
+  src/rs_audio_hub.cpp src/rs_audio_sender.cpp src/rs_audio_wire.cpp src/rs_sha256.cpp src/report.cpp)
+target_include_directories(rs_audio_cue_test PRIVATE src)
+target_link_libraries(rs_audio_cue_test PRIVATE grc_warnings grc_platform Threads::Threads)
+grc_add_test(NAME rs_audio_cue COMMAND rs_audio_cue_test)
+
+add_executable(rs_audio_link_test test/rs_audio_link_test.cpp src/rs_audio_link.cpp src/rs_audio_cue.cpp
+  src/rs_audio_hub.cpp src/rs_audio_sender.cpp src/rs_audio_wire.cpp src/rs_sha256.cpp src/report.cpp)
+target_include_directories(rs_audio_link_test PRIVATE src)
+target_compile_definitions(rs_audio_link_test PRIVATE GRC_AUDIO_LINK_TESTING=1)
+target_link_libraries(rs_audio_link_test PRIVATE grc_warnings grc_platform Threads::Threads)
+grc_add_test(NAME rs_audio_link COMMAND rs_audio_link_test)
 
 # Collect the Windows manifest after every test target and golden definition exists.
 if(NOT GRC_WINDOWS)

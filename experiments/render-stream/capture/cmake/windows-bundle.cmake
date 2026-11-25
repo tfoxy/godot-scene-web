@@ -97,7 +97,7 @@ foreach(target IN LISTS file_targets)
   string(JSON files_json SET "${files_json}" ${n} "{\"path\":${path_json},\"why\":${why_json}}")
 endforeach()
 file(GENERATE OUTPUT ${CMAKE_BINARY_DIR}/w-capture-manifest.json CONTENT
-  "{\"schema\":\"render-stream-w-manifest/1\",\"tests\":[${tests_json}],\"imports_only\":[{\"exe\":\"bin/$<TARGET_FILE_NAME:render_stream_capture>\",\"expect_exports\":[\"grc_library_init\",\"grc_carrier_register\"]}],\"sabotage\":[{\"exe\":\"sabotage/$<TARGET_FILE_NAME:w_imports_sabotage_dynamic>\",\"expect_disallowed\":[\"libc++.dll\"]}],\"data\":${data_json},\"files\":${files_json}}\n")
+  "{\"schema\":\"render-stream-w-manifest/1\",\"tests\":[${tests_json}],\"imports_only\":[{\"exe\":\"bin/$<TARGET_FILE_NAME:render_stream_capture>\",\"expect_exports\":[\"grc_library_init\",\"grc_carrier_register\",\"grc_audio_cue_get_v1\",\"grc_audio_link_attach_v1\",\"grc_audio_link_in\"]}],\"sabotage\":[{\"exe\":\"sabotage/$<TARGET_FILE_NAME:w_imports_sabotage_dynamic>\",\"expect_disallowed\":[\"libc++.dll\"]}],\"data\":${data_json},\"files\":${files_json}}\n")
 
 add_custom_target(rs_net ALL
   COMMAND bash ${CMAKE_CURRENT_LIST_DIR}/../../scripts/build-rs-net.sh --target windows

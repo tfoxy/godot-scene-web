@@ -700,6 +700,10 @@ void TrackHub::on_hello(Conn &c, const std::string &text, std::uint64_t now_ns) 
     }
   }
   // 4. A receiver for the kind.
+  if (c.audio && audio_->cue_source() && !audio_receiver_) {
+    audio_receiver_ = std::make_unique<AudioReceiver>();
+    receivers_[kKindAudio] = audio_receiver_.get();
+  }
   const auto bound = receivers_.find(hello.kind);
   if (bound == receivers_.end() || bound->second == nullptr) {
     refuse(c, 1013, "track-no-receiver", std::string());
@@ -730,7 +734,7 @@ void TrackHub::on_hello(Conn &c, const std::string &text, std::uint64_t now_ns) 
       ",\"rate\":{\"messages_per_second\":" + std::to_string(config_.rate_per_s) +
       ",\"burst\":" + std::to_string(config_.burst) + "}" +
       (c.audio ? ",\"audio\":{\"clock_us\":" + std::to_string(now_ns_ / 1000) +
-          audio_->ready() : "") + "}";
+          audio_->ready(c.conn) : "") + "}";
   text_out(c, ready);
   c.tap_second_ns = c.last_rx_ns;
   tap(c, "{\"event\":\"ready\",\"source\":" + std::to_string(c.info.source) + ",\"format\":" +

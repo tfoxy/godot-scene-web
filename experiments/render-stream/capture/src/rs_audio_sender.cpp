@@ -30,7 +30,7 @@ void Sender::add(std::uint32_t conn, std::string carrier) {
   auto &c = conns_[conn];
   c.carrier = std::move(carrier);
   c.threaded = media_ && media_->media_threaded(conn);
-  if (automatic_ && c.threaded && !thread_.joinable()) thread_ = std::thread([this] { run(); });
+  if (automatic_ && !thread_.joinable()) thread_ = std::thread([this] { run(); });
 }
 void Sender::remove(std::uint32_t conn) {
   std::lock_guard lock(mu_);
@@ -67,13 +67,15 @@ bool Sender::block(std::uint32_t conn, Block block, std::string after, std::uint
   cv_.notify_all();
   return true;
 }
-void Sender::close(std::uint32_t conn, std::uint16_t code, std::string reason) {
+void Sender::close(std::uint32_t conn, std::uint16_t code, std::string reason, bool resync) {
   {
     std::lock_guard lock(mu_);
     auto it = conns_.find(conn);
     if (it == conns_.end() || it->second.closing) return;
     auto &c = it->second;
     c.closing = true;
+    // A resync close supersedes unsent state, including expired controls.
+    if (resync) c.queues[0].clear();
     c.queues[1].clear(); c.queues[2].clear();
     Message m; m.close_code = code; m.text = std::move(reason); m.enqueued_us = now_us();
     c.queues[0].push_back(std::move(m));
@@ -97,7 +99,7 @@ void Sender::pump(bool threaded, std::uint64_t supplied_us) {
       bool stalled = false;
       for (unsigned priority = 0; priority < 2; ++priority) {
         const auto &q = c.queues[priority];
-        if (!q.empty() && at_us > q.front().enqueued_us + config_.stall_ms * 1000ull) stalled = true;
+        if (!q.empty() && !q.front().close_code && at_us > q.front().enqueued_us + config_.stall_ms * 1000ull) stalled = true;
       }
       if (stalled) { ++c.stats.stalls; finish(conn, c, 1001, "audio-stalled"); continue; }
       auto &lanes = c.queues[2];
@@ -196,6 +198,14 @@ std::map<std::uint32_t, Sender::Evidence> Sender::evidence() const {
   for (const auto &[id, c] : conns_) out[id] = {c.stats, c.carrier, c.threaded, c.closing};
   return out;
 }
+void Sender::source(std::function<void()> drain) {
+  std::lock_guard lock(mu_); drain_ = std::move(drain);
+}
+void Sender::wake_source() {
+  { std::lock_guard lock(mu_); source_pending_.store(true, std::memory_order_relaxed);
+    if (automatic_ && !stopping_ && !thread_.joinable()) thread_ = std::thread([this] { run(); }); }
+  cv_.notify_all();
+}
 void Sender::run() {
   rs::set_current_thread_name("rs-audio");
   std::unique_lock lock(mu_);
@@ -205,11 +215,17 @@ void Sender::run() {
       (void)id;
       if (c.threaded) for (const auto &q : c.queues) pending |= !q.empty();
     }
-    if (stopping_) { lock.unlock(); pump(true, 0); return; }
-    if (pending) cv_.wait_for(lock, std::chrono::milliseconds(1));
-    else cv_.wait(lock);
-    lock.unlock(); pump(true, 0); lock.lock();
-    if (stopping_) break;
+    if (!stopping_ && !source_pending_.load(std::memory_order_relaxed)) {
+      if (pending) cv_.wait_for(lock, std::chrono::milliseconds(1));
+      else cv_.wait(lock);
+    }
+    const bool stop = stopping_;
+    const bool drain = source_pending_.exchange(false, std::memory_order_relaxed);
+    lock.unlock();
+    if (drain && drain_) drain_();
+    pump(true, 0);
+    if (stop) return;
+    lock.lock();
   }
 }
 }  // namespace grc::audio

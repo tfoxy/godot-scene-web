@@ -151,9 +151,16 @@ std::string canonical_key(std::string_view path, std::vector<std::pair<std::stri
 }
 std::string key_id(std::string_view key) {
   check(!key.empty() && key.size() <= 512); only_space(key);
+  const auto digest = key_digest(key);
+  return hex(Bytes(digest.begin(), digest.end()));
+}
+std::array<std::uint8_t, 16> key_digest(std::string_view key) {
   grc::Sha256 hash; const std::uint8_t schema = 1;
   hash.update(&schema, 1); hash.update(key.data(), key.size());
-  return grc::sha256_hex(hash.finish()).substr(0, 32);
+  const auto full = hash.finish();
+  std::array<std::uint8_t, 16> digest;
+  std::copy_n(full.begin(), digest.size(), digest.begin());
+  return digest;
 }
 Block decode_block(const Bytes &b, BlockContext context) {
   check(b.size() >= 48); Reader r{b};

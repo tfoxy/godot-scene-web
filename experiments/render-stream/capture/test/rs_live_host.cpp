@@ -1,3 +1,4 @@
+#include "rs_audio_reference.h"
 // Test-only live host for the Node interop self-test (scripts/test/self-test-rs-ws.ts).
 // Not linked into render_stream_capture. It wires the production
 // pieces exactly as entry.cpp does -- grc::live::Server (rs_ws) with both subprotocols and the
@@ -24,6 +25,8 @@
 //                     benchmark summaries also write PATH.timeline.jsonl once per second
 //   --audio           arm an empty synthetic audio source (grants audio when --tracks is absent)
 //   --audio-demo      arm synthetic samples, voice/cue/take events and a subscribed lane
+//   --audio-link      synthetic host through a queued in-process grc-audio-link/1
+//   --audio-link-relay-to-all test-only sabotage of per-client take routing
 //   --port=N          0 (default) binds an ephemeral port
 //   --token=VALUE     a bearer session: VALUE is required on /6 upgrades and on GETs, and in a
 //                     /7 hello's `token`
@@ -34,7 +37,7 @@
 //                     loads the net module (--net-module=PATH, else beside this binary) and
 //                     binds UDP --wt-port=N (default 0, ephemeral) with a self-signed certificate
 //   --tap-dir=DIR     the hub's tap (rs_live.h LiveConfig::tap_dir; absolute)
-//   --audio-commands=FILE with --audio-demo: appended start/stop/pair/cue lines drive the source
+//   --audio-commands=FILE with --audio-demo: start/stop/pair/cue; --audio-link: cue/link-down
 //   --evidence-dir=DIR where wt writes live-cert-sha256, and live-carriers.json at stop
 //   every other name in --carriers is an in-memory
 //   consumer carrier (rs_mem_carrier.h) registered through grc_carrier_register, found with
@@ -326,7 +329,7 @@ int main(int argc, char **argv) {
   std::string track_kinds_text;
   bool tracks_flag = false;
   bool audio_source = false;
-  bool audio_demo = false;
+  bool audio_demo = false, audio_link = false, audio_relay_to_all = false;
   std::string audio_commands;
   std::size_t audio_command_count = 0;
   std::uint32_t audio_voice = 0;
@@ -409,6 +412,10 @@ int main(int argc, char **argv) {
       track_down_formats = v;
     } else if (const char *v = value_of("--audio-commands")) {
       audio_commands = v;
+    } else if (arg == "--audio-link") {
+      audio_link = true;
+    } else if (arg == "--audio-link-relay-to-all") {
+      audio_relay_to_all = true;
     } else if (arg == "--audio-demo") {
       audio_demo = true;
       audio_source = true;
@@ -517,7 +524,7 @@ int main(int argc, char **argv) {
     const char *env = std::getenv("GRC_LIVE_TRACKS");
     if (env) { track_kinds_text = env; tracks_flag = true; }
   }
-  if (audio_source && !tracks_flag) { tracks_flag = true; track_kinds_text = "audio"; }
+  if ((audio_source || audio_link) && !tracks_flag) { tracks_flag = true; track_kinds_text = "audio"; }
   if (tracks_flag) {
     std::string why;
     if (!grc::rs::tracks::parse_kinds(track_kinds_text.c_str(), &track_config.kinds, &why)) {
@@ -533,8 +540,11 @@ int main(int argc, char **argv) {
   }
   track_config.audio_source_armed = audio_source;
   track_config.audio_synthetic_demo = audio_demo;
-  if (!audio_commands.empty() && (!audio_demo || !audio_granted)) {
-    std::fprintf(stderr, "rs_live_host: --audio-commands needs --audio-demo and the audio grant\n"); return 2;
+  if ((audio_link && (audio_demo || !audio_granted)) || (audio_relay_to_all && !audio_link)) {
+    std::fprintf(stderr, "rs_live_host: --audio-link needs its own audio grant/source\n"); return 2;
+  }
+  if (!audio_commands.empty() && ((!audio_demo && !audio_link) || !audio_granted)) {
+    std::fprintf(stderr, "rs_live_host: --audio-commands needs --audio-demo or --audio-link and the audio grant\n"); return 2;
   }
   const bool tracks_on = !track_config.kinds.empty();
   if (is_track_sabotage && !tracks_on) {
@@ -830,6 +840,7 @@ int main(int argc, char **argv) {
   if (!track_down_formats.empty()) receiver_down = split_commas(track_down_formats);
   RecordingReceiver receiver(split_commas(track_formats), receiver_down, track_file);
   std::unique_ptr<grc::rs::tracks::TrackHub> tracks;
+  std::unique_ptr<grc::audio::ReferenceLink> reference_link;
   const auto write_tracks_json = [&]() {
     if (tracks == nullptr) return;
     grc::rs::tracks::TrackHub::Extras extras;
@@ -873,6 +884,10 @@ int main(int argc, char **argv) {
         }
       }
       receiver.set_hub(tracks.get(), track_echo);
+    }
+    if (audio_link) {
+      if (audio_relay_to_all) tracks->audio_hub()->test_relay_to_all();
+      reference_link = std::make_unique<grc::audio::ReferenceLink>();
     }
     write_tracks_json();
   }
@@ -969,7 +984,10 @@ int main(int argc, char **argv) {
       while (std::getline(input, command)) {
         if (++line <= audio_command_count) continue;
         auto *audio = tracks->audio_hub();
-        if (command == "start") audio_voice = audio->start(1);
+        if (reference_link && command == "cue") reference_link->cue();
+        else if (reference_link && command == "link-down") reference_link->disconnect();
+        else if (reference_link) { std::fprintf(stderr, "rs_live_host: invalid link command\n"); g_stop = 1; break; }
+        else if (command == "start") audio_voice = audio->start(1);
         else if (command == "stop") { audio->stop(audio_voice); audio_voice = 0; }
         else if (command == "cue") audio->synthetic_cue();
         else if (command == "pair") { const auto voice = audio->start(1); audio->stop(voice); }
@@ -1032,6 +1050,7 @@ int main(int argc, char **argv) {
   drain();
   hub.close_open(frame);
   if (tracks != nullptr) tracks->close_all(1001, "stream-ended");
+  reference_link.reset();
   if (tracks != nullptr) tracks->stop_audio();
   transport.stop();
   if (tracks != nullptr) {

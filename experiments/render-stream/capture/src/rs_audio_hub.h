@@ -2,15 +2,17 @@
 #ifndef GRC_RS_AUDIO_HUB_H
 #define GRC_RS_AUDIO_HUB_H
 #include "rs_audio_sender.h"
+#include "rs_audio_cue.h"
+#include "rs_audio_link.h"
 #include <set>
 namespace grc::audio {
 class Hub {
  public:
-  Hub(Config config, rs2::LiveTransport &transport, bool synthetic_demo = false, bool source_armed = false);
+  Hub(Config config, rs2::LiveTransport &transport, bool synthetic_demo = false, bool source_armed = false, bool automatic = true);
   ~Hub();
   static Bytes synthetic_wav();
   Sender &sender() { return sender_; }
-  std::string ready() const;
+  std::string ready(std::uint32_t conn = 0);
   void opened(std::uint32_t conn);
   void removed(std::uint32_t conn);
   bool message(std::uint32_t conn, const std::string &text);
@@ -24,13 +26,22 @@ class Hub {
   void asset_served(const std::string &hash, const std::string &codec, std::uint64_t bytes);
   std::string json() const;
   void synthetic_cue();
+  // Sender worker callback; deterministic tests may drain with automatic=false.
+  void drain_cues();
+#if defined(GRC_AUDIO_LINK_TESTING)
+  std::function<void()> test_before_snapshot;
+  void test_relay_to_all() { link_.test_relay_to_all(); }
+#endif
+  bool cue_source() const { return cue_attached(); }
  private:
-  struct Connection { std::set<std::string> have; bool have_reset = false; std::uint16_t lanes = 0; };
+  struct Connection { std::set<std::string> have; std::string have_bank; bool have_reset = false; std::uint16_t lanes = 0; };
   static std::string event(std::string type, std::string members, std::uint64_t at_us = 0);
   void broadcast(const std::string &text);
   void demo(std::uint32_t conn);
   void media_clock();
+  CueIngress &cues_;
   Sender sender_;
+  Link link_;
   bool demo_, source_armed_, godot_sample_, stopping_ = false;
   mutable std::mutex mu_;
   std::condition_variable cv_;

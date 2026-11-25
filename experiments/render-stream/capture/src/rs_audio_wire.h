@@ -2,6 +2,7 @@
 #ifndef GRC_RS_AUDIO_WIRE_H
 #define GRC_RS_AUDIO_WIRE_H
 #include <cstdint>
+#include <array>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -16,6 +17,8 @@ std::string float_r(float value);
 std::string canonical_key(std::string_view path,
     std::vector<std::pair<std::string, float>> params = {});
 std::string key_id(std::string_view canonical);
+// Raw key ID digest prefix; caller validates the key (empty is loop-stop-all only).
+std::array<std::uint8_t, 16> key_digest(std::string_view canonical);
 struct BlockHeader {
   std::uint8_t kind = 1, flags = 0, lane = 0, codec = 0, channels = 2;
   std::uint32_t stream = 1, block = 0, rate = 48000;

@@ -20,9 +20,11 @@ bool hex_id(const JValue *v) {
   return true;
 }
 }
-Hub::Hub(Config config, rs2::LiveTransport &transport, bool synthetic_demo, bool source_armed)
-    : sender_(config, transport), demo_(synthetic_demo), source_armed_(source_armed || synthetic_demo),
+Hub::Hub(Config config, rs2::LiveTransport &transport, bool synthetic_demo, bool source_armed, bool automatic)
+    : cues_(grant_cues()), sender_(config, transport, automatic), link_(sender_), demo_(synthetic_demo), source_armed_(source_armed || synthetic_demo),
       godot_sample_(config.godot_sample) {
+  sender_.source([this] { drain_cues(); });
+  cues_.bind(&sender_, [](void *self) { static_cast<Sender *>(self)->wake_source(); });
   if (demo_) {
     const auto wav = synthetic_wav();
     sample(",\"variants\":[{\"codec\":\"wav\",\"hash\":\"" + sha256_hex(wav.data(), wav.size()) +
@@ -33,6 +35,8 @@ Hub::Hub(Config config, rs2::LiveTransport &transport, bool synthetic_demo, bool
 }
 Hub::~Hub() { shutdown(); }
 void Hub::shutdown() {
+  link_.shutdown();
+  cues_.unbind();
   { std::lock_guard lock(mu_); stopping_ = true; }
   cv_.notify_all();
   if (clock_.joinable()) clock_.join();
@@ -41,26 +45,34 @@ void Hub::shutdown() {
 std::string Hub::event(std::string type, std::string members, std::uint64_t at_us) {
   return "{\"type\":" + json_quoted(type) + ",\"t\":" + std::to_string(at_us ? at_us : now_us()) + members + "}";
 }
-std::string Hub::ready() const {
+std::string Hub::ready(std::uint32_t conn) {
+  std::lock_guard lock(mu_);
   return ",\"rate\":48000,\"lane_block_frames\":512,\"codec\":\"pcm16\",\"godot\":true,\"fmod\":" +
-      std::string(demo_ ? "true" : "false") + ",\"lanes\":[" + (demo_ ? lane : "") + "]}";
+      std::string(demo_ || cue_attached() ? "true" : "false") + ",\"lanes\":[" + (demo_ ? lane : link_.advertise(conn)) + "]}";
 }
 void Hub::opened(std::uint32_t conn) {
   std::lock_guard lock(mu_);
   conns_[conn];
+  link_.groups(cues_.group_snapshot());
+  cues_.connections(true);
   std::string voices;
   for (const auto &[id, text] : voices_) {
     (void)id;
     if (!voices.empty()) voices += ',';
     voices += text.substr(0, text.size() - 1) + ",\"position_s\":0,\"paused\":false}";
   }
-  sender_.text(conn, event("audio-state", ",\"godot\":{\"buses\":[],\"voices\":[" + voices + "]},\"fmod\":" +
-      (demo_ ? std::string("{\"bankset\":\"") + bankset + "\",\"groups\":{\"SFX\":1},\"lanes\":[" + lane + "]}" : "null")), true);
+  link_.opened(conn, [&](const std::string &bank, const std::string &lanes) {
+#if defined(GRC_AUDIO_LINK_TESTING)
+    if (test_before_snapshot) test_before_snapshot();
+#endif
+    sender_.text(conn, event("audio-state", ",\"godot\":{\"buses\":[],\"voices\":[" + voices + "]},\"fmod\":" +
+        (demo_ || cue_attached() ? fmod_snapshot(demo_ ? bankset : bank, cues_.group_snapshot(), demo_ ? lane : lanes) : "null")), true);
+  });
   for (const auto &[id, text] : samples_) { (void)id; sender_.text(conn, text, true); }
   if (demo_) demo(conn);
 }
 void Hub::removed(std::uint32_t conn) {
-  { std::lock_guard lock(mu_); conns_.erase(conn); }
+  { std::lock_guard lock(mu_); conns_.erase(conn); link_.removed(conn); if (conns_.empty()) cues_.connections(false); }
   sender_.remove(conn); cv_.notify_all();
 }
 void Hub::broadcast(const std::string &text) {
@@ -121,12 +133,13 @@ bool Hub::message(std::uint32_t conn, const std::string &text) {
     auto *bank = root.get("bankset"), *ids = root.get("key_ids"), *reset = root.get("reset");
     if (!hex_id(bank) || !ids || ids->kind != JValue::Array || ids->items.size() > 100 ||
         !reset || reset->kind != JValue::Bool || (!c.have_reset && !reset->b)) return false;
-    auto have = reset->b ? std::set<std::string>{} : c.have;
+    auto have = reset->b || c.have_bank != bank->text ? std::set<std::string>{} : c.have;
     for (const auto &id : ids->items) { if (!hex_id(&id)) return false; have.insert(id.text); }
     if (have.size() > 4096) return false;
-    c.have_reset = true;
+    c.have_reset = true; c.have_bank = bank->text;
     // A cache for a different bankset never suppresses a take from this source.
-    c.have = bank->text == bankset ? std::move(have) : std::set<std::string>{};
+    c.have = bank->text == (demo_ ? bankset : link_.bankset()) ? std::move(have) : std::set<std::string>{};
+    link_.have(conn, bank->text, c.have);
     return true;
   }
   if (type->text == "lanes") {
@@ -137,9 +150,10 @@ bool Hub::message(std::uint32_t conn, const std::string &text) {
       if (id.kind != JValue::Number || id.text.empty() || id.text.size() > 2 || id.text[0] == '0') return false;
       unsigned n = 0;
       for (char ch : id.text) { if (ch < '0' || ch > '9') return false; n = n * 10 + ch - '0'; }
-      if (n < 1 || n > 15 || (mask & (1u << n)) || !demo_ || n != 1) return false;
+      if (n < 1 || n > 15 || (mask & (1u << n)) || (demo_ && n != 1)) return false;
       mask |= 1u << n;
     }
+    if (!demo_) return link_.lanes(conn, mask);
     c.lanes = mask;
     sender_.text(conn, event("lanes", ",\"lanes\":[" + (demo_ ? std::string("{\"id\":1,\"name\":\"synthetic\",\"group\":\"SFX\",\"state\":\"") + (mask ? "on" : "off") + "\"}" : "") + "]"), true);
     cv_.notify_all(); return true;
@@ -202,10 +216,11 @@ std::string Hub::json() const {
   j.key("godot").object_begin();
   j.field("state", std::string(source_armed_ ? "synthetic" : godot_sample_ ? "unavailable" : "off"));
   j.key("unsampled").unsigned_integer(0).object_end();
-  j.key("cue").object_begin().field("attached", false);
-  j.key("ring_high_water").unsigned_integer(0).object_end();
-  j.key("link").object_begin().field("state", std::string("detached"));
-  j.field_null("clock_domain").field_null("bankset").object_end();
+  j.key("cue").object_begin().field("attached", cue_attached());
+  j.key("ring_high_water").unsigned_integer(cues_.high_water());
+  j.key("groups_full").unsigned_integer(cues_.groups_full());
+  j.key("groups_refused").unsigned_integer(cues_.groups_refused()).object_end();
+  j.key("link"); link_.evidence(j);
   std::map<std::string, std::string> paths;
   for (const auto &[id, c] : connections) { (void)id; paths[c.carrier] = c.threaded ? "thread" : "frame"; }
   j.key("send_path").object_begin();
@@ -241,6 +256,21 @@ std::string Hub::json() const {
   }
   j.array_end().object_end();
   return j.take();
+}
+void Hub::drain_cues() {
+  std::lock_guard lock(mu_);
+  if (cues_.overflow()) {
+    for (const auto &[conn, c] : conns_) {
+      (void)c; sender_.close(conn, 1013, "audio-overflow", true);
+    }
+  }
+  CueRecord record;
+  for (std::size_t n = 0; n < cue_ring_slots && cues_.pop(record); ++n) {
+    broadcast(cue_text(record));
+    if (record.kind) link_.cue(record);
+    else link_.groups(cues_.group_snapshot());
+  }
+  link_.drain();
 }
 void Hub::media_clock() {
   rs::set_current_thread_name("rs-audio-clock");

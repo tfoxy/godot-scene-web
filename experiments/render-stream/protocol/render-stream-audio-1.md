@@ -296,6 +296,24 @@ messages.
 Link down, hello mismatch or clock-domain mismatch disables FMOD for that seat:
 `take-unavailable` reason `link-down` and lanes `unavailable`. Godot continues.
 
+The clock domain is 16 raw bytes, encoded as follows:
+
+- Linux: `/proc/sys/kernel/random/boot_id`, with UUID separators removed.
+- macOS: the first 16 bytes of SHA-256(`"grc-clock-boot-1\0darwin\0"` followed by
+  `u64le(kern.boottime.tv_sec)`).
+- Windows: the first 16 bytes of SHA-256(`"grc-clock-boot-1\0windows\0"` followed by
+  `u64le(BootTime / 10000000)`). `BootTime` comes from
+  `NtQuerySystemInformation(SystemTimeOfDayInformation)` in 100 ns ticks since 1601.
+- Other platforms or a failed read: all zeros. Zero on either side is a mismatch.
+
+The seat fixes each take's relay set at `take-start`. A late connection lacking the key joins a
+pending set and receives no part of that take. After `take-ready` or `take-unavailable`, the seat
+requests one new complete take for the pending set. Closing removes a connection from every set;
+new `have` messages suppress delivery to warmed connections. The seat does not buffer whole takes.
+Lane names are diagnostic: the seat truncates them at a UTF-8 code point boundary so their
+JSON-escaped content is at most 128 bytes. Group names are identity keys and must be at most 64
+printable ASCII bytes, excluding `"` and `\`.
+
 ## Canonical keys and keyIds
 
 With no params the canonical key is the path. Otherwise it is path + `|` +

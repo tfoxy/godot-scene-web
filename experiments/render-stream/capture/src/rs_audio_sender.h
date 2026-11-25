@@ -5,6 +5,8 @@
 #include "rs_audio_wire.h"
 #include "rs_live.h"
 #include <array>
+#include <atomic>
+#include <functional>
 #include <condition_variable>
 #include <deque>
 #include <map>
@@ -38,8 +40,11 @@ class Sender {
   bool text(std::uint32_t conn, std::string text, bool stamp = false,
             std::uint64_t at_us = 0);
   bool block(std::uint32_t conn, Block block, std::string after = {}, std::uint64_t at_us = 0);
-  void close(std::uint32_t conn, std::uint16_t code, std::string reason);
+  void close(std::uint32_t conn, std::uint16_t code, std::string reason, bool resync = false);
   void shutdown();
+  // Drains capture-owned producer ingress on rs-audio, including legacy carriers.
+  void source(std::function<void()> drain);
+  void wake_source();
   void frame();
   void pump(bool threaded, std::uint64_t at_us);
   std::vector<Close> take_closes();
@@ -71,6 +76,8 @@ class Sender {
   std::vector<Close> closes_;
   std::map<std::uint32_t, Evidence> retired_;
   std::thread thread_;
+  std::function<void()> drain_;
+  std::atomic<bool> source_pending_{false};
 };
 }  // namespace grc::audio
 #endif
