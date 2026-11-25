@@ -1910,12 +1910,13 @@ func _ready_live() -> void:
 		_fail(null, "shot-unavailable", "shot windows were requested, but the display server is headless")
 		return
 
-	DirAccess.make_dir_recursive_absolute(_received_path.get_base_dir())
 	_received_stored = 0
-	_received_file = FileAccess.open(_received_path, FileAccess.WRITE)
-	if _received_file == null:
-		_fail(null, "received-unwritable", "cannot write %s: %s" % [_received_path, error_string(FileAccess.get_open_error())])
-		return
+	if _received_cap != 0:
+		DirAccess.make_dir_recursive_absolute(_received_path.get_base_dir())
+		_received_file = FileAccess.open(_received_path, FileAccess.WRITE)
+		if _received_file == null:
+			_fail(null, "received-unwritable", "cannot write %s: %s" % [_received_path, error_string(FileAccess.get_open_error())])
+			return
 	_new_applier()
 	if _perf != null:
 		_perf.enable_render_time_measurement(get_viewport().get_viewport_rid())
@@ -2259,13 +2260,14 @@ func _begin_loss_reconnect(code: int, reason: String) -> void:
 ## made (dispose), and open connection 2 with a new received file and a new decoder stream; its
 ## first message is a fresh session.
 func _start_next_connection() -> void:
-	_received_file.flush()
-	_received_file.close()
-	_received_file = null
+	if _received_file != null:
+		_received_file.flush()
+		_received_file.close()
+		_received_file = null
 	# G6s (live-buffer trim): `_data` no longer holds the whole connection; `_received_path` is
 	# its exact byte-for-byte mirror (every message was store_buffer()+flush()ed as it arrived),
 	# so the final sha256 is read back from disk once here rather than carried in memory.
-	_stream_report["received_sha256"] = RsWire.sha256_hex(FileAccess.get_file_as_bytes(_received_path))
+	_stream_report["received_sha256"] = _received_sha256()
 	_stream_report["received_bytes"] = _data_received_bytes
 	var owned_before: int = _applier.owned_rids()
 	var freed: int = _applier.dispose()
@@ -2286,10 +2288,11 @@ func _start_next_connection() -> void:
 	_conn_index += 1
 	_received_path = "%s-%d.%s" % [_received_base.get_basename(), _conn_index, _received_base.get_extension()]
 	_received_stored = 0
-	_received_file = FileAccess.open(_received_path, FileAccess.WRITE)
-	if _received_file == null:
-		_fail(null, "received-unwritable", "cannot write %s: %s" % [_received_path, error_string(FileAccess.get_open_error())])
-		return
+	if _received_cap != 0:
+		_received_file = FileAccess.open(_received_path, FileAccess.WRITE)
+		if _received_file == null:
+			_fail(null, "received-unwritable", "cannot write %s: %s" % [_received_path, error_string(FileAccess.get_open_error())])
+			return
 	_data = PackedByteArray()
 	_data_received_bytes = 0
 	_inline_since_applied = 0
@@ -2427,7 +2430,7 @@ func _receive_binary(message: PackedByteArray) -> void:
 	var now_us: int = Time.get_ticks_usec()
 	var offset: int = _data.size()
 	_data.append_array(message)
-	if _received_cap < 0 or _received_stored + message.size() <= _received_cap:
+	if _received_file != null and (_received_cap < 0 or _received_stored + message.size() <= _received_cap):
 		_received_file.store_buffer(message)
 		_received_file.flush()
 		_received_stored += message.size()
@@ -3278,6 +3281,13 @@ func _fail(seq: Variant, reason: String, detail: String) -> void:
 	_quit(EXIT_REPLAY_FAILURE)
 
 
+## A disabled mirror retains its report path but has no file to hash or upload.
+func _received_sha256() -> String:
+	if _received_cap == 0:
+		return "".sha256_text()
+	return RsWire.sha256_hex(FileAccess.get_file_as_bytes(_received_path))
+
+
 func _write_report() -> void:
 	_flush_digests()
 	if _cache_report != null and _cache.dir != "":
@@ -3319,7 +3329,7 @@ func _write_report() -> void:
 		# G6s (live-buffer trim): `_data` only ever holds the message in flight; `_received_path`
 		# is its exact byte-for-byte mirror, so the whole connection's sha256 is read back from
 		# disk once here instead of carried in memory.
-		var sha256: String = RsWire.sha256_hex(FileAccess.get_file_as_bytes(_received_path))
+		var sha256: String = _received_sha256()
 		_stream_report["received_sha256"] = sha256
 		_stream_report["received_bytes"] = _data_received_bytes
 		_report["recording"] = {"path": _received_path, "sha256": sha256, "bytes": _data_received_bytes}
