@@ -81,6 +81,8 @@ var results: Array[Dictionary] = []
 var error: String = ""
 
 var _client: HTTPClient = null
+## HTTPClientWeb delegates chunk framing to the browser (injected by framing selftests).
+var _httpclient_web: bool = RsConfig.is_web()
 ## G7wf: the browser fetch path (web only) and its JavaScriptBridge objects.
 var web_fetch: bool = false
 var _js: JavaScriptObject = null
@@ -394,9 +396,10 @@ func _read_body(status: HTTPClient.Status) -> void:
 	var data: PackedByteArray = _current["data"]
 	var body_length: int = _current["body_length"]
 	var chunked: bool = _current["chunked"]
-	# EOF completes only an unframed body. A declared length or chunked terminator must finish
-	# before the socket closes; otherwise a truncated payload must never enter the cache.
-	if (body_length >= 0 and data.size() != body_length) or (chunked and status == HTTPClient.STATUS_DISCONNECTED):
+	# HTTPClientTCP reaches CONNECTED after a chunked terminator; early EOF is truncation.
+	# HTTPClientWeb delegates framing to the browser and ends complete chunked bodies at EOF.
+	# A declared length must still match on either platform.
+	if (body_length >= 0 and data.size() != body_length) or (not _httpclient_web and chunked and status == HTTPClient.STATUS_DISCONNECTED):
 		_fail("GET %s%s: truncated response body (%d bytes, Content-Length %d, chunked %s)" % [path_prefix, _current["hash"], data.size(), body_length, chunked])
 		return
 	_current["bytes"] = data.size()

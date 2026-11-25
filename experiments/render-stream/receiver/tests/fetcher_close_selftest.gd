@@ -80,7 +80,36 @@ func _check(label: String, ok: bool, detail: String = "") -> void:
 		print("[fetcher-close-selftest] FAIL: %s %s" % [label, detail])
 
 
+## HTTPClientWeb ends even complete chunked bodies in DISCONNECTED. Inject that platform
+## and terminal state without a browser; the socket cases below exercise HTTPClientTCP.
+func _check_disconnected_body() -> void:
+	for web: bool in [false, true]:
+		for framing: String in ["chunked", "length", "truncated-length"]:
+			var label: String = ("web " if web else "native ") + framing
+			# Delay issuing so the test supplies the completed response without opening a socket.
+			var fetcher := RsResourceFetcher.new("127.0.0.1", 0, "/resources/sha256/", 5000, 10000)
+			fetcher._httpclient_web = web
+			fetcher.start(["a".repeat(64)])
+			fetcher._phase = "body"
+			fetcher._current["status"] = 200
+			fetcher._current["data"] = _body
+			fetcher._current["chunked"] = framing == "chunked"
+			fetcher._current["body_length"] = -1 if framing == "chunked" else _body.size() + (1 if framing == "truncated-length" else 0)
+			fetcher._read_body(HTTPClient.STATUS_DISCONNECTED)
+			var truncated: bool = framing == "truncated-length" or (framing == "chunked" and not web)
+			_check(label + " completes queue", fetcher.done() and fetcher.results.size() == 1)
+			if truncated:
+				_check(label + " refuses truncation", fetcher.error.begins_with("resource-unavailable") and fetcher.error.contains("truncated response body"), fetcher.error)
+			else:
+				_check(label + " succeeds", fetcher.error == "", fetcher.error)
+				for row: Dictionary in fetcher.results:
+					var exact: bool = row["error"] == "" and row["data"] == _body and row["bytes"] == _body.size()
+					_check(label + " exact body", exact)
+			fetcher.cancel()
+
+
 func _run() -> void:
+	_check_disconnected_body()
 	for mode: String in ["length", "chunked", "gzip", "empty", "eof", "truncated", "truncated-chunked", "keep-alive"]:
 		_mode = mode
 		_served = 0
