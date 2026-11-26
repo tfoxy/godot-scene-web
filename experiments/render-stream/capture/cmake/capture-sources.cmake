@@ -17,6 +17,9 @@ set(GRC_CAPTURE_SOURCES
   src/rs_adopt.cpp
   src/rs_basis_encode.cpp
   src/rs_texture_basis.cpp
+  src/rs_canvas_texture_derive.cpp
+  src/rs_canvas_texture_resolver.cpp
+  src/rs_canvas_texture_resolver_gd.cpp
   src/rs_canvas_texture_shim.cpp
   src/rs_carrier_ext.cpp
   src/rs_capture_gd.cpp

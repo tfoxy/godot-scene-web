@@ -21,6 +21,7 @@
 #include "rs_item_meta.h"
 #include "rs_mirror.h"
 #include "rs_registry.h"
+#include "rs_canvas_texture_resolver.h"
 #include "rs_texture_release.h"
 #include "rs_rid_map.h"
 #include "rs_shader_payload.h"
@@ -2085,6 +2086,27 @@ bool adopt_canvas_texture_locked_out(std::uint64_t rid) {
   return adopt_canvas_texture_resource(canvas, rid);
 }
 
+// Renderer storage is consulted only for a first reference to an unknown RID. The resolver
+// caches bindings until the next arm or detach; channel images follow the normal adoption path.
+bool adopt_canvas_texture_resolved(std::uint64_t rid) {
+  CanvasTextureChannels c;
+  if (!canvas_texture_resolve(rid, &c)) return false;
+  materialize_texture(c.diffuse);
+  materialize_texture(c.normal);
+  materialize_texture(c.specular);
+  // A pending channel is a dependency, not a refusal. Retry the wrapper through the same
+  // frame drain so its original draw can recover after all channel textures are known.
+  if (stage_pending(c.diffuse) || stage_pending(c.normal) || stage_pending(c.specular)) {
+    // Setters cannot update a wrapper until it is known. Re-read storage on the retry so a
+    // channel or sampling change during these frame drains survives adoption.
+    canvas_texture_resolver_forget(rid);
+    stage_queue(rid);
+    return false;
+  }
+  if (!mirror_instance().knows_texture(c.diffuse) || is_refused(c.diffuse)) return false;
+  return hooks_adopt_canvas_texture(rid, c.diffuse, c.normal, c.specular, c.filter, c.repeat);
+}
+
 // LAR1 (design R4, M8 generalized): a registered CanvasTexture -- one whose canvas_texture_create
 // the hooks saw, before or after the arm -- adopted from the registry's recorded channels, filter
 // and repeat, its channel textures first. No getter runs on the CanvasTexture RID itself (it has
@@ -2359,13 +2381,12 @@ void adopt_texture_locked_out(std::uint64_t rid) {
   void *creation_image = held ? const_cast<void *>(hold.image.get()) :
       reload_source ? reload_source->object() : creation.object();
   if (creation_image == nullptr) {
-    // No image (design Q3's residual): a CanvasTexture created before the extension loaded, which
-    // only a cached `.tres` (PM9, the census) can describe. Anything else -- a runtime-built
-    // CanvasTexture the hooks never saw (a load-late arm, F1), a placeholder, a proxy -- is
-    // refused, typed `no-image`. RT-CTX's node read (M7) is gone: the registry covers every
-    // CanvasTexture created under the hooks, and load-late is not a fidelity target (F1).
+    // A pre-load CanvasTexture has no image getter. Try the cached Resource census, then the
+    // opt-in exact-build storage resolver. Unvalidated layouts, placeholders and unresolved
+    // channel bindings retain the existing no-image refusal.
     auto record = refusal_record(rid, "no-image");
-    const bool adopted_canvas = main && adopt_canvas_texture_locked_out(rid);
+    const bool adopted_canvas = main &&
+        (adopt_canvas_texture_locked_out(rid) || adopt_canvas_texture_resolved(rid));
     if (stage_pending(rid)) return;
     std::lock_guard<std::mutex> lock(g_res_mutex);
     if (adopted_canvas) {

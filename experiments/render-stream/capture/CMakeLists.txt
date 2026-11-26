@@ -90,6 +90,26 @@ else()
   grc_linux_only("rs_audio_wire_test" "Windows omits source-tree goldens.")
 endif()
 
+add_executable(rs_canvas_texture_derive_test test/rs_canvas_texture_derive_test.cpp
+  src/rs_canvas_texture_derive.cpp)
+target_include_directories(rs_canvas_texture_derive_test PRIVATE src)
+target_link_libraries(rs_canvas_texture_derive_test PRIVATE grc_warnings)
+if(GRC_MACOS)
+  set_target_properties(rs_canvas_texture_derive_test PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+  grc_sign_macho(rs_canvas_texture_derive_test)
+endif()
+grc_add_test(NAME rs_canvas_texture_derive COMMAND rs_canvas_texture_derive_test)
+
+add_executable(rs_canvas_texture_resolver_test test/rs_canvas_texture_resolver_test.cpp
+  src/rs_canvas_texture_resolver.cpp src/report.cpp)
+target_include_directories(rs_canvas_texture_resolver_test PRIVATE src)
+target_link_libraries(rs_canvas_texture_resolver_test PRIVATE grc_warnings grc_platform)
+if(GRC_MACOS)
+  set_target_properties(rs_canvas_texture_resolver_test PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+  grc_sign_macho(rs_canvas_texture_resolver_test)
+endif()
+grc_add_test(NAME rs_canvas_texture_resolver COMMAND rs_canvas_texture_resolver_test)
+
 if(GRC_MACOS)
   enable_testing()
   grc_macos_engine_free_tests()
@@ -873,6 +893,7 @@ grc_add_test(NAME rs_texture_worker COMMAND rs_texture_worker_test)
 # G8r: adopted textures and meshes equal created ones but for origin and adopted_content, the
 # refinement to current, the hook log's adopt lines, GRC_ADOPT_FAULT parsing.
 add_executable(rs_adopt_test test/rs_adopt_test.cpp src/rs_adopt.cpp src/rs_reload.cpp src/rs_warm.cpp src/iface.cpp
+  src/rs_canvas_texture_derive.cpp src/rs_canvas_texture_resolver.cpp src/rs_canvas_texture_resolver_gd.cpp
   src/rs_mirror.cpp src/rs_texture_delivery.cpp src/rs_shader_payload.cpp src/rs_texture_payload.cpp src/rs_mesh_payload.cpp
   src/rs_sha256.cpp src/rs2_diff.cpp src/rs_resource_log.cpp src/rs_texture_worker.cpp
   src/rs2_codec.cpp src/rs_variant.cpp src/rs_registry.cpp src/rs_evict.cpp

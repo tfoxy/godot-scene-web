@@ -211,6 +211,44 @@ one set. Entries live in the main checkout's ignored `artifacts/render-stream/so
 `RS_SOURCE_CACHE=0` bypasses it; `source-cache.sh list` and `source-cache.sh prune [--keep N |
 --keep-days N]` manage it (`GSW_SOURCE_CACHE_KEEP`, default 3 keys).
 
+## Late-load CanvasTextures
+
+`GRC_CANVAS_TEXTURE_RESOLVE=1` enables adoption of CanvasTextures created before the capture
+loads. The reusable capture library leaves this off by default; couch enables it in its
+capture environment. No resolver work runs before attach, and resolution uses the existing
+adoption budget and cache.
+
+On Linux x86-64 Godot/MegaDot 4.5.1 builds, the resolver can derive the storage location from
+the calibrated RenderingServer implementation. It requires the supported instruction forms,
+main-image ranges, backend RTTI, typed owner layout and an attach-time sentinel check to agree.
+An exact `canvas_texture_storage` calibration record takes precedence. Unexpected code, layout
+or self-check results leave the existing `no-image` refusal, with a counted
+`canvas-texture-unresolved:<reason>` in `canvas-texture-resolver.json`.
+
+Before any resolved channel enters readback, RenderingDevice backends require a live RD texture
+with `texture_type == TEXTURE_TYPE_2D`. Other dimensions refuse `not-2d`; an unavailable or
+failed type query refuses `type-unknown`. GLES3 has no public type getter, so `gl_compatibility`
+refuses `gles-untyped` without reading channel images. These checks apply to resolver-discovered
+channels; the general adoption path is unchanged.
+
+Windows and macOS currently refuse `platform-unrecorded` without speculative memory reads,
+even with the switch enabled. They need independently validated instruction profiles and heap
+readers before resolution can run. macOS GLES3 validation does not establish Metal support.
+
+Run the late-load proof without an exact storage record:
+
+```bash
+flock --close /tmp/gsw-rendered-probe.lock bash experiments/render-stream/scripts/probe-canvas-textures.sh \
+  --derived --renderer forward_plus --correctness-only --out .local/canvas-textures-vulkan
+```
+
+Use `--renderer gl_compatibility` to prove the GLES3 refusal, `--negative-control` for the disabled path, or
+`--bad-derivation-control` to mutate a local instruction copy and assert refusal before any
+storage/owner read. `--calibration FILE` selects exact-record validation instead of `--derived`;
+`--bad-record-control` expects a sentinel mismatch from an intentionally incorrect layout.
+Omit `--correctness-only` only for a real-time timing run after checking load and quiet-lock
+status; raw resolve counters in a correctness run are not timing evidence.
+
 ## Common environment
 
 Most runs need none of these; runners set what their legs need.

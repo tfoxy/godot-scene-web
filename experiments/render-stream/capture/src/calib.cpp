@@ -478,6 +478,19 @@ bool load_calibration(const std::string &path, Calibration *out, std::string *er
         *error = "malformed anchors: " + parser.error();
         return false;
       }
+    } else if (key == "canvas_texture_storage") {
+      if (!parser.parse_object_begin()) {
+        *error = "canvas_texture_storage is not an object"; return false;
+      }
+      std::string sub;
+      while (parser.next_key(&sub)) {
+        int64_t value = 0;
+        if (!parser.read_integer(&value) || value < 0) {
+          *error = "canvas_texture_storage." + sub + " is not an unsigned integer";
+          return false;
+        }
+        out->canvas_texture_storage.emplace_back(sub, value);
+      }
     } else if (key == "calibrator") {
       // {"version": "<int>", ...}: only the version is read (the session's
       // capture.calibrator_version); every other key is skipped.

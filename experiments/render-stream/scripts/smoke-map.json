@@ -775,6 +775,15 @@
       "exclusive": true
     },
     {
+      "why": "Opt-in pre-load CanvasTexture proof: retain conservative full reach for its fixture, runner and checker",
+      "paths": [
+        "experiments/render-stream/fixtures/canvas-texture-resolve/probe.gd",
+        "experiments/render-stream/scripts/probe-canvas-textures.sh",
+        "experiments/render-stream/scripts/lib/check-canvas-textures.py"
+      ],
+      "reach": ["*"]
+    },
+    {
       "why": "capture library, calibration, toolchain and lockfiles: every leg of every gate",
       "paths": [
         "experiments/render-stream/capture/**",

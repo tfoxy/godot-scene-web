@@ -51,6 +51,8 @@ struct Calibration {
 
   std::vector<std::pair<std::string, int64_t>> slots;
   std::vector<std::pair<std::string, int64_t>> anchors;
+  // Optional exact-build renderer-storage layout. Never inferred from RS topology.
+  std::vector<std::pair<std::string, int64_t>> canvas_texture_storage;
 
   // -1 when the record does not name the slot.
   int64_t slot(const std::string &name) const;

@@ -217,6 +217,7 @@
 #include "rs_canvas_texture_shim.h"
 #include "rs_particles_shim.h"
 #include "rs_registry.h"
+#include "rs_canvas_texture_resolver.h"
 #include "rs_gate8_policy.h"
 #include "rs_texture_basis.h"
 #include "rs_texture_delivery.h"
@@ -3438,6 +3439,7 @@ void stream_start() {
     // G8r (D6, D7): lazy resource adoption is on from the walk to the stream's end; the walk's
     // redraws (this iteration's flush) are the first hooked calls to name pre-arm resources.
     // LAR2: a headless display server runs the dummy RenderingServer (multimesh rules, O3).
+    rs::canvas_texture_resolver_arm_begin();
     rs::adopt_resources_begin(g_stream.adopt_fault, g_state.display_server == "headless");
     // G8m (D11, D12): materials and shaders resolve after the hook log opens (below) and at every
     // frame boundary; the two Q5 sabotages act there.
@@ -4493,6 +4495,7 @@ bool stream_finish_main(rs2::EndReason reason) {
     rs::adopt_warm_finish();
     emit("warm.json", rs::adopt_warm_json(g_rearm.arm_index, g_state.frames_total));
     emit("refusals.json", rs::adopt_refusals_json(g_rearm.arm_index, g_state.frames_total));
+    emit("canvas-texture-resolver.json", rs::canvas_texture_resolver_json());
   }
   rs::mirror_enable(false);
   if (rs::adopt_resources_active()) {
@@ -5509,6 +5512,7 @@ void api_arm_rollback(const std::string &reason) {
       rs::adopt_warm_finish();
       emit("warm.json", rs::adopt_warm_json(g_rearm.arm_index, g_state.frames_total));
       emit("refusals.json", rs::adopt_refusals_json(g_rearm.arm_index, g_state.frames_total));
+      emit("canvas-texture-resolver.json", rs::canvas_texture_resolver_json());
       rs::adopt_reload_finish();
       emit("reload.json", rs::adopt_reload_json(g_rearm.arm_index, g_state.frames_total));
       rs::adopt_resources_end();
@@ -6087,6 +6091,10 @@ bool attempt(const char *phase) {
                   ? std::string(", fault ") + rs::standby_fault_name(g_state.standby_fault)
                   : std::string()) +
              ")");
+  }
+  if (g_state.mode != "detached" && !g_state.preserve_lean) {
+    rs::canvas_texture_resolver_attach(g_state.calib, g_state.fp);
+    emit("canvas-texture-resolver.json", rs::canvas_texture_resolver_json());
   }
   if (g_state.mode == "standby" || g_state.mode == "detached") {
     // LS1: loaded, the standby table published, nothing streaming; LS2's arm() leaves this state.
@@ -6966,6 +6974,7 @@ bool attachment_detach_free() {
   api_teardown_finish_blocking();
   stream_finish(rs2::EndReason::Disarm);
   rs::adopt_materials_attachment_end();
+  rs::canvas_texture_resolver_detach();
   rs::adopt_warm_cancel();
   rs::texture_worker_pool().stop();
   encoders_finish();
@@ -7063,6 +7072,8 @@ bool attachment_attach() {
     return false;
   }
   hooks_attachment_open();
+  rs::canvas_texture_resolver_attach(g_state.calib, g_state.fp);
+  emit("canvas-texture-resolver.json", rs::canvas_texture_resolver_json());
   attachment_callbacks(true);
   return true;
 }
