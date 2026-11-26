@@ -41,6 +41,9 @@ GS_LAST_GODOT_PID=""
 GS_WIDTH=""
 GS_HEIGHT=""
 GS_DISPLAY_MODE="${RS_DISPLAY_MODE:-gamescope}"
+# the process whose death ends every compositor gs_start starts: by default the runner that sourced
+# this file. A caller may set it to a longer-lived owner before gs_start.
+GS_OWNER_PID="${GS_OWNER_PID:-$$}"
 # what gs_is_ours requires in the compositor's cmdline: the display server this mode starts
 GS_PROC_PATTERN=gamescope
 [ "$GS_DISPLAY_MODE" = xvfb-llvmpipe ] && GS_PROC_PATTERN=Xvfb
@@ -84,6 +87,20 @@ gs_is_ours() {
 	return 0
 }
 
+# Dies if run_dir already records a compositor that is still alive. Starting another one there would
+# overwrite its pid/ticks files, leaving the first with no record for gs_teardown to find. A stale
+# record (process gone or pid reused) is simply overwritten.
+gs_refuse_live_record() {
+	local run_dir="$1" pid ticks
+	[ -f "$run_dir/gamescope.pid" ] || return 0
+	pid="$(cat "$run_dir/gamescope.pid" 2>/dev/null || true)"
+	ticks="$(cat "$run_dir/gamescope.start-ticks" 2>/dev/null || true)"
+	[ -n "$pid" ] && [ -n "$ticks" ] || return 0
+	if gs_is_ours "$pid" "$ticks"; then
+		gs_die "$run_dir already records live compositor pid $pid; tear it down (gs_teardown) or use another run dir"
+	fi
+}
+
 gs_require_live() {
 	local pid="${1:-$GS_PID}" ticks="${2:-$GS_START_TICKS}"
 	if ! gs_is_ours "$pid" "$ticks"; then
@@ -115,6 +132,7 @@ gs_start() {
 	esac
 
 	command -v gamescope >/dev/null 2>&1 || gs_die "gamescope is not installed"
+	gs_refuse_live_record "$run_dir"
 
 	# THE WAYLAND TRAP (same one qa-recipes.md and bring-up-gamescope-instance.sh document): with
 	# an inherited WAYLAND_DISPLAY, a client's display auto-detection can sail past this private
@@ -124,11 +142,18 @@ gs_start() {
 	# gamescope 3.16 segfaults in its own exit path after SIGTERM (right after "Primary child shut
 	# down!"); harmless, so the subshell only stops it writing a core file each run. `exec` keeps
 	# $! the compositor's own pid.
+	#
+	# LIFETIME: the compositor never outlives GS_OWNER_PID. Its primary child is a watchdog that
+	# exits when the owner does, and gamescope shuts itself down when its primary child exits. An
+	# EXIT trap alone is not enough: setsid puts gamescope outside the runner's process group, so a
+	# harness that kills the group (timeout, agent teardown, session exit) misses it, and SIGKILL
+	# never runs the trap. Each headless compositor burns a CPU share even with no client.
 	(
 		ulimit -c 0
 		exec env -u DISPLAY -u WAYLAND_DISPLAY XDG_SESSION_TYPE=x11 \
 			setsid gamescope --backend headless -W "$width" -H "$height" -w "$width" -h "$height" \
-			-- sh -c 'echo "GAMESCOPE_CHILD_DISPLAY=$DISPLAY"; sleep infinity'
+			-- sh -c 'echo "GAMESCOPE_CHILD_DISPLAY=$DISPLAY"; exec tail --pid="$1" -f /dev/null' \
+			gs-owner "$GS_OWNER_PID"
 	) >"$GS_LOG" 2>&1 &
 	GS_PID=$!
 	echo "$GS_PID" >"$run_dir/gamescope.pid"
@@ -163,6 +188,7 @@ gs_start() {
   "sid": "$GS_SID",
   "display": "$GS_DISPLAY",
   "vulkanDevice": $([ -n "$GS_VULKAN_DEVICE" ] && echo "\"$GS_VULKAN_DEVICE\"" || echo null),
+  "ownerPid": $GS_OWNER_PID,
   "width": $width,
   "height": $height,
   "backend": "headless",
@@ -175,7 +201,8 @@ JSON
 # gs_start's CI-only branch (RS_DISPLAY_MODE=xvfb-llvmpipe): Xvfb in its own setsid session, its
 # display number chosen by Xvfb itself (-displayfd), never a desktop display. Sets the same globals
 # and writes the same gamescope.json (backend "xvfb", no Vulkan device), so the ownership proof and
-# the teardown work unchanged on it.
+# the teardown work unchanged on it. Xvfb has no child program to carry gs_start's owner watchdog;
+# this branch runs only on ephemeral GitHub-hosted runners, where nothing outlives the job.
 gs_start_xvfb() {
 	local width="$1" height="$2" run_dir="$3"
 	if [ "${GITHUB_ACTIONS:-}" != true ] || [ "${RUNNER_ENVIRONMENT:-}" != github-hosted ]; then

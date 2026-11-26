@@ -69,6 +69,7 @@ NAMES+=("self-test-capture-memory-report")
 CMDS+=("python3 '$SCRIPT_DIR/lib/test-capture-memory-report.py'")
 # GRT2b and GRT4a pure bash self-tests: stub launches, a private lock dir, a private source cache.
 # self-test-socket-owners.sh is not here, because its old-scan half walks every /proc fd (~1 min).
+# self-test-gamescope-owner.sh is not here either: it starts real gamescope compositors on the GPU.
 for b in self-test-par-legs.sh self-test-fast-frames.sh self-test-free-port.sh self-test-validate-tier.sh self-test-source-cache.sh self-test-bench-instr.sh \
 	self-test-bench-capture-scale.sh self-test-bench-live-scale.sh self-test-wire-budget.sh self-test-calibrate.sh self-test-gate6-calibration.sh self-test-stress-policy.sh; do
 	NAMES+=("${b%.sh}")
