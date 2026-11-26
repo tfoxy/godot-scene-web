@@ -33,7 +33,7 @@ def offline(root, index):
     print(f"offline round {index}: listener refused, 0 capture threads, library mapped")
 
 
-def check(root):
+def check(root, rearm=False):
     (root / "resident-result.json").unlink(missing_ok=True)
     rows = [json.loads(line) for line in (root / "detached-samples.jsonl").read_text().splitlines()]
     results = []
@@ -119,11 +119,11 @@ def check(root):
                 f"round {index} frame callback counter not live")
         # The browser's own GPU readback, not a screenshot of an empty page.
         image = Image.open(root / f"browser-{index}/shots/final.png").convert("RGBA")
-        require(image.size == (640, 360), f"round {index} browser dimensions {image.size}")
+        require(image.size == ((800, 360) if rearm and index == 1 else (640, 360)), f"round {index} browser dimensions {image.size}")
         native = Image.open(root / f"native-{index}.png").convert("RGBA")
         require(native.size == image.size and native.tobytes() == image.tobytes(),
                 f"round {index} browser differs from native")
-        stable = image.copy()
+        stable = image.crop((0, 0, 640, 360))
         stable.paste((0, 0, 0, 0), (400, 100, 464, 164))
         if first is None:
             first = stable
@@ -139,6 +139,16 @@ def check(root):
         require(len(samples) >= 121, f"round {index}: fewer than 120 busy detached frames")
         require(all(b["frame"] == a["frame"] + 1 for a, b in zip(samples, samples[1:])), f"round {index} sample gaps")
         require(all(b["t_us"] > a["t_us"] for a, b in zip(samples, samples[1:])), f"round {index} clock did not advance")
+        if rearm and index == 0:
+            require(all(r["state"]["attachment_state"] == "attached"
+                        and r["state"]["table"] == "standby" for r in samples),
+                    "re-arm interval detached instead of staying attached")
+            require(all(not r["state"]["hub_active"] and not r["state"]["listener_active"]
+                        and not r["state"]["texture_workers_running"] for r in samples),
+                    "re-arm interval retained active stream workers")
+            results.append({"round": index, "standby_frames": len(samples) - 1,
+                            "transactions": len(report["transactions"])})
+            continue
         delta = detached(samples, f"round {index}")
         offline_state = load(root / f"offline-{index}.json")
         require(offline_state["connect_errno"] == errno.ECONNREFUSED,
@@ -147,7 +157,7 @@ def check(root):
         results.append({"round": index, "detached_frames": len(samples) - 1,
                         "hook_method_deltas": delta, "frame_callbacks_per_frame": 0,
                         "transactions": len(report["transactions"]), "new_content_rgba": color})
-    result = {"status": "pass", "checks": checks, "cycles": 2, "streams": 3, "initial_hook_method_deltas": initial_delta, "rounds": results}
+    result = {"status": "pass", "checks": checks, "cycles": 1 if rearm else 2, "rearms": 1 if rearm else 0, "streams": 3, "initial_hook_method_deltas": initial_delta, "rounds": results}
     (root / "resident-result.json").write_text(json.dumps(result, indent=2) + "\n")
     print(json.dumps(result))
 
@@ -157,7 +167,7 @@ if __name__ == "__main__":
         if sys.argv[1] == "--offline":
             offline(Path(sys.argv[2]), int(sys.argv[3]))
         else:
-            check(Path(sys.argv[1]))
+            check(Path(sys.argv[1]), "--rearm" in sys.argv[2:])
     except (AssertionError, KeyError, OSError, ValueError) as error:
         print(f"FAIL: {error}", file=sys.stderr)
         sys.exit(1)

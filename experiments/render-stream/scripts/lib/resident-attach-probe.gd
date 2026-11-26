@@ -6,6 +6,7 @@ var _out: String
 var _frame: int = 0
 var _round: int = 0
 var _phase: String = "loading"
+var _rearm_probe: bool = false
 var _since: int = 0
 var _image: Image
 var _texture: ImageTexture
@@ -21,6 +22,7 @@ var _lean_ct: RID
 
 func _ready() -> void:
 	_out = OS.get_environment("RS_RESIDENT_OUT")
+	_rearm_probe = OS.get_environment("RS_RESIDENT_REARM") == "1"
 	_image = Image.create(128, 128, false, Image.FORMAT_RGBA8)
 	_texture = ImageTexture.create_from_image(_image)
 	_canvas = Node2D.new()
@@ -82,7 +84,15 @@ func _make_marker() -> void:
 
 func _arm() -> void:
 	_phase = "arming"
-	_invoke("arm", {"GRC_LIVE_AWAIT_HELLO_MS": 120000})
+	var options := {"GRC_LIVE_AWAIT_HELLO_MS": 120000}
+	if _rearm_probe:
+		var shape := Vector2i(800, 360) if _round == 1 else Vector2i(640, 360)
+		get_window().content_scale_size = shape
+		get_window().size = shape
+		options["GRC_ROOT_SIZE"] = "observe"
+		# Let the window resize reach the viewport before arm samples its presentation facts.
+		await get_tree().process_frame
+	_invoke("arm", options)
 
 
 func _armed(info: Dictionary) -> void:
@@ -130,7 +140,7 @@ func _process(_delta: float) -> void:
 		_phase = "disarming"
 		_invoke("disarm", {"linger_ms": 0})
 	elif _phase == "detach-next-process":
-		if OS.get_environment("RS_RESIDENT_SKIP_DETACH") != "1":
+		if OS.get_environment("RS_RESIDENT_SKIP_DETACH") != "1" and not (_rearm_probe and _round == 0):
 			_invoke("detach", {})
 		_phase = "detached"
 		_since = _frame
@@ -148,7 +158,8 @@ func _process(_delta: float) -> void:
 				return
 			_round += 1
 			_make_marker()
-			_invoke("attach", {})
+			if not (_rearm_probe and _round == 1):
+				_invoke("attach", {})
 			_arm()
 	if _frame > 18000:
 		_check(false, "fixture deadline: " + _phase)

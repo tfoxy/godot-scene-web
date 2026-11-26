@@ -2,6 +2,9 @@ extends "res://resident_probe.gd"
 ## Draw getter-backed payloads and lean descriptors created while capture is detached.
 
 var _large_textures: Array[ImageTexture] = []
+var _cached_textures: Array[Texture2D] = []
+var _late_sprite: Sprite2D
+var _late_drawn: bool = false
 var _frame_trace: Array[Dictionary] = []
 var _previous_tick_us: int = 0
 
@@ -16,6 +19,9 @@ var _proxy_switched: bool = false
 
 
 func _load_lean() -> void:
+	# Load before the extension, outside both its registry and mirror. Keep 184 textures undrawn.
+	for index in range(226):
+		_cached_textures.append(load("res://rearm-textures/texture-%03d.ctex" % index))
 	super._load_lean()
 	_make_resources()
 
@@ -30,17 +36,22 @@ func _process(delta: float) -> void:
 		_attached_size_texture = _size_texture()
 		_write("size-attached.json", {"round": _round, "state": _api.call("state")})
 		_content.queue_redraw()
-	# Switch on the first connected host tick, after arm-time adoption. Waiting a fixed number
-	# of host ticks races the receiver's wall-clock stop under load; adoption/update order is
-	# checked separately in the resource log.
+	# The receiver's first GPU readback proves publication; a connected client alone can still
+	# be waiting for staged adoption. Keep the proxy change after that first snapshot.
 	var state: Dictionary = _api.call("state") if is_instance_valid(_api) else {}
 	var clients: int = state.get("clients", 0)
-	if _phase == "streaming" and not _proxy_switched and clients > 0:
+	if _phase == "streaming" and not _proxy_switched and clients > 0 and FileAccess.file_exists(_out.path_join("browser-%d/shots/seq-1.png" % _round)):
 		_proxy_client_frames += 1
 		if _proxy_client_frames == 1:
 			RenderingServer.texture_proxy_update(_proxy, _proxy_frames[2].get_rid())
 			_proxy_switched = true
 			_write("proxy-updates.jsonl", {"round": _round, "frame": _frame})
+	# Introduce a preloaded texture on the first host tick after the receiver draws its first snapshot.
+	if _phase == "streaming" and not _late_drawn and FileAccess.file_exists(_out.path_join("browser-%d/shots/seq-1.png" % _round)):
+		_late_sprite.texture = _cached_textures[41]
+		_late_drawn = true
+		_write("post-publish.jsonl", {"round": _round, "frame": _frame,
+			"rid": _cached_textures[41].get_rid().get_id(), "t_us": tick_us})
 	super._process(delta)
 	# Leave a full detached interval for the one-shot to finish inside the renderer.
 	if _phase == "detached" and _frame == _since:
@@ -55,8 +66,11 @@ func _process(delta: float) -> void:
 			status = DirAccess.copy_absolute(OS.get_environment("GRC_EVIDENCE_DIR").path_join(filename),
 				_out.path_join("%d-%s" % [_round, filename]))
 			_check(status == OK, "save per-arm identity: " + filename)
-		if _round < 2:
-			_make_resources()
+		_late_drawn = false
+		_late_sprite.texture = null
+		_proxy_switched = false
+		_proxy_client_frames = 0
+		RenderingServer.texture_proxy_update(_proxy, _proxy_frames[1].get_rid())
 
 
 func _make_resources() -> void:
@@ -83,6 +97,15 @@ func _make_resources() -> void:
 		if _attached_size_texture != null:
 			_content.draw_texture_rect_region(_attached_size_texture, Rect2(460, 40, 16, 16), Rect2(0, 0, 8, 8)))
 	_canvas.add_child(_content)
+	for index in range(41):
+		var cached_sprite := Sprite2D.new()
+		cached_sprite.texture = _cached_textures[index]
+		cached_sprite.position = Vector2(12 + (index % 21) * 12, 320 + (index / 21) * 12)
+		_content.add_child(cached_sprite)
+	_late_sprite = Sprite2D.new()
+	_late_sprite.position = Vector2(280, 320)
+	_content.add_child(_late_sprite)
+	_write("cached-textures.jsonl", {"rids": _cached_textures.map(func(texture: Texture2D) -> int: return texture.get_rid().get_id())})
 	_large_textures.clear()
 	if OS.get_environment("RS_RESIDENT_LARGE_TEXTURES") == "1":
 		for index: int in range(8):
@@ -123,15 +146,8 @@ func _make_resources() -> void:
 	shaded.position = Vector2(320, 80)
 	_content.add_child(shaded)
 
-	# Hand-authored BC1 blocks avoid import/compressor tooling and upload real VRAM data.
-	var blocks := PackedByteArray()
-	blocks.resize(32)
-	for block in range(4):
-		blocks[block * 8] = 31  # RGB565 blue, little endian; every index selects endpoint 0.
-		blocks[block * 8 + 2] = 31
-	var compressed := Image.create_from_data(8, 8, false, Image.FORMAT_DXT1, blocks)
 	var compressed_sprite := Sprite2D.new()
-	compressed_sprite.texture = ImageTexture.create_from_image(compressed)
+	compressed_sprite.texture = _cached_textures[0]
 	compressed_sprite.position = Vector2(380, 40)
 	_content.add_child(compressed_sprite)
 

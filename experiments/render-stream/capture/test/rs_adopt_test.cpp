@@ -2269,6 +2269,82 @@ void test_warm_census_revalidation() {
   grc::g_iface = saved;
 }
 
+void test_warm_retained_census() {
+  auto &w = fake::world();
+  const auto saved = grc::g_iface;
+  grc::rs::adopt_process_reset();
+  grc::rs::registry_configure(true, grc::rs::RegistryFault::None);
+  constexpr uint64_t rid = 0xcafe3000, registered = rid + 1;
+  auto &resource = w.make({"Object", "Resource", "CompressedTexture2D"}, rid);
+  auto &image = w.make({"Object", "Image"});
+  w.singletons["ResourceLoader"] = &w.make({"Object", "ResourceLoader"});
+  w.singletons["RenderingServer"] = &w.make({"Object", "RenderingServer"});
+  static uint64_t packed[] = {1, 1, 0};
+  grc::g_iface.string_to_utf8_chars = [](GDExtensionConstStringPtr, char *out, GDExtensionInt n) -> GDExtensionInt {
+    const std::string text = "cached.ctex";
+    if (out) std::memcpy(out, text.data(), std::min<size_t>(n, text.size()));
+    return text.size();
+  };
+  w.overrides["ResourceLoader.list_directory"] = [](fake::Object *, FakeArgs, void *ret) {
+    const void *data = packed + 2;
+    std::memcpy(static_cast<unsigned char *>(ret) + 8, &data, sizeof(data));
+  };
+  w.overrides["ResourceLoader.has_cached"] = [](fake::Object *, FakeArgs, void *ret) {
+    *static_cast<uint8_t *>(ret) = 1;
+  };
+  w.overrides["ResourceLoader.get_cached_ref"] = [&](fake::Object *, FakeArgs, void *ret) {
+    fake::put_object(ret, &resource);
+  };
+  w.overrides["RenderingServer.texture_2d_get"] = [&](fake::Object *, FakeArgs, void *ret) {
+    fake::put_object(ret, &image);
+  };
+  w.overrides["Image.get_width"] = [](fake::Object *, FakeArgs, void *ret) { fake::put_int(ret, 16); };
+  w.overrides["Image.get_height"] = w.overrides["Image.get_width"];
+  grc::rs::registry_note_texture_create(registered, {16, 16, 0, false, true}, false);
+  g_texture_readback_adopt = true;
+  int directories = 0;
+  for (int arm = 0; arm < 3; ++arm) {
+    if (arm == 2) {
+      grc::rs::registry_note_texture_create(rid, {16, 16, 0, false, true}, false);
+      grc::rs::registry_note_texture_update(rid);
+    }
+    grc::rs::mirror_enable(false); grc::rs::mirror_enable(true);
+    grc::rs::adopt_resources_begin(grc::rs::AdoptFault::None, false);
+    check(grc::rs::adopt_reload_at_arm().skipped == "not-dummy-host",
+          "retained census: rendered arm skips reload");
+    const int before = w.count("RenderingServer.texture_2d_get");
+    const auto warm = grc::rs::adopt_warm_at_arm(grc::rs::warm_now_ns(), "sync");
+    check(warm.scanned.census_unregistered == 0 && warm.from_cache == (arm == 2 ? 1u : 0u),
+          "retained census: no census-only warm jobs on any rendered arm");
+    check(warm.from_registry == 1 && warm.queued == (arm == 2 ? 2u : 1u),
+          "retained census: registry-driven warm is unchanged");
+    grc::rs::materialize(rid, grc::rs::RefKind::Texture);
+    check(w.count("RenderingServer.texture_2d_get") - before == 2,
+          "retained census: getter count stays flat across re-arms");
+    check(grc::rs::adopt_resource_stats().compressed == 1,
+          "retained census: lazy lookup still identifies cached texture");
+    check(w.count("RenderingServer.texture_get_path") == 0,
+          "retained census: cached RID lookup does not fall back to server path queries");
+    check(grc::rs::adopt_warm_stats().decode_at_reference == 0,
+          "retained census: deliberate lazy lookup is not an eager warm miss");
+    if (arm == 0) {
+      directories = w.count("ResourceLoader.list_directory");
+      check(directories > 0, "retained census: initial lookup builds the inventory");
+    } else {
+      check(w.count("ResourceLoader.list_directory") == directories &&
+                grc::rs::adopt_resource_stats().census_ns == 0,
+            "retained census: lookup reuses the inventory without a directory walk");
+    }
+    check(grc::rs::adopt_warm_finish().warm_balanced, "retained census: warm entries balance");
+    grc::rs::adopt_resources_end(); grc::rs::adopt_release();
+  }
+  g_texture_readback_adopt = false;
+  grc::rs::registry_configure(false, grc::rs::RegistryFault::None);
+  grc::rs::adopt_process_reset();
+  grc::g_iface = saved;
+  w.reset_calls();
+}
+
 // A placeholder discovered after the arm pass must never be published as the original texture.
 void test_reload_materialize_guards() {
   auto &w = fake::world();
@@ -3139,6 +3215,7 @@ int main() {
   test_evict_duplicate_rid();
   test_warm_free_during_pass();
   test_warm_census_revalidation();
+  test_warm_retained_census();
   test_warm_held_images();
   test_refusal_records_and_recovery();
   test_viewport_plan();

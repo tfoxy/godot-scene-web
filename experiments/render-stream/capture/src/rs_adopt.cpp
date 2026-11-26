@@ -1331,6 +1331,7 @@ struct Census {
   std::vector<CensusPath> paths;
   bool fonts_validated = false;
   bool built = false;
+  bool built_this_arm = false;
   std::vector<FontPage> pages;
   std::unordered_map<std::uint64_t, std::string> compressed;  // RID -> cache path
   std::unordered_map<std::uint64_t, std::string> canvas_textures;  // PM9: CanvasTexture RID -> path
@@ -1804,6 +1805,7 @@ void build_census() {
   const std::uint64_t t0 = now_ns();
   g_census = Census();
   g_census.built = true;
+  g_census.built_this_arm = true;
   g_census.fonts_validated = true;
   std::vector<std::uint64_t> fonts;
   add_theme_fonts(&fonts);
@@ -2448,7 +2450,8 @@ void adopt_texture_locked_out(std::uint64_t rid) {
   }
   std::lock_guard<std::mutex> lock(g_res_mutex);
   if (adopted) {
-    if (warm_eligible_at_reference(reload_source != nullptr, pristine, compressed, g_warm_census_at_warm, held)) {
+    if (warm_eligible_at_reference(reload_source != nullptr, pristine, compressed,
+        g_warm_census_at_warm && (registered_now || g_census.built_this_arm), held)) {
       ++g_warm_stats.decode_at_reference;
       if (g_warm_stats.decode_at_reference_rids.size() < 32)
         g_warm_stats.decode_at_reference_rids.push_back(rid);
@@ -2805,6 +2808,7 @@ void adopt_resources_begin(AdoptFault f, bool dummy_host) {
   g_refused_textures.store(0, std::memory_order_release);
   g_refused.clear();  // LAR6: every family's refusals, PM7's emitters and process materials too
   g_census.fonts_validated = false;
+  g_census.built_this_arm = false;
   g_res_main = std::this_thread::get_id();
   g_res_fault.store(static_cast<int>(f), std::memory_order_release);
   g_res_dummy_host.store(dummy_host, std::memory_order_relaxed);
@@ -2835,11 +2839,13 @@ WarmStats adopt_warm_at_arm(std::uint64_t arm_t0_ns, const std::string &workers)
   std::vector<RegistryTextureRecord> records;
   registry_textures(&records);
   std::unordered_map<std::uint64_t, std::string> compressed;
+  bool warm_census = false;
   {
     std::lock_guard<std::mutex> lock(g_res_mutex);
     g_warm_census_at_warm = g_census.built;
     stats.census_at_warm = g_census.built;
     if (g_census.built) compressed = g_census.compressed;
+    warm_census = g_census.built_this_arm;
   }
   const auto prepare = [&](WarmSource source, void *image, WarmBody *body) {
     hooks_warm_texture(image, body);
@@ -2913,12 +2919,13 @@ WarmStats adopt_warm_at_arm(std::uint64_t arm_t0_ns, const std::string &workers)
       g_warm[rec.rid] = {source, rec.updated, std::move(body), hold.rec.seq};
     }
   }
-  // Cached textures can predate the registry. Their getter copy is current at the arm.
+  // Cached textures can predate the registry. Only a census built or refreshed this arm
+  // queues unregistered textures; rendered re-arms retain it for lookups alone.
   void *loader = singleton_object("ResourceLoader");
   StringName ctex_name("CompressedTexture2D");
   void *ctex_tag = g_iface.classdb_get_class_tag(ctex_name.ptr());
   for (const auto &cached : compressed) {
-    if (!loader || !ctex_tag) break;
+    if (!warm_census || !loader || !ctex_tag) break;
     const auto rid = cached.first;
     if (registry_lookup(rid, nullptr) || mirror_instance().knows_texture(rid) || is_refused(rid)) continue;
     {
@@ -3146,7 +3153,11 @@ ReloadStats adopt_reload_at_arm() {
   if (adopt_binds_ready(nullptr)) {
     std::lock_guard<std::mutex> lock(g_res_mutex);
     if (!g_census.built) build_census();
-    else revalidate_census_textures();
+    else {
+      revalidate_census_textures();
+      // Dummy-host reload refreshes the retained census for this arm's eager warm.
+      g_census.built_this_arm = true;
+    }
     compressed = g_census.compressed;
     g_reload_stats.census_us = g_res_stats.census_ns / 1000;
   }

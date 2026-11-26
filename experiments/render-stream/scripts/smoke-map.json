@@ -1443,7 +1443,9 @@
         "experiments/render-stream/scripts/lib/check-attach-resident.py",
         "experiments/render-stream/scripts/lib/late-attach-resources.gd",
         "experiments/render-stream/scripts/lib/late-attach-hitch.py",
-        "experiments/render-stream/scripts/lib/check-late-attach-resources.py"
+        "experiments/render-stream/scripts/lib/check-late-attach-resources.py",
+        "experiments/render-stream/scripts/lib/make-rearm-textures.py",
+        "experiments/render-stream/scripts/lib/probe-client-payloads.ts"
       ],
       "reach": ["none"],
       "exclusive": true

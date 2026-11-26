@@ -16,19 +16,25 @@ def jsonl(path):
     return [json.loads(line) for line in path.read_text().splitlines()]
 
 
-def check(root):
+def check(root, baseline=False):
     result_path = root / "resources-result.json"
     result_path.unlink(missing_ok=True)
     checks = 0
+    skipped_checks = 0
     adoption_reports = []
+    arms = []
+    cached_rids = jsonl(root / "cached-textures.jsonl")[0]["rids"]
+    first_references = jsonl(root / "post-publish.jsonl")
+    previous_decoded = set()
 
     def require(ok, reason):
         nonlocal checks
         checks += 1
         assert ok, reason
 
+    require(len(cached_rids) == len(set(cached_rids)) == 226, "expected distinct cached textures")
     generations = jsonl(root / "resource-generations.jsonl")
-    require([row["generation"] for row in generations] == [1, 2, 3], "three resource generations")
+    require([row["generation"] for row in generations] == [1], "resources persist across re-arm and detach")
     require(all(row["state"]["attachment_state"] == "detached"
                 and row["state"]["table"] == "lean" for row in generations),
             "resources were not created in the lean detached table")
@@ -40,16 +46,22 @@ def check(root):
     identity = load(root / "0-fingerprint.json")
     facts = load(root / "0-calibration-check.json")
     hooks = load(root / "evidence" / "counters.json")["hooks_planned"]
-    require(identity["fingerprint_hash_count"] == 1, "identity hashed once at load")
+    if not baseline:
+        require(identity["fingerprint_hash_count"] == 1, "identity hashed once at load")
+    else:
+        skipped_checks += 1
     for index in range(3):
         require(load(root / f"{index}-fingerprint.json") == identity,
                 f"round {index} changed process identity or repeated hashing")
         require(load(root / f"{index}-calibration-check.json") == facts,
                 f"round {index} changed calibration facts")
         ready = load(root / f"ready-{index}.json")["info"]
-        require(ready["fingerprint_hash_count"] == 1
-                and ready["fingerprint_ns"] == identity["fingerprint_ns"],
-                f"round {index} arm identity counters disagree")
+        if not baseline:
+            require(ready["fingerprint_hash_count"] == 1
+                    and ready["fingerprint_ns"] == identity["fingerprint_ns"],
+                    f"round {index} arm identity counters disagree")
+        else:
+            skipped_checks += 1
         evidence = root / "evidence" if index == 0 else root / "evidence" / f"arm-{index + 1}"
         rows = jsonl(evidence / "resources.jsonl")
         gate = load(root / f"resource-result-{index}.json")["stream"]["gate8"]
@@ -57,12 +69,62 @@ def check(root):
             require(gate["shader_clock"]["source"] == "draw-hook",
                     f"round {index} planned draw hook must drive the shader clock")
         staged = gate["adopt_stats"].get("staged")
-        first_publish_frame = load(root / f"browser-{index}/applied.json")["transactions"][0]["frame"]
+        browser = load(root / f"browser-{index}/applied.json")
+        first_publish_frame = browser["transactions"][0]["frame"]
+        late = first_references[index]
+        require(late["round"] == index and late["frame"] > first_publish_frame,
+                f"round {index} late texture was referenced before first publish")
+        adopted = next(row for row in rows if row.get("kind") == "image"
+                       and row.get("op") == "adopt" and str(row.get("rid")) == str(late["rid"]))
+        require(adopted["status"] == "ok" and late["frame"] <= adopted["frame"] <= late["frame"] + 1,
+                f"round {index} post-publish getter was held behind staged adoption")
+        upload = next(row for row in browser["uploads"] if row["id"] == adopted["id"]
+                      and row["op"] == "create")
+        fetched = next(row for row in browser["fetches"] if row["hash"] == upload["hash"])
+        require(fetched["verified"] and fetched["status"] == 200,
+                f"round {index} post-publish payload not delivered")
+        verification = load(root / f"browser-{index}/perf.json")["payload_verify"]
+        require(verification["unverified_used"] == 0 and verification["still_staged"] == 0,
+                f"round {index} receiver used an undelivered payload: {verification}")
+        warm = load(evidence / "warm.json")
+        decode = gate["decode_stats"]
+        # The generated fixture is the only source of compressed images: 226 unique DXT1
+        # textures, exactly 42 referenced. Keep this inference explicit in the report.
+        require(decode["decoded_bytes"] == decode["decoded"] * 256,
+                f"round {index} unexpected compressed population: {decode}")
+        require(decode["decoded"] == 42,
+                f"round {index} decoded cached-but-unreferenced textures: {decode}")
+        require(warm["scanned"]["census_unregistered"] == 0 and warm["from_cache"] == 0,
+                f"round {index} eagerly warmed a retained census: {warm}")
+        decoded_rids = (cached_rids if decode["decoded"] == 226 else
+                        cached_rids[:42] if decode["decoded"] == 42 else
+                        [] if decode["decoded"] == 0 else None)
+        arms.append({"round": index, "decoded": decode["decoded"],
+                     "decoded_bytes": decode["decoded_bytes"],
+                     "decoded_mb": decode["decoded_bytes"] / 1000000,
+                     "queue_entries": warm["queued"], "warm_hits": warm["served"],
+                     "staged_queue_entries": staged["queued"] if staged else None,
+                     "staged_queue_at_arm": staged["queue_at_arm"] if staged else None,
+                     "warm_from_cache": warm["from_cache"],
+                     "dropped_unreferenced": warm["dropped_unreferenced"],
+                     "texture_cache_hits": 0, "texture_cache_enabled": False,
+                     "decoded_rids_basis": "unique fixture DXT1 population and decode counter",
+                     "decoded_rids": decoded_rids,
+                     "redecoded_rids": sorted(previous_decoded.intersection(decoded_rids))
+                     if decoded_rids is not None else None,
+                     "post_publish": {"rid": late["rid"], "first_publish_frame": first_publish_frame,
+                                      "reference_frame": late["frame"], "adopt_frame": adopted["frame"],
+                                      "fetch_us": fetched["end_us"] - fetched["start_us"],
+                                      "unverified_used": verification["unverified_used"]}})
+        if decoded_rids is not None:
+            previous_decoded.update(decoded_rids)
         if staged is not None:
             require(staged["pending"] == 0 and staged["arm_to_first_publish_us"] > 0,
                     f"round {index} did not finish staged adoption before publication: {staged}")
             require(staged["max_frame_us"] < staged["budget_us"] + staged["max_texture_us"] + 1000,
                     f"round {index} exceeded its budget by more than one texture: {staged}")
+        else:
+            skipped_checks += 2
         trace_path = root / f"adoption-frames-{index}.json"
         if trace_path.exists():
             trace = load(trace_path)
@@ -70,8 +132,11 @@ def check(root):
                 require(trace["large_texture_bytes"] == 134217728, "expected eight pre-attach 2048² RGBA textures")
             adoption_reports.append({"round": index, "staged": staged, **trace})
         resources = gate["adopt_stats"]["resources"]
-        require(resources["census_ns"] > 0 if index == 0 else resources["census_ns"] == 0,
-                f"round {index} census must run only on the first arm")
+        if not baseline:
+            require(resources["census_ns"] > 0 if index == 0 else resources["census_ns"] == 0,
+                    f"round {index} census must run only on the first arm")
+        else:
+            skipped_checks += 1
         require(all(value == 0 for key, value in resources.items()
                     if key.startswith("refused_") or key.endswith("_refused")),
                 f"round {index} resource refusals: {resources}")
@@ -158,6 +223,10 @@ def check(root):
                 require(link < restart, f"round {index} parent restarted before subemitter link")
         image = Image.open(root / f"browser-{index}/shots/final.png").convert("RGBA")
         native = Image.open(root / f"native-{index}.png").convert("RGBA")
+        first_image = Image.open(root / f"browser-{index}/shots/seq-1.png").convert("RGBA")
+        require(first_image.getpixel((280, 320)) == first_image.getpixel((270, 320))
+                and image.getpixel((280, 320)) != image.getpixel((270, 320)),
+                f"round {index} post-publish texture did not appear after the first snapshot")
         require(image.tobytes() == native.tobytes(), f"round {index} native/browser differ")
         for point, color in [((428, 48), (255, 0, 0, 255)), ((468, 48), (255, 0, 0, 255)),
                              ((320, 40), (255, 255, 0, 255)), ((320, 80), (255, 0, 255, 255)),
@@ -169,7 +238,8 @@ def check(root):
                 f"round {index} hidden multimesh instance drawn")
         require(image.getpixel((360, 230)) == image.getpixel((380, 230)),
                 f"round {index} completed one-shot revived")
-    result = {"status": "pass", "checks": checks, "streams": 3, "cycles": 2}
+    result = {"status": "pass", "checks": checks, "skipped": skipped_checks, "streams": 3, "cycles": 1, "rearms": 1}
+    (root / "rearm-report.json").write_text(json.dumps(arms, indent=2) + "\n")
     (root / "adoption-report.json").write_text(json.dumps(adoption_reports, indent=2) + "\n")
     result_path.write_text(json.dumps(result, indent=2) + "\n")
     print(json.dumps(result))
@@ -177,7 +247,7 @@ def check(root):
 
 if __name__ == "__main__":
     try:
-        check(Path(sys.argv[1]))
+        check(Path(sys.argv[1]), "--baseline" in sys.argv[2:])
     except (AssertionError, KeyError, OSError, ValueError, StopIteration) as error:
         print(f"FAIL: {error}", file=sys.stderr)
         sys.exit(1)

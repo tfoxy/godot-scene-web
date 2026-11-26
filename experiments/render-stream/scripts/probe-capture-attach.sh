@@ -4,6 +4,7 @@
 # Usage: probe-capture-attach.sh --out DIR [--gsw-bundle DIR] [--cycle [--sabotage-detach]] [--resources] [--large-textures] [--extension FILE]
 # Prerequisites: build-capture.sh. Default replay also needs receiver --import + build-rs-core-ext.sh.
 # --cycle requires --gsw-bundle (build-rs-core.sh + gate7-tool.ts gsw-bundle) and Python Pillow.
+# --resource-baseline checks an older extension without the identity/census reuse counters.
 # This is correctness evidence, not a timing A/B.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -17,11 +18,13 @@ RESOURCES=0
 LARGE_TEXTURES=0
 PROBE_CALIBRATION=""
 PROBE_EXTENSION=""
+RESOURCE_BASELINE=0
 while [ "$#" -gt 0 ]; do
 	case "$1" in
 	--out) OUT="$2"; shift 2 ;;
 	--gsw-bundle) BUNDLE="$(realpath "$2")"; shift 2 ;;
 	--calibration) PROBE_CALIBRATION="$(realpath "$2")"; shift 2 ;;
+	--resource-baseline) RESOURCE_BASELINE=1; shift ;;
 	--extension) PROBE_EXTENSION="$(realpath "$2")"; shift 2 ;;
 	--cycle) CYCLE=1; shift ;;
 	--resources) RESOURCES=1; CYCLE=1; shift ;;
@@ -87,7 +90,7 @@ cleanup() {
 }
 trap cleanup EXIT
 if [ "$CYCLE" = 1 ]; then
-	# One rendered host, three browser streams, two resident detach/re-attach cycles.
+	# One rendered host and three browser streams; resources keeps the first re-arm attached.
 	fixture="$OUT/project"
 	mkdir -p "$fixture" "$OUT/resident/evidence"
 	cp "$EXPERIMENT_DIR/fixtures/live-swap/loader.gd" "$fixture/"
@@ -107,6 +110,9 @@ if (dest / 'late_resources.gd').exists():
 (dest / 'project.godot').write_text(project)
 (dest / 'main.tscn').write_text('[gd_scene format=3]\n\n[node name="Main" type="Node2D"]\n')
 PYPROJECT
+	if [ "$RESOURCES" = 1 ]; then
+		python3 "$SCRIPT_DIR/lib/make-rearm-textures.py" "$fixture"
+	fi
 	LEG_ENV=()
 	run_headless "$OUT/import" none -- mise exec -- godot --headless --path "$fixture" --import
 	[ "$(cat "$OUT/import/exit-code.txt")" = 0 ]
@@ -118,10 +124,10 @@ PYPROJECT
 	if [ "$RESOURCES" = 1 ]; then RESIDENT_PROTOCOL=16; fi
 	LEG_ENV=(GRC_EXTENSION="$EXTENSION" GRC_CALIBRATION="$CALIBRATION" GRC_MODE=detached
 		GRC_ADOPT=arm GRC_UNKNOWN_ITEM=skip GRC_STREAM_VERSION="$RESIDENT_PROTOCOL" GRC_VALIDATION_LOG=off
-		GRC_PARTICLES=on GRC_TEXTURE_WORKERS=2 GRC_TEXTURE_WORKER_MIN_BYTES=0
+		GRC_PARTICLES=on GRC_TEXTURE_CACHE_DIR= GRC_TEXTURE_WORKERS=2 GRC_TEXTURE_WORKER_MIN_BYTES=0
 		GRC_EVIDENCE_DIR="$OUT/resident/evidence" GRC_LIVE_LISTEN="127.0.0.1:0"
 		GRC_LIVE_ALLOWED_ORIGINS="http://127.0.0.1:$GATE7_HARNESS_PORT"
-		RS_RESIDENT_LARGE_TEXTURES="$LARGE_TEXTURES" RS_RESIDENT_OUT="$OUT/resident" RS_RESIDENT_SKIP_DETACH="$SABOTAGE_DETACH" XDG_DATA_HOME="$OUT/resident/xdg-data")
+		RS_RESIDENT_REARM="$RESOURCES" RS_RESIDENT_LARGE_TEXTURES="$LARGE_TEXTURES" RS_RESIDENT_OUT="$OUT/resident" RS_RESIDENT_SKIP_DETACH="$SABOTAGE_DETACH" XDG_DATA_HOME="$OUT/resident/xdg-data")
 	RENDERED_TIMEOUT_S=300
 	RENDERED_EXTRA_ARGS=(--max-fps 60)
 	(
@@ -144,6 +150,7 @@ PYPROJECT
 	# Large payload fetch/transcode can exceed the small fixture's one-second receiver window.
 	# Leave time for the attached proxy update after the complete first snapshot is applied.
 	RECEIVER_STOP_S=1
+	if [ "$RESOURCES" = 1 ]; then RECEIVER_STOP_S=3; fi
 	if [ "$LARGE_TEXTURES" = 1 ]; then RECEIVER_STOP_S=5; fi
 	for round in 0 1 2; do
 		wait_marker "$OUT/resident/ready-$round.json"
@@ -160,22 +167,33 @@ PYTOKEN
 			RS_RECEIVER_URL="ws://$(cat "$dir/url")/render-stream"
 			RS_RECEIVER_TOKEN_FILE="$dir/token" RS_RECEIVER_OUT="$dir/applied.json"
 			RS_RECEIVER_LIVE_STOP_S="$RECEIVER_STOP_S" RS_RECEIVER_SHOT_FINAL=1)
-		RENDERED_EXTRA_ARGS=(--resolution 640x360 --max-fps 60)
+		if [ "$RESOURCES" = 1 ]; then
+			LEG_ENV+=(RS_RECEIVER_PERF_OUT="$dir/perf.json" RS_RECEIVER_SHOT_WINDOWS="0:1-18000")
+		fi
+		local_resolution=640x360
+		if [ "$RESOURCES" = 1 ] && [ "$round" = 1 ]; then local_resolution=800x360; fi
+		RENDERED_EXTRA_ARGS=(--resolution "$local_resolution" --max-fps 60)
 		run_rendered "$dir" "$RECEIVER_DIR"
 		[ "$(cat "$dir/exit-code.txt")" = 0 ]
 		echo '{}' >"$OUT/resident/stream-$round.done"
 		wait_marker "$OUT/resident/busy-$round.done"
 		# Independent OS proof: the former live listener cannot accept while detached.
-		python3 "$SCRIPT_DIR/lib/check-attach-resident.py" --offline "$OUT/resident" "$round"
+		if [ "$RESOURCES" != 1 ] || [ "$round" != 0 ]; then
+			python3 "$SCRIPT_DIR/lib/check-attach-resident.py" --offline "$OUT/resident" "$round"
+		fi
 		echo '{}' >"$OUT/resident/resume-$round.done"
 	done
 	wait_marker "$OUT/resident/finished.json"
 	wait "$RESIDENT_RUNNER_PID"
 	RESIDENT_RUNNER_PID=""
 	[ "$(cat "$OUT/resident/host/exit-code.txt")" = 0 ]
-	legs_run_checker python3 "$SCRIPT_DIR/lib/check-attach-resident.py" "$OUT/resident"
+	resident_args=()
+	if [ "$RESOURCES" = 1 ]; then resident_args+=(--rearm); fi
+	legs_run_checker python3 "$SCRIPT_DIR/lib/check-attach-resident.py" "$OUT/resident" "${resident_args[@]}"
 	if [ "$RESOURCES" = 1 ]; then
-		legs_run_checker python3 "$SCRIPT_DIR/lib/check-late-attach-resources.py" "$OUT/resident"
+		resource_args=()
+		if [ "$RESOURCE_BASELINE" = 1 ]; then resource_args+=(--baseline); fi
+		legs_run_checker python3 "$SCRIPT_DIR/lib/check-late-attach-resources.py" "$OUT/resident" "${resource_args[@]}"
 	fi
 	echo "probe-capture-attach: resident evidence $OUT"
 	exit 0
