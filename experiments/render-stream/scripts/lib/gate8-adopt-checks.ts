@@ -833,8 +833,11 @@ const VLC_DIRS = Array.from({ length: VLC_ROUNDS }, (_, r) =>
   VLC_CONFIGS.map((c) => vlcDir(c, r)),
 ).flat();
 // The adopt_stats fields that are timings (differ run to run), left out of a deferred = late
-// comparison.
-const isTiming = (k: string) => k.endsWith("_ns");
+// comparison. The identity readiness pair is wall time and frame count from load to decision.
+const isTiming = (k: string) =>
+  k.endsWith("_ns") ||
+  k === "identity_ready_ms" ||
+  k === "identity_wait_frames";
 // LAR6: the texture-content split a deferred capture changes on purpose (a registered texture whose
 // `updated` bit is clear is `current` from the registry, with no census and no TextServer read),
 // left out of the deferred = late comparison and judged by tex-current-unupdated instead; the

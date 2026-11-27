@@ -253,10 +253,17 @@
 #include "rs_tracks_gd.h"
 #include "rs_ws.h"
 #include "vtable.h"
+#include "pe_image.h"
+#include "rs_identity_event.h"
 
 namespace grc {
 
 namespace {
+
+IdentityDigest g_identity_digest;
+IdentityEvent g_identity_event;
+uint64_t g_identity_load_ns = 0;
+bool attempt(const char *phase);
 
 struct State {
   // Configuration, read once at SCENE initialisation.
@@ -287,6 +294,11 @@ struct State {
   bool api_pending_arm = false;
   rs::StandbyFault standby_fault = rs::StandbyFault::None;
 
+  bool identity_pending = false, fingerprint_async = false;
+  std::string fingerprint_error;
+  uint64_t identity_start_frame = 0, identity_wait_frames = 0;
+  uint64_t requests_queued_on_identity = 0;
+  double identity_ready_ms = 0;
   bool identity_checked = false;
   std::size_t identity_check_count = 0;
   uint64_t fingerprint_hash_count = 0, fingerprint_ns = 0;
@@ -1190,6 +1202,10 @@ std::string result_json() {
     json.key("adopt_stats").object_begin();
     json.field("fingerprint_hash_count", static_cast<int64_t>(g_state.fingerprint_hash_count));
     json.field("fingerprint_ns", static_cast<int64_t>(g_state.fingerprint_ns));
+    json.field("fingerprint_async", g_state.fingerprint_async);
+    json.key("identity_ready_ms").float64(g_state.identity_ready_ms);
+    json.field("identity_wait_frames", static_cast<int64_t>(g_state.identity_wait_frames));
+    json.field("requests_queued_on_identity", static_cast<int64_t>(g_state.requests_queued_on_identity));
     json.field("ran", g_stream.adopt_stats.ran);
     json.field("canvases", static_cast<int64_t>(g_stream.adopt_stats.canvases));
     json.field("layers", static_cast<int64_t>(g_stream.adopt_stats.layers));
@@ -1448,6 +1464,10 @@ std::string fingerprint_json() {
   json.object_begin();
   json.field("fingerprint_hash_count", static_cast<int64_t>(g_state.fingerprint_hash_count));
   json.field("fingerprint_ns", static_cast<int64_t>(g_state.fingerprint_ns));
+  json.field("fingerprint_async", g_state.fingerprint_async);
+  json.key("identity_ready_ms").float64(g_state.identity_ready_ms);
+  json.field("identity_wait_frames", static_cast<int64_t>(g_state.identity_wait_frames));
+  json.field("requests_queued_on_identity", static_cast<int64_t>(g_state.requests_queued_on_identity));
   json.field("exe_path", fp.exe_path);
   json.field("version_string", fp.version_string);
   json.field("sha256", fp.exe_sha256);
@@ -1571,16 +1591,28 @@ cap::Value::Object api_arm_info() {
       {"arm_frame", std::int64_t(g_api_arm.frame)},
       {"fingerprint_hash_count", std::int64_t(g_state.fingerprint_hash_count)},
       {"fingerprint_ns", std::int64_t(g_state.fingerprint_ns)},
+      {"fingerprint_async", g_state.fingerprint_async},
+      {"identity_ready_ms", g_state.identity_ready_ms},
+      {"identity_wait_frames", std::int64_t(g_state.identity_wait_frames)},
+      {"requests_queued_on_identity", std::int64_t(g_state.requests_queued_on_identity)},
       {"adopted", cap::Value::Object{{"canvases", std::int64_t(a.canvases)},
           {"layers", std::int64_t(a.layers)}, {"items", std::int64_t(a.items)},
           {"materials", std::int64_t(a.materials)}, {"lights", std::int64_t(a.lights)}}}};
 }
 
 void decide(const std::string &status, const std::string &reason) {
+  if (g_state.identity_ready_ms == 0 && g_identity_load_ns != 0) {
+    g_state.identity_ready_ms = (rs::warm_now_ns() - g_identity_load_ns) / 1e6;
+    g_state.identity_wait_frames = g_state.frames_total - g_state.identity_start_frame;
+  }
   if (g_api) {
     if (status == "standby") g_api->loaded(cap::State::Standby, reason);
     else if (status == "refused") g_api->loaded(cap::State::Refused, reason);
     else if (status == "armed") g_api->loaded(cap::State::Armed, reason);
+    if (g_api->identity_waiting() && !g_state.identity_pending) {
+      g_api->identity_complete(status != "refused", reason);
+      g_state.api_pending_arm = g_api->arm_pending();
+    }
   }
   g_state.status = status;
   g_state.reason = reason;
@@ -5642,6 +5674,7 @@ void api_arm_point() {
 // Runs the full check pipeline, and arms when asked to. `phase` names the
 // callback it runs from, for the log. Returns true once a decision was made.
 bool attempt(const char *phase) {
+  if (g_state.identity_pending) return false;
   if (g_state.decided) {
     return true;
   }
@@ -5678,12 +5711,51 @@ bool attempt(const char *phase) {
     refuse(error.compare(0, 11, "cannot read") == 0 ? "no-calibration" : "invalid-calibration");
     return true;
   }
-  bool fingerprint_ok = true;
+  bool fingerprint_ok = g_state.fingerprint_error.empty();
+  error = g_state.fingerprint_error;
   if (g_state.fingerprint_hash_count == 0) {
     const auto start = rs::warm_now_ns();
     ++g_state.fingerprint_hash_count;
-    fingerprint_ok = collect_fingerprint(&g_state.fp, &error);
-    g_state.fingerprint_ns += rs::warm_now_ns() - start;
+    fingerprint_ok = collect_fingerprint(&g_state.fp, &error, g_state.mode == "detached");
+    if (fingerprint_ok && async_identity_digest(g_state.fp.platform, g_state.mode)) {
+      g_state.fingerprint_async = true;
+      g_state.identity_start_frame = g_state.frames_total;
+      if (!g_identity_event.prepare(g_identity_digest, [] {
+            ImageDigestResult result;
+            if (!g_identity_digest.result(&result)) return;
+            g_state.identity_pending = false;
+            g_state.fingerprint_ns = result.ns;
+            resolve_windows_image_digest(&g_state.fp, result, &g_state.fingerprint_error);
+            attempt("identity");
+          })) {
+        error = "identity completion event unavailable";
+        fingerprint_ok = false;
+      } else {
+        g_state.identity_pending = true;
+        g_api->wait_for_identity(g_state.mode == "detached");
+        try {
+          const auto path = g_state.fp.exe_path;
+          g_identity_digest.start(g_state.fp.platform, g_state.mode, [path] {
+            ImageDigestResult result;
+            const auto start = rs::warm_now_ns();
+            result.ok = pe_image_sha256(path, &result.hex, &result.bytes, &result.image_base, &result.error);
+            std::printf("[grc] fingerprint: image hash %.3f ms over %llu bytes (worker)\n",
+                        (rs::warm_now_ns() - start) / 1e6,
+                        static_cast<unsigned long long>(result.bytes));
+            std::fflush(stdout);
+            return result;
+          }, [] { g_identity_event.post(); });
+          return false;
+        } catch (const std::exception &e) {
+          g_state.identity_pending = false;
+          error = e.what();
+          fingerprint_ok = false;
+        }
+      }
+    } else {
+      g_state.fingerprint_ns += rs::warm_now_ns() - start;
+    }
+    if (!fingerprint_ok) g_state.fingerprint_error = error;
   }
   if (!fingerprint_ok) {
     log_line("fingerprint: " + error);
@@ -6100,7 +6172,12 @@ bool attempt(const char *phase) {
     // LS1: loaded, the standby table published, nothing streaming; LS2's arm() leaves this state.
     g_state.standby = true;
     decide("standby", std::string());
-    if (g_state.mode == "detached") g_api->detach({}, attachment_detach);
+    if (g_state.mode == "detached") {
+      // Pending identity already exposed Detached to callers. With no queued attach,
+      // release the initial standby publication even though detach() is idempotent.
+      if (g_api->attachment() == cap::Attachment::Detached) attachment_detach();
+      else g_api->detach({}, attachment_detach);
+    }
     return true;
   }
   // LATE-SPINE: the vtable is patched (the hooks observe resource creation) but the arm itself
@@ -6888,6 +6965,10 @@ cap::Value::Object api_state() {
   auto snapshot = g_api->state(g_state.frames_total, std::move(registry));
   snapshot["fingerprint_hash_count"] = std::int64_t(g_state.fingerprint_hash_count);
   snapshot["fingerprint_ns"] = std::int64_t(g_state.fingerprint_ns);
+  snapshot["fingerprint_async"] = g_state.fingerprint_async;
+  snapshot["identity_ready_ms"] = g_state.identity_ready_ms;
+  snapshot["identity_wait_frames"] = std::int64_t(g_state.identity_wait_frames);
+  snapshot["requests_queued_on_identity"] = std::int64_t(g_state.requests_queued_on_identity);
   snapshot["frame_callback_registered"] = g_frame_registered;
   const auto table = g_state.shadow.published();
   snapshot["table"] = table == ShadowVtable::Table::Lean ? "lean" :
@@ -7027,6 +7108,12 @@ bool attachment_attach() {
   fresh.identity_checked = g_state.identity_checked;
   fresh.fingerprint_hash_count = g_state.fingerprint_hash_count;
   fresh.fingerprint_ns = g_state.fingerprint_ns;
+  fresh.fingerprint_async = g_state.fingerprint_async;
+  fresh.fingerprint_error = g_state.fingerprint_error;
+  fresh.identity_ready_ms = g_state.identity_ready_ms;
+  fresh.identity_wait_frames = g_state.identity_wait_frames;
+  fresh.identity_start_frame = g_state.identity_start_frame;
+  fresh.requests_queued_on_identity = g_state.requests_queued_on_identity;
   fresh.fp = g_state.fp;
   fresh.calib = g_state.calib;
   fresh.facts = g_state.facts;
@@ -7108,7 +7195,12 @@ cap::Value api_invoke(const std::string &method, const cap::Value::Object &optio
   else result = g_api->disarm(options);
   if (std::this_thread::get_id() == g_api_main) {
     g_state.api_pending_arm = g_api->arm_pending();
+    g_state.requests_queued_on_identity = g_api->requests_queued_on_identity();
     const bool accepted = method != "state" && std::get<std::int64_t>(result.data) == 0;
+    if (accepted && method == "attach" && g_api->identity_waiting()) {
+      // This is the first attachment: the identity event will publish its standby table.
+      g_state.mode = "standby";
+    }
     if (accepted && method == "arm" && g_api_fault == "api-early-armed") {
       cap::gd_capture_emit({"armed", {api_arm_info()}});
     }
@@ -7193,6 +7285,7 @@ void on_frame() {
     g_perf.last_frame_ns = frame_start_ns;
   }
   ++g_state.frames_total;
+  if (g_state.identity_pending) return;
   // LAR0: a registry timeline row for the calls this iteration carried (label frames_total, set
   // by the previous callback's hooks_set_frame), when any changed it. Off: one relaxed load.
   if (rs::registry_on()) {
@@ -7304,6 +7397,7 @@ void rearm_kept_release() {
 }
 
 void on_shutdown() {
+  g_identity_digest.shutdown();
   g_root_finalized = true;  // SceneTree::finalize deletes root before shutdown_func runs.
   log_line("shutdown: root-finalized");
   audio::shutdown();
@@ -7376,6 +7470,7 @@ void initialize(void * /*userdata*/, GDExtensionInitializationLevel level) {
   if (level != GDEXTENSION_INITIALIZATION_SCENE) {
     return;
   }
+  g_identity_load_ns = rs::warm_now_ns();
   g_api_main = std::this_thread::get_id();
   g_api = std::make_unique<cap::Api>(g_api_main);
   apply_low_processor_sleep();
@@ -7488,6 +7583,8 @@ void deinitialize(void * /*userdata*/, GDExtensionInitializationLevel level) {
   if (level != GDEXTENSION_INITIALIZATION_SCENE) {
     return;
   }
+  g_identity_digest.shutdown();
+  g_identity_event.clear();
   audio::shutdown();
   g_api->shutdown([] {
     api_teardown_finish_blocking();

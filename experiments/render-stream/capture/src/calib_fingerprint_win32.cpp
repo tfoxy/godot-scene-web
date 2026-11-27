@@ -11,7 +11,8 @@
 #include "rs_platform.h"
 
 namespace grc {
-bool collect_engine_fingerprint(ProcessFingerprint *out, std::string *error) {
+namespace {
+bool collect_windows_fingerprint(ProcessFingerprint *out, std::string *error, bool with_digest) {
   *out = ProcessFingerprint{};
   out->platform = "windows-x86_64";
   out->exe_path = rs::executable_path();
@@ -23,15 +24,20 @@ bool collect_engine_fingerprint(ProcessFingerprint *out, std::string *error) {
   const auto *nt = reinterpret_cast<const IMAGE_NT_HEADERS64 *>(base + dos->e_lfanew);
   PeHeaders h;
   if (!pe_parse_headers(base, nt->OptionalHeader.SizeOfHeaders, &h, error)) return false;
-  uint64_t bytes = 0;
-  const auto hash_start = std::chrono::steady_clock::now();
-  const bool hash_ok = pe_image_sha256(out->exe_path, &out->image_sha256, &bytes, &out->image_base, error);
-  const double hash_ms = std::chrono::duration<double, std::milli>(
-      std::chrono::steady_clock::now() - hash_start).count();
-  std::printf("[grc] fingerprint: image hash %.3f ms over %llu bytes\n", hash_ms,
-              static_cast<unsigned long long>(bytes));
-  std::fflush(stdout);
-  if (!hash_ok) return false;
+  // Pending metadata retains the mapped base. Digest completion replaces it with
+  // the file's preferred base and recomputes load_bias before identity checks.
+  if (!with_digest) out->image_base = h.image_base;
+  if (with_digest) {
+    uint64_t bytes = 0;
+    const auto hash_start = std::chrono::steady_clock::now();
+    const bool hash_ok = pe_image_sha256(out->exe_path, &out->image_sha256, &bytes, &out->image_base, error);
+    const double hash_ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - hash_start).count();
+    std::printf("[grc] fingerprint: image hash %.3f ms over %llu bytes\n", hash_ms,
+                static_cast<unsigned long long>(bytes));
+    std::fflush(stdout);
+    if (!hash_ok) return false;
+  }
   out->time_date_stamp = h.time_date_stamp;
   out->size_of_image = h.size_of_image;
   out->dynamic_base = bool(h.dll_characteristics & IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE);
@@ -47,5 +53,12 @@ bool collect_engine_fingerprint(ProcessFingerprint *out, std::string *error) {
     out->exe_maps.emplace_back(line);
   }
   return true;
+}
+}  // namespace
+bool collect_engine_fingerprint_metadata(ProcessFingerprint *out, std::string *error) {
+  return collect_windows_fingerprint(out, error, false);
+}
+bool collect_engine_fingerprint(ProcessFingerprint *out, std::string *error) {
+  return collect_windows_fingerprint(out, error, true);
 }
 }  // namespace grc

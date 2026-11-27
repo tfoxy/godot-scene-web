@@ -65,6 +65,7 @@ bool load_calibration(const std::string &path, Calibration *out, std::string *er
 // Fills `out` from /proc/self and the GDExtension version call. Returns false
 // only when the process cannot be identified at all.
 bool collect_fingerprint(ProcessFingerprint *out, std::string *error);
+bool collect_fingerprint(ProcessFingerprint *out, std::string *error, bool defer_windows_digest);
 
 struct CheckResult {
   std::string name;

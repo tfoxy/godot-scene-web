@@ -78,6 +78,12 @@ if(GRC_MACOS)
 endif()
 grc_add_test(NAME rs_page_allocator COMMAND rs_page_allocator_test)
 
+# Diagnostic only: deliberately absent from CTest and the shipped Windows manifest.
+add_executable(pe_hash_probe test/pe_hash_probe.cpp src/pe_image.cpp src/rs_sha256.cpp)
+target_include_directories(pe_hash_probe PRIVATE src)
+target_link_libraries(pe_hash_probe PRIVATE grc_warnings grc_platform)
+set_target_properties(pe_hash_probe PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+
 # Pure audio wire judge. Source-tree golden data is not part of the Windows bundle.
 if(NOT GRC_WINDOWS)
 add_executable(rs_audio_wire_test test/rs_audio_wire_test.cpp src/rs_audio_wire.cpp src/rs_sha256.cpp)
@@ -1130,6 +1136,12 @@ else()
   grc_linux_only("rs_setting_test" "Uses setenv.")
 endif()
 
+add_executable(rs_identity_test test/rs_identity_test.cpp src/rs_capture_api.cpp src/calib.cpp
+  ${GRC_FINGERPRINT_SOURCES} src/iface.cpp src/rs_sha256.cpp src/vtable.cpp)
+target_include_directories(rs_identity_test PRIVATE src vendor)
+target_link_libraries(rs_identity_test PRIVATE grc_warnings grc_platform Threads::Threads)
+grc_add_test(NAME rs_identity COMMAND rs_identity_test)
+
 add_executable(rs_capture_api_test test/rs_capture_api_test.cpp src/rs_capture_api.cpp)
 target_include_directories(rs_capture_api_test PRIVATE src)
 target_link_libraries(rs_capture_api_test PRIVATE grc_warnings grc_platform Threads::Threads)
@@ -1196,6 +1208,8 @@ target_link_libraries(rs_env_test PRIVATE grc_warnings grc_platform)
 grc_add_test(NAME rs_env COMMAND rs_env_test)
 # Linux-only: Python source-tree check runs on the build host.
 if(NOT GRC_WINDOWS)
+grc_add_test(NAME rs_identity_source
+  COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/test/identity-source-test.py)
 grc_add_test(NAME rs_env_source
   COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/test/env-source-test.py)
 else()

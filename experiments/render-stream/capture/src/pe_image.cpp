@@ -103,8 +103,8 @@ std::string pe_codeview_id(const uint8_t *p, size_t n, const PeHeaders &h, bool 
   return id;
 }
 
-bool pe_image_sha256(const std::string &path, std::string *hex, uint64_t *bytes,
-                     uint64_t *preferred_image_base, std::string *error, std::string *whole_file_hex) {
+static bool pe_image_read(const std::string &path, std::string *hex, uint64_t *bytes,
+                     uint64_t *preferred_image_base, std::string *error, std::string *whole_file_hex, bool hash_image) {
   hex->clear();
   if (whole_file_hex) whole_file_hex->clear();
   *bytes = 0; *preferred_image_base = 0;
@@ -187,7 +187,7 @@ bool pe_image_sha256(const std::string &path, std::string *hex, uint64_t *bytes,
     while (remaining) {
       const size_t chunk = std::min<uint64_t>(remaining, buffer.size());
       if (std::fread(buffer.data(), 1, chunk, file.get()) != chunk) return false;
-      digest.update(buffer.data(), chunk);
+      if (hash_image) digest.update(buffer.data(), chunk);
       const uint64_t chunk_end = uint64_t(off) + size - remaining + chunk;
       if (whole_file_hex && chunk_end > whole_cursor) {
         const size_t fresh = chunk_end - whole_cursor;
@@ -205,7 +205,17 @@ bool pe_image_sha256(const std::string &path, std::string *hex, uint64_t *bytes,
       return fail("cannot read PE section");
   if (!whole_to(end)) return fail("cannot read PE file hash");
   if (whole_file_hex) *whole_file_hex = sha256_hex(whole.finish());
-  *hex = sha256_hex(digest.finish()); *bytes = total; *preferred_image_base = h.image_base;
+  if (hash_image) *hex = sha256_hex(digest.finish());
+  *bytes = total; *preferred_image_base = h.image_base;
   return true;
+}
+bool pe_image_sha256(const std::string &path, std::string *hex, uint64_t *bytes,
+                     uint64_t *base, std::string *error, std::string *whole_file_hex) {
+  return pe_image_read(path, hex, bytes, base, error, whole_file_hex, true);
+}
+bool pe_image_read_only(const std::string &path, uint64_t *bytes, std::string *error) {
+  std::string unused;
+  uint64_t base = 0;
+  return pe_image_read(path, &unused, bytes, &base, error, nullptr, false);
 }
 }  // namespace grc

@@ -49,7 +49,9 @@ class Api {
  public:
   using Validator = std::function<bool(const Settings &, std::string *)>;
   explicit Api(std::thread::id main = std::this_thread::get_id()) : main_(main) {}
-  // The transition callback runs synchronously on main. False leaves admission refused.
+  // Transitions run synchronously on main once identity is ready. A pending first attach
+  // completes through identity_complete after standby publication; it skips rebuild.
+  // False from a transition leaves admission refused.
   using Transition = std::function<bool()>;
   int detach(const Value::Object &options = {}, const Transition &teardown = {});
   int attach(const Value::Object &options = {}, const Transition &rebuild = {});
@@ -69,7 +71,13 @@ class Api {
   const std::string &last_reason() const { return last_reason_; }
   const std::string &detail() const { return detail_; }
   const DisarmOptions &pending_disarm() const { return disarm_; }
-  bool arm_pending() const { return pending_arm_; }
+  // An accepted arm waits for the identity event and standby publication first.
+  // detach/disarm refuse busy until that event resolves queued identity requests.
+  bool arm_pending() const { return pending_arm_ && !identity_waiting_; }
+  void wait_for_identity(bool detached);
+  void identity_complete(bool ok, const std::string &reason);
+  bool identity_waiting() const { return identity_waiting_; }
+  std::uint64_t requests_queued_on_identity() const { return requests_queued_on_identity_; }
   bool disarm_pending() const { return pending_disarm_; }
   void loaded(State state, std::string reason = {});
   // Consumes the scheduled arm at the frame boundary; cancellation does not consume an arm.
@@ -107,6 +115,9 @@ class Api {
   Value::Object info_;
   Settings settings_;
   DisarmOptions disarm_;
+  bool identity_waiting_ = false;
+  std::uint64_t requests_queued_on_identity_ = 0;
+  std::map<std::string, std::uint64_t> identity_failures_;
   bool pending_arm_ = false;
   bool pending_disarm_ = false;
 };

@@ -26,4 +26,6 @@ bool pe_read_codeview_id(const uint8_t *image, size_t n, const PeHeaders &h, boo
 bool pe_image_sha256(const std::string &utf8_path, std::string *hex, uint64_t *bytes,
                      uint64_t *preferred_image_base, std::string *error,
                      std::string *whole_file_hex = nullptr);
+// Probe-only reader: validates and reads the exact ordered image-hash ranges.
+bool pe_image_read_only(const std::string &path, uint64_t *bytes, std::string *error);
 }  // namespace grc

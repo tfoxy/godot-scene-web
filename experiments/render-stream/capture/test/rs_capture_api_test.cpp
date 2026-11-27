@@ -222,6 +222,92 @@ void test_attachment() {
   check(api.attach({}, [] { return false; }) == 2 && api.attachment() == Attachment::Refused,
       "failed rebuild cannot report attached");
 }
+void test_identity_queue() {
+  {
+    Api idle;
+    idle.wait_for_identity(true);
+    idle.loaded(State::Standby);
+    idle.identity_complete(true, "");
+    check(idle.attachment() == Attachment::Detached && !idle.arm_pending() &&
+          idle.requests_queued_on_identity() == 0 && !idle.any(),
+          "unrequested identity completion stays detached without an arm");
+  }
+  {
+    Api automatic;
+    automatic.wait_for_identity(false);
+    automatic.loaded(State::Armed);
+    automatic.identity_complete(true, "");
+    check(automatic.phase() == State::Armed, "identity completion preserves automatic Armed state");
+    automatic.identity_complete(true, "");
+    check(automatic.phase() == State::Armed, "late completion preserves automatic Armed state");
+  }
+  {
+    Api api;
+    api.wait_for_identity(true);
+    int rebuilds = 0;
+    check(api.attachment() == Attachment::Detached && !api.can_arm(), "pending identity starts detached");
+    check(api.attach({}, [&] { ++rebuilds; return true; }) == 0 && rebuilds == 0 &&
+        api.attachment() == Attachment::Attaching, "pending attach accepted without rebuild or hooks");
+    check(api.arm({{"GRC_ROOT_SIZE", "observe"}}) == 0 && !api.arm_pending() &&
+        api.phase() == State::Arming, "pending identity arm accepted but cannot run");
+    check(api.requests_queued_on_identity() == 2, "both queued identity requests counted");
+    check(api.detach() == 44 && api.disarm() == 44 && api.last_refusal() == "busy",
+        "disarm and detach while pending explicitly refuse busy");
+    api.loaded(State::Standby);
+    api.identity_complete(true, "");
+    check(api.attachment() == Attachment::Attached && api.arm_pending() &&
+        api.phase() == State::Arming && !api.identity_waiting(), "identity event completes attach then releases arm");
+    auto settings = api.arm_point();
+    api.armed({{"listen", "fixture"}});
+    auto signals = api.take_signals();
+    check(settings.at("GRC_ROOT_SIZE") == "observe" && api.arm_count() == 1 &&
+        signals.size() == 1 && signals[0].name == "armed", "queued arm uses normal arm point and armed signal");
+  }
+  {
+    Api api;
+    api.wait_for_identity(true);
+    check(api.attach() == 0, "attach alone accepted pending identity");
+    api.loaded(State::Standby);
+    api.identity_complete(true, "");
+    check(api.attachment() == Attachment::Attached && api.can_arm() && !api.any(),
+        "attach alone completes to standby without arming");
+  }
+  for (const char *reason : {"fingerprint-unavailable", "fingerprint-mismatch", "slot-mask-mismatch"}) {
+    for (bool arm : {false, true}) {
+      Api api;
+      api.wait_for_identity(true);
+      check(api.attach() == 0 && (!arm || api.arm() == 0), "failure fixture requests accepted");
+      api.loaded(State::Refused, reason);
+      api.identity_complete(false, reason);
+      auto signals = api.take_signals();
+      const auto state = api.state();
+      const auto &counts = std::get<Value::Object>(state.at("identity_failures").data);
+      check(api.attachment() == Attachment::Refused && api.phase() == State::Refused &&
+          !api.arm_pending() && !api.can_arm() && api.last_reason() == reason &&
+          signals.size() == 1 && signals[0].name == "arm_failed" &&
+          std::get<std::string>(signals[0].args[0].data) == reason &&
+          std::get<std::int64_t>(counts.at(reason).data) == 1,
+          "queued failure has counted reason and normal failure signal");
+      api.identity_complete(false, reason);
+      check(!api.any(), "late duplicate identity event cannot repeat failure");
+    }
+  }
+  {
+    Api api;
+    api.wait_for_identity(false);
+    check(api.arm() == 0 && !api.arm_pending(), "standby load can queue arm without attach");
+    api.loaded(State::Standby); api.identity_complete(true, "");
+    check(api.arm_pending() && api.attachment() == Attachment::Attached, "standby identity releases queued arm");
+  }
+  {
+    Api api;
+    api.wait_for_identity(true); api.attach(); api.arm();
+    check(api.shutdown([] { return true; }), "shutdown while identity requests pending");
+    api.identity_complete(true, "");
+    check(!api.can_arm() && !api.any() && api.attachment() == Attachment::Detached,
+        "late identity cannot resurrect shutdown capture");
+  }
+}
 void test_attachment_admission() {
   grc::HookAdmission admission;
   std::atomic<bool> entered{false}, release{false};
@@ -361,6 +447,7 @@ int main() {
   test_lifecycle();
   test_teardown();
   test_attachment();
+  test_identity_queue();
   test_attachment_admission();
   test_attachment_shutdown();
   std::printf("rs_capture_api_test: %d checks, %d failures\n", checks, failures);

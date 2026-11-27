@@ -34,6 +34,8 @@ int Api::detach(const Value::Object &options, const Transition &teardown) {
   if (shutting_down_) return refuse(2, "capture-shutdown");
   called_.store(true, std::memory_order_relaxed);
   if (!options.empty()) return refuse(31, "detach-config-invalid");
+  // Pending identity requests are terminally resolved by the event; cancellation is busy.
+  if (identity_waiting_) return refuse(44, "busy");
   if (attachment_ == Attachment::Detached) return 0;
   if (attachment_ == Attachment::Detaching || attachment_ == Attachment::Attaching)
     return refuse(44, "busy");
@@ -57,6 +59,10 @@ int Api::attach(const Value::Object &options, const Transition &rebuild) {
   if (attachment_ == Attachment::Attached) return 0;
   if (attachment_ != Attachment::Detached) return refuse(44, "busy");
   attachment_ = Attachment::Attaching;
+  if (identity_waiting_) {
+    ++requests_queued_on_identity_;
+    return 0;
+  }
   if (rebuild && !rebuild()) {
     attachment_ = Attachment::Refused;
     return refuse(2, "attach-failed");
@@ -89,9 +95,11 @@ int Api::arm(const Value::Object &options, const Validator &validate) {
   if (std::this_thread::get_id() != main_) return refuse(2, "not-main-thread");
   if (shutting_down_) return refuse(2, "capture-shutdown");
   called_.store(true, std::memory_order_relaxed);
-  if (attachment_ != Attachment::Attached) return refuse(3, "capture-detached");
+  const bool waiting_attach = identity_waiting_ && attachment_ == Attachment::Attaching;
+  if (attachment_ != Attachment::Attached && !waiting_attach) return refuse(3, "capture-detached");
   if (state_ == State::Refused) return refuse(2, "capture-refused");
-  if (state_ != State::Standby) return refuse(44, "busy");
+  if (state_ != State::Standby && !(identity_waiting_ && state_ == State::Loading))
+    return refuse(44, "busy");
   Settings settings;
   static const std::vector<std::string> keys = {
       "GRC_ROOT_SIZE", "GRC_TEXTURE_DELIVERY", "GRC_TEXTURE_PENDING", "GRC_LIVE_CODING",
@@ -113,6 +121,7 @@ int Api::arm(const Value::Object &options, const Validator &validate) {
   if (validate && !validate(settings, &detail_)) return refuse(31, "arm-config-invalid");
   settings_ = std::move(settings);
   pending_arm_ = true;
+  if (identity_waiting_) ++requests_queued_on_identity_;
   state_ = State::Arming;
   return 0;
 }
@@ -120,6 +129,7 @@ int Api::disarm(const Value::Object &options) {
   if (std::this_thread::get_id() != main_) return refuse(2, "not-main-thread");
   if (shutting_down_) return refuse(2, "capture-shutdown");
   called_.store(true, std::memory_order_relaxed);
+  if (identity_waiting_) return refuse(44, "busy");
   if (state_ == State::Disarming) return refuse(44, "busy");
   if (state_ == State::Loading || state_ == State::Standby || state_ == State::Refused)
     return refuse(3, "not-armed");
@@ -155,6 +165,11 @@ Value::Object Api::state(std::uint64_t frame, Value::Object registry) const {
                     {"can_arm", can_arm()}, {"clients", clients_}, {"last_reason", last_reason_},
                     {"last_refusal", last_refusal()}, {"frame", std::int64_t(frame)},
                     {"registry", std::move(registry)}};
+  Value::Object identity_failures;
+  for (const auto &[reason, count] : identity_failures_)
+    identity_failures[reason] = std::int64_t(count);
+  out["identity_failures"] = std::move(identity_failures);
+  out["requests_queued_on_identity"] = std::int64_t(requests_queued_on_identity_);
   if (state_ == State::Armed || state_ == State::Ended || state_ == State::Disarming) {
     for (const char *key : {"listen", "token", "wt_cert_hash", "root_size", "stream_version"}) {
       const auto it = info_.find(key);
@@ -162,6 +177,29 @@ Value::Object Api::state(std::uint64_t frame, Value::Object registry) const {
     }
   }
   return out;
+}
+void Api::wait_for_identity(bool detached) {
+  identity_waiting_ = true;
+  if (detached) attachment_ = Attachment::Detached;
+}
+void Api::identity_complete(bool ok, const std::string &reason) {
+  if (!identity_waiting_ || shutting_down_) return;
+  identity_waiting_ = false;
+  const bool attaching = attachment_ == Attachment::Attaching;
+  if (!ok) {
+    ++identity_failures_[reason];
+    if (attaching || pending_arm_) queue({"arm_failed", {reason}});
+    if (attaching) attachment_ = Attachment::Refused;
+    pending_arm_ = false;
+    settings_.clear();
+    state_ = State::Refused;
+    last_reason_ = reason;
+    return;
+  }
+  if (attaching) attachment_ = Attachment::Attached;
+  // Automatic arming may already have reached Armed; completion cannot downgrade it.
+  if (state_ == State::Loading || state_ == State::Standby || state_ == State::Arming)
+    state_ = pending_arm_ ? State::Arming : State::Standby;
 }
 void Api::loaded(State state, std::string reason) {
   state_ = state;

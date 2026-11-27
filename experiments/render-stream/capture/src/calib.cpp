@@ -545,7 +545,18 @@ bool ProcessFingerprint::in_exec_range(uint64_t address) const {
 }
 
 bool collect_fingerprint(ProcessFingerprint *out, std::string *error) {
-  if (!collect_engine_fingerprint(out, error)) {
+  return collect_fingerprint(out, error, false);
+}
+
+bool collect_fingerprint(ProcessFingerprint *out, std::string *error, bool defer_windows_digest) {
+#if defined(_WIN32)
+  const bool ok = defer_windows_digest ? collect_engine_fingerprint_metadata(out, error) :
+                                       collect_engine_fingerprint(out, error);
+#else
+  (void)defer_windows_digest;
+  const bool ok = collect_engine_fingerprint(out, error);
+#endif
+  if (!ok) {
     return false;
   }
 

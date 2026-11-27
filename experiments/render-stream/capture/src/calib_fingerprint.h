@@ -38,6 +38,11 @@ struct ProcessFingerprint {
 // through the engine interface after successful collection.
 bool collect_engine_fingerprint(ProcessFingerprint *out, std::string *error);
 
+#if defined(_WIN32)
+// Main-thread PE metadata only; no calibrated address is dereferenced.
+bool collect_engine_fingerprint_metadata(ProcessFingerprint *out, std::string *error);
+#endif
+
 // sha256 of a file's contents, lowercase hex. Empty string on failure.
 std::string sha256_file(const std::string &path);
 
