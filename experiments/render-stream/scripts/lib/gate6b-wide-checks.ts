@@ -26,11 +26,9 @@
 //     exactly: a disabled stretch of a 2340x1080 window IS the expand presentation at scale 1, so
 //     ignore-presentation is no sabotage there (why the gating leg is at 1170x540)
 
-import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-
 import { readJson } from "./gate-minus1-checks";
 import {
   type AppliedJson,
@@ -58,6 +56,7 @@ import {
   requestedSeqs,
   shotFiles,
 } from "./gate6h-checks";
+import { JUDGE_CHILD_TIMEOUT_MS, judgeSpawnSync } from "./gate7-judge-child";
 import { stretchVisibleSize } from "./render-stream-2";
 import { pm1Level, widePm1Problems } from "./wide-tolerance";
 
@@ -184,7 +183,7 @@ function cmpRec(
   allow: string[],
 ): { identical: boolean; detail: string } {
   const script = resolve(HERE, "..", "cmp-rec.ts");
-  const r = spawnSync(
+  const r = judgeSpawnSync(
     "pnpm",
     [
       "exec",
@@ -198,6 +197,9 @@ function cmpRec(
       b,
     ],
     { encoding: "utf8", maxBuffer: 64 * 1024 * 1024, cwd: resolve(HERE, "..") },
+    { group: "g7-6", view: a, checker: "cmp-rec.ts" },
+    process.env.RS_JUDGE_OUT ?? resolve(a, ".."),
+    JUDGE_CHILD_TIMEOUT_MS,
   );
   const text = (r.stdout ?? "").trim();
   let detail = text.slice(0, 400);

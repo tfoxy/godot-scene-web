@@ -66,13 +66,12 @@
 // capture's spelling is a one-function change. The pure helpers are exported for
 // scripts/test/self-test-gate8-mm.ts.
 
-import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-
 import { decodePngRgba } from "./gate-minus1-checks";
 import { RS_CORE_CHECK } from "./gate7-gsw-checks";
+import { gateJudgeSpawnSync as spawnSync } from "./gate7-judge-child";
 import {
   check,
   exitCode,

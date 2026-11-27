@@ -19,12 +19,10 @@
 // Every prediction comes from the gates' own expected.json or resolved states, never from a GSW
 // run (Q7 "Masks come from the gates' own expected.json and models").
 
-import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-
 import { compareRgbaBuffers } from "../../../../packages/test-harness/src/image-diff";
 import { deriveClipRects } from "./clip-derive";
 import { decodePngRgba } from "./gate-minus1-checks";
@@ -50,6 +48,7 @@ import { GATE55_Q7_LEGS, gate55Checks } from "./gate7-gsw-55-checks";
 import { gate8Checks } from "./gate7-gsw-g8-checks";
 import { earlySteps } from "./gate7-gsw-g45";
 import { g45ExtraChecks } from "./gate7-gsw-g45-checks";
+import { JUDGE_CHILD_TIMEOUT_MS, judgeSpawnSync } from "./gate7-judge-child";
 import { classMask, judgeQ7Classes, readTolerance } from "./gsw-tolerance";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -739,13 +738,16 @@ async function gate3Checks(ctx: Ctx): Promise<Gate7Check[]> {
       problems.push(`${RS_CORE_CHECK} missing (build-rs-core.sh)`);
       break;
     }
-    const r = spawnSync(
+    const r = judgeSpawnSync(
       RS_CORE_CHECK,
       ["scissors", recording, "--store", join(ctx.sourceDir, capture, "store")],
       {
         encoding: "utf8",
         maxBuffer: 512 * 1024 * 1024,
       },
+      { group: "g7-3", view: recording, checker: RS_CORE_CHECK },
+      ctx.out,
+      JUDGE_CHILD_TIMEOUT_MS,
     );
     if (r.status !== 0) {
       problems.push(

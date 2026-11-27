@@ -26,12 +26,11 @@
 // streams validated at their own version (coding13/live has a /12 viewer beside the /13 ones), the
 // states resolved per viewer version.
 
-import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-
 import { RS_CORE_CHECK } from "./gate7-gsw-checks";
+import { gateJudgeSpawnSync as spawnSync } from "./gate7-judge-child";
 import {
   check,
   type G8aCheck,

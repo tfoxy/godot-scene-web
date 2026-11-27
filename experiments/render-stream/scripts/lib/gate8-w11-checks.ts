@@ -24,15 +24,14 @@
 //
 // The pure helpers are exported so scripts/test/self-test-gate8-w11.ts drives them synthetically.
 
-import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-
 import type { ResourceLine } from "./gate2-checks";
 import { replayMeshLog } from "./gate5e-checks";
 import { RS_CORE_CHECK } from "./gate7-gsw-checks";
+import { gateJudgeSpawnSync as spawnSync } from "./gate7-judge-child";
 import {
   check,
   type G8aCheck,

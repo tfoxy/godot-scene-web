@@ -42,6 +42,7 @@ import {
   launchHarnessBrowser,
   linkTo,
 } from "./browser-harness";
+import { phaseHeartbeat } from "./phase-heartbeat";
 import { quietAcquire } from "./quiet-lock";
 
 /** G8g: the file name a browser leg's recording copy takes: a gate 8 receiver's own
@@ -310,6 +311,11 @@ export async function runWebLegs(
       await new Promise((r) => setTimeout(r, 100));
     // Measurement isolation: one file leg, one shared quiet hold (lib/quiet-lock.ts) -- owned,
     // when legs run at once, by the leg's own owner process.
+    phaseHeartbeat(
+      "leg",
+      "start",
+      `${ctx.kind ?? "web"}/${ctx.gate}/${spec.leg}`,
+    );
     const owner = shards > 1 ? legOwner() : undefined;
     const hold = await quietAcquire(
       "shared",
@@ -327,6 +333,11 @@ export async function runWebLegs(
       await hold.release();
       owner?.kill("SIGTERM");
       done[i] = true;
+      phaseHeartbeat(
+        "leg",
+        "end",
+        `${ctx.kind ?? "web"}/${ctx.gate}/${spec.leg} exit=${results[i]?.exitCode ?? "error"}`,
+      );
     }
     log(`gate7-${ctx.kind ?? "web"}: ${spec.leg} exit=${result.exitCode}`);
   };

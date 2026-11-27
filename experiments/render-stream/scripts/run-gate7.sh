@@ -639,10 +639,21 @@ source "$SCRIPT_DIR/lib/quiet.sh"
 source "$SCRIPT_DIR/lib/gate7-vp-phone.sh"
 QUIET_LOG="$OUT/quiet-lock.jsonl"
 QUIET_T0="$EPOCHREALTIME"
+# Journal phase boundaries before the judge can block or be killed. These are diagnostics only.
+printf '{"stage":"runner","event":"start","epoch_s":%s}\n' "${EPOCHREALTIME/,/.}" >"$OUT/runner-timing.jsonl"
+gate7_heartbeat() {
+	[ -n "${RS_PHASE_LOG:-}" ] || return 0
+	printf 'render-stream phase %s judge %s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$OUT${2:+ $2}" >>"$RS_PHASE_LOG" || true
+}
 gate7_checker() {
 	local rc=0
+	gate7_heartbeat start
+	printf '{"stage":"judge","event":"start","epoch_s":%s}\n' "${EPOCHREALTIME/,/.}" >>"$OUT/runner-timing.jsonl"
 	quiet_run shared run-gate7:checker -- "$@" || rc=$?
+	gate7_heartbeat end "exit=$rc"
+	printf '{"stage":"judge","event":"end","epoch_s":%s,"exit_code":%s}\n' "${EPOCHREALTIME/,/.}" "$rc" >>"$OUT/runner-timing.jsonl"
 	quiet_summary "$OUT" "$(quiet__secs "$QUIET_T0" "$EPOCHREALTIME")" | sed 's/^/run-gate7: /' >&2
+	printf '{"stage":"runner","event":"end","epoch_s":%s,"exit_code":%s}\n' "${EPOCHREALTIME/,/.}" "$rc" >>"$OUT/runner-timing.jsonl"
 	return "$rc"
 }
 echo "run-gate7: evidence directory: $OUT (groups: ${GROUPS_RUN[*]:-none}; env: $HARNESS_ENV${DEVICE:+ device $DEVICE})"

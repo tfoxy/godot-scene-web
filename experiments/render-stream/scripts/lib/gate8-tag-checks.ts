@@ -27,12 +27,12 @@
 //   tag-off              grant-off: the grant set and nobody asking: the host never turned on
 //   tag-cost             (informative) the host's resolution cost on the fixture
 //   tag-sabotage-*       each GRC_ITEM_META_SABOTAGE leg fails the check it targets
-import { spawnSync } from "node:child_process";
+
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-
 import { RS_CORE_CHECK } from "./gate7-gsw-checks";
+import { gateJudgeSpawnSync as spawnSync } from "./gate7-judge-child";
 import { type G8aCheck, skipped } from "./gate8-adopt-checks";
 import {
   createRecordingValidator,

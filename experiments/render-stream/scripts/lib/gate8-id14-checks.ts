@@ -37,11 +37,12 @@
 //   id-cost             (informative) the v2 host cost on tag-scene and, when G8ID14_ONLY_COST ran,
 //                       on capture-scale (id-cost/)
 //   id-sabotage-*       each GRC_ITEM_META_SABOTAGE leg fails the check it targets
-import { spawnSync } from "node:child_process";
+
 import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { RS_CORE_CHECK } from "./gate7-gsw-checks";
+import { gateJudgeSpawnSync as spawnSync } from "./gate7-judge-child";
 import { type G8aCheck, skipped } from "./gate8-adopt-checks";
 import { captureMirrorProblems } from "./gate8-scale-checks";
 import {

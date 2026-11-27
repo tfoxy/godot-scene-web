@@ -1276,6 +1276,33 @@
       "reach": ["windows"]
     },
     {
+      "why": "Judge child supervision and its heartbeats run in the gate 7 judges, the native gate 6 comparator/provenance checks and native gate 8's imported checkers; pure tests exercise deadlines, launch errors and cleanup",
+      "paths": [
+        "experiments/render-stream/scripts/lib/gate7-judge-child.ts",
+        "experiments/render-stream/scripts/lib/judge-child-supervisor.py",
+        "experiments/render-stream/scripts/lib/phase-heartbeat.ts"
+      ],
+      "reach": [
+        "pure",
+        "native:gate6@*",
+        "native:gate8@*",
+        "g7:*@*",
+        "g7live:*@*"
+      ]
+    },
+    {
+      "why": "Gate 7 judge phase timings are written by every gate 7 checker and covered by the pure timing self-test",
+      "paths": ["experiments/render-stream/scripts/lib/gate7-judge-timing.ts"],
+      "reach": ["pure", "g7:*@*", "g7live:*@*"]
+    },
+    {
+      "why": "The remote watchdog diagnostics helper is exercised by the pure watchdog self-test; local rendered legs do not run the workflow watchdog",
+      "paths": [
+        "experiments/render-stream/scripts/lib/watchdog-diagnostics.sh"
+      ],
+      "reach": ["pure"]
+    },
+    {
       "why": "gate 7's runner, tool, checker and shared adapters: every gate 7 group on every receiver",
       "paths": [
         "experiments/render-stream/scripts/run-gate7.sh",

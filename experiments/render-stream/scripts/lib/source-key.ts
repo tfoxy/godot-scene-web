@@ -18,10 +18,10 @@
 // result.json -- except files that only gate 7's browsers, the lock or the docs read
 // (SOURCE_EXCLUDES). A new file under a root is IN the key until someone excludes it.
 
-import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, readFileSync, readlinkSync } from "node:fs";
 import { join } from "node:path";
+import { JUDGE_CHILD_TIMEOUT_MS, judgeSpawnSync } from "./gate7-judge-child";
 
 export const SOURCE_KEY_SCHEMA = "render-stream-source-key/1";
 
@@ -76,7 +76,7 @@ export function extensionLibrarySha(extension: string): string | null {
 
 /** Repository-relative paths of the key's files, sorted. */
 export function sourceKeyFiles(repoRoot: string): string[] {
-  const r = spawnSync(
+  const r = judgeSpawnSync(
     "git",
     [
       "-C",
@@ -90,6 +90,9 @@ export function sourceKeyFiles(repoRoot: string): string[] {
       ...SOURCE_ROOTS,
     ],
     { encoding: "utf8", maxBuffer: 256 * 1024 * 1024 },
+    { group: "provenance", view: repoRoot, checker: "git ls-files" },
+    process.env.RS_JUDGE_OUT ?? repoRoot,
+    JUDGE_CHILD_TIMEOUT_MS,
   );
   if (r.status !== 0) throw new Error(`git ls-files: ${r.stderr}`);
   return [...new Set(r.stdout.split("\0").filter(Boolean))]

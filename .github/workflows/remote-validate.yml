@@ -245,30 +245,34 @@ jobs:
           esac
           [ -n "$CHANGED_PATHS" ] && args+=(--paths "$CHANGED_PATHS")
           mkdir -p "$RS_QUIET_LOCK_DIR"
-          # vi OUT ARGS...: validate-increment under the watchdog (a gsw g7-2 job once hung past 90 min
-          # and was cancelled with no log). 45 s before the deadline it snapshots
-          # the process tree and the quiet lock; on the deadline timeout kills the run's process
-          # group, and the newest logs' tails go to $RUNNER_TEMP/watchdog (Trim artifact uploads it).
-          # The run's row then fails (rc missing) instead of the job dying silent.
+          # Heartbeats bypass validate-increment's run.log redirection and remain in the job log.
+          export RS_PHASE_LOG="/proc/$$/fd/1"
+          source experiments/render-stream/scripts/lib/watchdog-diagnostics.sh
+          # vi OUT ARGS...: preserve snapshots in the job log before the deadline and on kill.
           vi() {
-            local out="$1" s=$((WATCHDOG_MIN * 60)) rc wd w="$RUNNER_TEMP/watchdog"
+            local out="$1" s=$((WATCHDOG_MIN * 60)) rc=0 wd started
+            started=$(date +%s)
             shift
-            ( sleep $((s - 45)) && mkdir -p "$w" && {
-                date -u; uptime; ps -eo pid,ppid,etimes,pcpu,rss,args --forest
-                bash experiments/render-stream/scripts/lib/quiet.sh status
-              } >"$w/ps-$(basename "$out").txt" 2>&1 ) &
+            (
+              sleeper=""
+              trap '[ -z "$sleeper" ] || kill "$sleeper" 2>/dev/null || true' EXIT
+              trap 'exit 0' TERM INT
+              sleep $((s - 45)) &
+              sleeper=$!
+              wait "$sleeper" && watchdog_snapshot "$out" pre-deadline
+            ) &
             wd=$!
-            timeout -k 60 "$s" bash experiments/render-stream/scripts/validate-increment.sh "$@"
-            rc=$?
-            kill "$wd" 2>/dev/null
+            # Explicitly capture failure: errexit must not bypass diagnostics on a single run.
+            timeout -k 60 "$s" bash experiments/render-stream/scripts/validate-increment.sh "$@" || rc=$?
+            kill "$wd" 2>/dev/null || true
+            wait "$wd" 2>/dev/null || true
             if [ "$rc" = 124 ] || [ "$rc" = 137 ]; then
               echo "::error::watchdog: validate-increment ($out) exceeded $WATCHDOG_MIN min and was killed"
-              mkdir -p "$w/logs-$(basename "$out")"
-              find "$out" -type f -name '*.log' -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -30 |
-                cut -d' ' -f2- | while read -r f; do
-                  r="${f#"$out"/}"
-                  tail -c 20000 "$f" >"$w/logs-$(basename "$out")/${r//\//__}"
-                done
+              watchdog_snapshot "$out" killed
+              if [ -f "$out/plan.json" ]; then
+                now=$(date +%s)
+                python3 experiments/render-stream/scripts/lib/validate-summary.py "$out" "$started" "$now" || true
+              fi
             fi
             return "$rc"
           }
@@ -371,6 +375,19 @@ jobs:
           # a gate's per-leg lock log (a few hundred KB at most): the per-group minutes behind
           # remote-jobs.json's leg-shard weights
           [ -f "$RUNNER_TEMP/v/$ID/run/quiet-lock.jsonl" ] && cp "$RUNNER_TEMP/v/$ID/run/quiet-lock.jsonl" "$art/legs-$LABEL.jsonl"
+          # Always print judge timings, including starts of killed stages. Job artifacts are
+          # deleted after merge, and success evidence is trimmed, so artifact-only timings vanish.
+          for o in "$RUNNER_TEMP"/v "$RUNNER_TEMP"/v[0-9]*; do
+            [ -d "$o/$ID/run" ] || continue
+            while IFS= read -r -d '' f; do
+              r="${f#"$o/$ID/run/"}"
+              dest="$art/judge-timings/${o##*/}/$r"
+              mkdir -p "$(dirname "$dest")"
+              cp "$f" "$dest"
+              echo "gate7 timing ($LABEL/${o##*/}/$r):"
+              cat "$f"
+            done < <(find -P "$o/$ID/run" -type f \( -name judge-timing.jsonl -o -name runner-timing.jsonl \) -print0)
+          done
           # the check ids of the run's own verdict (lib/check-census.py): the merge's checks.json
           # shows a leg-sharded run judged the same checks as the whole run
           [ -d "$RUNNER_TEMP/v/$ID/run" ] && python3 -I experiments/render-stream/scripts/lib/check-census.py \

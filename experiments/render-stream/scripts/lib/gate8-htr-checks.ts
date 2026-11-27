@@ -27,11 +27,11 @@
 // htr-lever (measured, no budget), plus eviction eligibility, ImageTexture safety, always
 // equivalence, standby RSS savings and standby hot-hook checks.
 
-import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { decodePngRgba, skippedLegProblem } from "./gate-minus1-checks";
+import { gateJudgeSpawnSync as spawnSync } from "./gate7-judge-child";
 import {
   check,
   deferredHeldTextureProblems,

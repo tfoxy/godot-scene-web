@@ -76,6 +76,21 @@ def libcxx_block(d):
         return None
 
 
+def judge_timeouts(d):
+    """Only this run's timeout markers; never walk symlinked source evidence."""
+    found = []
+    for root, dirs, files in os.walk(d, followlinks=False):
+        if "judge-timeout.json" not in files:
+            continue
+        try:
+            marker = json.load(open(os.path.join(root, "judge-timeout.json")))
+            if marker.get("status") == "judge-timeout":
+                found.append(marker)
+        except (OSError, ValueError):
+            pass
+    return found
+
+
 def collect_rows(out, plan):
     rows, failed = [], 0
     for r in plan["runs"]:
@@ -83,6 +98,9 @@ def collect_rows(out, plan):
         if not os.path.isdir(d):
             continue
         rc = open(os.path.join(d, "rc")).read().strip() if os.path.exists(os.path.join(d, "rc")) else "missing"
+        timeouts = judge_timeouts(d)
+        if timeouts:
+            rc = "judge-timeout"
         tier = {}
         if os.path.exists(os.path.join(d, "tier-verdict.json")):
             try:
@@ -100,6 +118,8 @@ def collect_rows(out, plan):
                      "skipped_remote_groups": tier.get("skipped_remote_groups", []),
                      "unavailable": tier.get("unavailable", []),
                      "known_flakes": tier.get("known_flakes", []), "failing": tier.get("failing", [])})
+        if timeouts:
+            rows[-1]["judge_timeouts"] = timeouts
         # HC4a: the shadow oracle's account (lib/hc-shadow-scan.py), where the run had it on.
         if os.path.exists(os.path.join(d, "hc-shadow.json")):
             try:
@@ -160,6 +180,9 @@ def fold_shards(rows, expected):
         f = dict(g[0])
         worst = max(g, key=lambda r: rc_rank(r["rc"]))
         f["rc"] = "missing" if len(g) < want else worst["rc"]
+        if any(r.get("judge_timeouts") or r["rc"] == "judge-timeout" for r in g):
+            f["rc"] = "judge-timeout"
+            f["missing_shards"] = max(0, want - len(g))
         walls = [r["wall_s"] for r in g if r["wall_s"] is not None]
         f["wall_s"] = max(walls) if walls else None
         f["lock_wait_s"] = round(sum(r["lock_wait_s"] for r in g), 1)
@@ -168,7 +191,7 @@ def fold_shards(rows, expected):
         f["lock"] = {m: {k: round(sum(r["lock"].get(m, {}).get(k, 0) for r in g), 1) for k in ("holds", "wait_s", "hold_s")}
                      for m in ("shared", "exclusive")} if any(r["lock"] for r in g) else {}
         f["skipped_by_tier"] = sum(r["skipped_by_tier"] for r in g)
-        for k in ("unavailable", "known_flakes", "failing", "skipped_remote", "skipped_remote_groups"):
+        for k in ("unavailable", "known_flakes", "failing", "skipped_remote", "skipped_remote_groups", "judge_timeouts"):
             seen = []
             for r in g:
                 seen += [x for x in r.get(k, []) if x not in seen]
@@ -195,6 +218,7 @@ def emit(out, summary, rows, failed, t0, t1, n_skipped, local=False):
               f"  hold {x['lock_hold_s']:>7.1f} s"
               + (f"  skipped-by-tier {x['skipped_by_tier']}" if x["skipped_by_tier"] else "")
               + (f"  unavailable {len(x['unavailable'])}" if x["unavailable"] else "")
+              + (f"  judge-timeout {json.dumps(x['judge_timeouts'])}" if x.get("judge_timeouts") else "")
               + (f"  known-flake {','.join(x['known_flakes'])}" if x.get("known_flakes") else "")
               + (f"  skipped-remote {','.join(x['skipped_remote_groups']) or len(x['skipped_remote'])}"
                  if x.get("skipped_remote") else ""))

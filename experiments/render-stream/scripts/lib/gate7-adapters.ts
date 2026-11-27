@@ -12,7 +12,6 @@
 // sabotage; P-W1's web-vs-native shot triangulation is reported, not gated (Q7 "W vs N: report
 // only").
 
-import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   existsSync,
@@ -40,6 +39,7 @@ import {
   RECORDING_NAME,
   runGate0,
 } from "./gate0-checks";
+import { JUDGE_CHILD_TIMEOUT_MS, judgeSpawnSync } from "./gate7-judge-child";
 import type { WebLegSpec } from "./gate7-web-legs";
 import { type SourceKeyInputs, sourceKey } from "./source-key";
 
@@ -816,10 +816,17 @@ export function currentBuildProvenance(
   ),
 ): SourceProvenance {
   const git = (...args: string[]): string => {
-    const r = spawnSync("git", ["-C", repoRoot, ...args], {
-      encoding: "utf8",
-      maxBuffer: 256 * 1024 * 1024,
-    });
+    const r = judgeSpawnSync(
+      "git",
+      ["-C", repoRoot, ...args],
+      {
+        encoding: "utf8",
+        maxBuffer: 256 * 1024 * 1024,
+      },
+      { group: "provenance", view: repoRoot, checker: "git" },
+      process.env.RS_JUDGE_OUT ?? repoRoot,
+      JUDGE_CHILD_TIMEOUT_MS,
+    );
     if (r.status !== 0) throw new Error(`git ${args.join(" ")}: ${r.stderr}`);
     return r.stdout;
   };

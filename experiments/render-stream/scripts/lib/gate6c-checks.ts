@@ -20,11 +20,9 @@
 // values read from one, so scripts/test/self-test-gate6c.ts drives the evaluators with synthetic
 // values. Nothing here launches a process except `git rev-parse` for the report's run block.
 
-import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
-
 import { buildReport } from "../report-gate6";
 import {
   decodePngRgba,
@@ -35,6 +33,7 @@ import { readExitCode } from "./gate0-checks";
 import { QUEUED_SLACK_BYTES } from "./gate1-live-checks";
 import { check } from "./gate5-checks";
 import type { Gate6Check } from "./gate6a-checks";
+import { JUDGE_CHILD_TIMEOUT_MS, judgeSpawnSync } from "./gate7-judge-child";
 import { probeGamescopeVersion } from "./provenance";
 import { decodeRecord, splitRecords } from "./render-stream-2";
 import {
@@ -1515,10 +1514,26 @@ export function gamescopeVersion(): string {
 }
 
 export function gitInfo(): { commit: string; dirty: boolean } {
-  const head = spawnSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" });
-  const status = spawnSync("git", ["status", "--porcelain"], {
-    encoding: "utf8",
-  });
+  const name = { group: "provenance", view: process.cwd(), checker: "git" };
+  const out = process.env.RS_JUDGE_OUT ?? process.cwd();
+  const head = judgeSpawnSync(
+    "git",
+    ["rev-parse", "HEAD"],
+    { encoding: "utf8" },
+    name,
+    out,
+    JUDGE_CHILD_TIMEOUT_MS,
+  );
+  const status = judgeSpawnSync(
+    "git",
+    ["status", "--porcelain"],
+    {
+      encoding: "utf8",
+    },
+    name,
+    out,
+    JUDGE_CHILD_TIMEOUT_MS,
+  );
   return {
     commit: head.status === 0 ? head.stdout.trim() : "unknown",
     dirty: status.status === 0 ? status.stdout.trim() !== "" : true,

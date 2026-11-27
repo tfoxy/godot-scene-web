@@ -13,7 +13,6 @@
 //   manifest-device-target    met/not-met cite own-kind g31 g7-dev legs on the file's build
 // plus a report-only `evidence-builds` row listing quoted runs off the manifest's build.
 
-import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   existsSync,
@@ -24,7 +23,6 @@ import {
 } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-
 import type { FeatureManifest } from "../make-features";
 import {
   DEVICE_RUNS,
@@ -40,29 +38,33 @@ import {
   type ShortKind,
 } from "./feature-evidence-7";
 import { compareSessionToManifest } from "./gate6z-checks";
+import { gateJudgeSpawnSync, JudgeTimeout } from "./gate7-judge-child";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(SCRIPT_DIR, "..", "..", "..", "..");
 
 /** `<checkout>/artifacts/render-stream/gate7`: this checkout's if present, else the main
  * checkout's (a linked worktree's evidence lives in the main checkout's ignored tree). */
-export function defaultEvidenceRoot(): string {
-  const own = join(REPO_ROOT, "artifacts", "render-stream", "gate7");
+export function defaultEvidenceRoot(repoRoot = REPO_ROOT): string {
+  const own = join(repoRoot, "artifacts", "render-stream", "gate7");
   if (existsSync(own)) return own;
   try {
-    const common = execFileSync(
+    const result = gateJudgeSpawnSync(
       "git",
       [
         "-C",
-        REPO_ROOT,
+        repoRoot,
         "rev-parse",
         "--path-format=absolute",
         "--git-common-dir",
       ],
       { encoding: "utf8" },
-    ).trim();
+    );
+    const common = result.stdout.trim();
+    if (result.status !== 0 || !common) return own;
     return join(dirname(common), "artifacts", "render-stream", "gate7");
-  } catch {
+  } catch (error) {
+    if (error instanceof JudgeTimeout) throw error;
     return own;
   }
 }
@@ -76,9 +78,9 @@ interface CheckRow {
 }
 /** G8z: `<checkout>/artifacts`, where gate 8's manifest evidence paths are rooted (they span
  * `render-stream/gate7/` and `render-stream/gate8/`); the main checkout's from a worktree. */
-export function defaultEvidenceRoot8(): string {
+export function defaultEvidenceRoot8(repoRoot = REPO_ROOT): string {
   // defaultEvidenceRoot() is `<artifacts>/render-stream/gate7`
-  return resolve(defaultEvidenceRoot(), "..", "..");
+  return resolve(defaultEvidenceRoot(repoRoot), "..", "..");
 }
 
 export interface IndexedResult {

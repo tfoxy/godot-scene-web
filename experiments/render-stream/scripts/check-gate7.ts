@@ -63,6 +63,7 @@ import {
 } from "./lib/gate7-gsw";
 import { gswExtraChecks } from "./lib/gate7-gsw-checks";
 import { GATE6_LEGS } from "./lib/gate7-gsw-g6";
+import { timeJudge } from "./lib/gate7-judge-timing";
 import {
   checkGateLive,
   GATE7L_GATES,
@@ -419,6 +420,13 @@ async function gateChecker(
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
+  process.env.RS_JUDGE_OUT = args.out;
+  process.env.RS_JUDGE_GROUP = args.legs.join(",");
+  process.env.RS_JUDGE_VIEW = args.out;
+  await timeJudge(args.out, "judge", {}, () => judge(args));
+}
+
+async function judge(args: ReturnType<typeof parseArgs>): Promise<void> {
   const {
     out,
     legs,
@@ -709,6 +717,7 @@ async function main(): Promise<void> {
         throw new Error(
           `check-gate7: ${group}@gsw needs --source ${gate}=<run> and --gsw-bundle <dir>`,
         );
+      const runChecker = await gateChecker(gate);
       const input: GswGroupInput = {
         gate,
         sourceDir: source,
@@ -716,10 +725,15 @@ async function main(): Promise<void> {
         viewDir: join(out, gate, "gsw-view"),
         bundleDir: gswBundle,
         current,
-        runChecker: await gateChecker(gate),
+        runChecker: (view) =>
+          timeJudge(out, "gswChecker", { gate, view }, () => runChecker(view)),
         extra: () => gswExtraChecks(gate, { out, sourceDir: source }),
       };
-      results.push(await checkGswGroup(input));
+      results.push(
+        await timeJudge(out, "checkGswGroup", { group }, () =>
+          checkGswGroup(input),
+        ),
+      );
     }
   }
   // G7b: gates 1 to 6, web half (lib/gate7b-adapters.ts). Each needs `--source <gate>=<run>`.
@@ -732,29 +746,33 @@ async function main(): Promise<void> {
       );
     }
     console.log(`check-gate7: judging ${def.group} (${def.gate}) on the web`);
-    const r = await checkGateWeb({
-      def,
-      sourceDir: source,
-      gateOut: join(out, def.gate),
-      bundleDir: bundle,
-      current: currentBuildProvenance(
-        REPO_ROOT,
-        extension,
-        PINNED_LINUX_TEMPLATE,
-        calibration,
-      ),
-    });
+    const r = await timeJudge(out, "checkGateWeb", { group: def.group }, () =>
+      checkGateWeb({
+        def,
+        sourceDir: source,
+        gateOut: join(out, def.gate),
+        bundleDir: bundle,
+        current: currentBuildProvenance(
+          REPO_ROOT,
+          extension,
+          PINNED_LINUX_TEMPLATE,
+          calibration,
+        ),
+      }),
+    );
     const { classification: _c, ...rest } = r;
     // G7g: the web export's backing store at gate 6's three presentation sizes.
     if (def.gate === "gate6") {
       rest.checks.push(
-        await presentationCheck(
-          "web",
-          new Map(
-            GATE6_LEGS.filter((d) => d.replaces).map((d) => [
-              d.leg,
-              join(out, def.gate, "web", d.leg),
-            ]),
+        await timeJudge(out, "presentationCheck", { receiver: "web" }, () =>
+          presentationCheck(
+            "web",
+            new Map(
+              GATE6_LEGS.filter((d) => d.replaces).map((d) => [
+                d.leg,
+                join(out, def.gate, "web", d.leg),
+              ]),
+            ),
           ),
         ),
       );

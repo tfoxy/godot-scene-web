@@ -21,7 +21,6 @@
 //                         against the /12 twin, on the scale recordings
 // plus gate8-w11t-checks.ts's coding checks at /13 (runG8w11Coding(g, 13): `w13-coding-*`).
 
-import { spawnSync } from "node:child_process";
 import {
   accessSync,
   constants,
@@ -34,9 +33,9 @@ import {
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-
 import type { ResourceLine } from "./gate2-checks";
 import { RS_CORE_CHECK } from "./gate7-gsw-checks";
+import { gateJudgeSpawnSync as spawnSync } from "./gate7-judge-child";
 import {
   check,
   type G8aCheck,

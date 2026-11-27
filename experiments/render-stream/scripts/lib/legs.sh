@@ -133,6 +133,12 @@ legs__timing_opens() {
 	return 1
 }
 
+# Diagnostic heartbeats bypass the runner's redirected stdout in remote validation.
+legs_heartbeat() {
+  [ -n "${RS_PHASE_LOG:-}" ] || return 0
+  printf 'render-stream phase %s %s %s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$2" "$3" >>"$RS_PHASE_LOG" || true
+}
+
 # legs_run_checker <command...>: the run's checker under the shared lock, then the lock summary.
 legs_run_checker() {
 	local rc=0
@@ -391,6 +397,7 @@ run_browser_receiver() {
 	wait_owned "$pid" $((RENDERED_TIMEOUT_S + 60))
 	CURRENT_CHILD_PID=""
 	[ -s "$dir/exit-code.txt" ] || echo "$WAIT_EXIT" >"$dir/exit-code.txt"
+	legs_heartbeat leg end "$dir exit=$(cat "$dir/exit-code.txt")"
 	echo "$LEGS_LOG: ${dir#"$OUT"/} exit=$(cat "$dir/exit-code.txt") ($GATE7_LIVE_KIND browser receiver)"
 }
 
@@ -690,6 +697,7 @@ wait_owned() {
 #   openat:  strace -f -tt -e trace=openat.
 legs__run_headless() {
 	local dir="$1" mode="$2"
+	legs_heartbeat leg start "$dir"
 	shift 3
 	LEGS_FAST_DIR="$dir"
 	legs__fast_argv "$@"
@@ -741,6 +749,7 @@ legs__run_headless() {
 	wait_owned "$pid" "$HEADLESS_TIMEOUT_S"
 	CURRENT_CHILD_PID=""
 	echo "$WAIT_EXIT" >"$dir/exit-code.txt"
+	legs_heartbeat leg end "$dir exit=$WAIT_EXIT"
 	echo "$LEGS_LOG: ${dir#"$OUT"/} exit=$WAIT_EXIT"
 }
 
@@ -749,6 +758,7 @@ legs__run_headless() {
 BG_PID=""
 legs__start_headless_bg() {
 	local dir="$1"
+	legs_heartbeat leg start "$dir"
 	shift 2
 	LEGS_FAST_DIR="$dir"
 	if gate7_browser_leg "$@"; then
@@ -781,6 +791,7 @@ legs__finish_bg() {
 	local dir="$1" pid="$2" timeout_s="$3"
 	wait_owned "$pid" "$timeout_s"
 	echo "$WAIT_EXIT" >"$dir/exit-code.txt"
+	legs_heartbeat leg end "$dir exit=$WAIT_EXIT"
 	echo "$LEGS_LOG: ${dir#"$OUT"/} exit=$WAIT_EXIT"
 }
 
@@ -886,6 +897,7 @@ settle_seqs() {
 RENDERED_EXTRA_ARGS=()
 legs__run_rendered() {
 	local dir="$1" project="$2"
+	legs_heartbeat leg start "$dir"
 	local -a extra=()
 	if [ "${#RENDERED_EXTRA_ARGS[@]}" -gt 0 ]; then
 		extra=("${RENDERED_EXTRA_ARGS[@]}")
@@ -924,6 +936,7 @@ legs__run_rendered() {
 	CURRENT_CHILD_PID=""
 	[ "$ticks" -ge $((RENDERED_TIMEOUT_S * 10)) ] && WAIT_EXIT=124
 	echo "$WAIT_EXIT" >"$dir/exit-code.txt"
+	legs_heartbeat leg end "$dir exit=$WAIT_EXIT"
 	echo "$LEGS_LOG: ${dir#"$OUT"/} exit=$WAIT_EXIT"
 }
 

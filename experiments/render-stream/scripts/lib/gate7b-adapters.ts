@@ -28,7 +28,6 @@
 // legs whose last shot is of the state the canvas shows at exit), and P-W1's per-shot web-vs-
 // native triangulation (Q7: report only, but every non-zero diff is listed).
 
-import { spawnSync } from "node:child_process";
 import {
   existsSync,
   lstatSync,
@@ -66,6 +65,8 @@ import {
   sourceProvenanceProblems,
   viewHoldsWrite,
 } from "./gate7-adapters";
+import { JUDGE_CHILD_TIMEOUT_MS, judgeSpawnSync } from "./gate7-judge-child";
+import { timeJudge } from "./gate7-judge-timing";
 import {
   particleCells,
   particleFlakeEvidence,
@@ -737,37 +738,55 @@ interface CheckerReport {
 export async function runChecker(
   def: GateDef,
   viewDir: string,
+  timeoutMs: number = JUDGE_CHILD_TIMEOUT_MS,
 ): Promise<CheckerReport> {
-  const r = spawnSync(
-    "mise",
-    [
-      "exec",
-      "--",
-      "pnpm",
-      "exec",
-      "tsx",
-      "--conditions=development",
-      join(SCRIPT_DIR, def.checker),
-      "--out",
-      viewDir,
-    ],
-    {
-      cwd: REPO_ROOT,
-      encoding: "utf8",
-      maxBuffer: 512 * 1024 * 1024,
-      env: { ...process.env, DISPLAY: undefined, WAYLAND_DISPLAY: undefined },
-    },
-  );
-  await writeFile(
-    join(viewDir, "checker.log"),
-    `${r.stdout ?? ""}\n--- stderr ---\n${r.stderr ?? ""}\nexit ${r.status}\n`,
-  );
-  const report = await readJson<CheckerReport>(join(viewDir, "result.json"));
-  if (!report)
-    throw new Error(
-      `${def.checker} wrote no result.json for ${viewDir} (exit ${r.status}): ${(r.stderr ?? "").slice(-2000)}`,
+  const detail = {
+    gate: def.gate,
+    checker: def.checker,
+    view: viewDir,
+    exit_code: "pending",
+  };
+  return timeJudge(join(viewDir, ".."), "runChecker", detail, async () => {
+    const r = judgeSpawnSync(
+      "mise",
+      [
+        "exec",
+        "--",
+        "pnpm",
+        "exec",
+        "tsx",
+        "--conditions=development",
+        join(SCRIPT_DIR, def.checker),
+        "--out",
+        viewDir,
+      ],
+      {
+        cwd: REPO_ROOT,
+        encoding: "utf8",
+        maxBuffer: 512 * 1024 * 1024,
+        env: {
+          ...process.env,
+          RS_JUDGE_OUT: process.env.RS_JUDGE_OUT ?? join(viewDir, "..", ".."),
+          DISPLAY: undefined,
+          WAYLAND_DISPLAY: undefined,
+        },
+      },
+      { group: def.group, view: viewDir, checker: def.checker },
+      join(viewDir, "..", ".."),
+      timeoutMs,
     );
-  return report;
+    detail.exit_code = String(r.status);
+    await writeFile(
+      join(viewDir, "checker.log"),
+      `${r.stdout ?? ""}\n--- stderr ---\n${r.stderr ?? ""}\nexit ${r.status}\n`,
+    );
+    const report = await readJson<CheckerReport>(join(viewDir, "result.json"));
+    if (!report)
+      throw new Error(
+        `${def.checker} wrote no result.json for ${viewDir} (exit ${r.status}): ${(r.stderr ?? "").slice(-2000)}`,
+      );
+    return report;
+  });
 }
 
 /** A check's verdict with the view's own directory replaced by `<run>`: details that quote a path
@@ -1151,7 +1170,12 @@ export async function checkGateWeb(
   await rm(bandedRoot, { recursive: true, force: true });
   const bandedMap = new Map<string, string>();
   for (const s of specs) {
-    const classes = await classifyLegShots(s.leg, s.nativeDir, s.webDir);
+    const classes = await timeJudge(
+      gateOut,
+      "classifyLegShots",
+      { leg: s.leg },
+      () => classifyLegShots(s.leg, s.nativeDir, s.webDir),
+    );
     shotClasses.push(...classes);
     const d = join(bandedRoot, s.leg);
     await buildBandedLeg(s.webDir, s.nativeDir, d, classes);
@@ -1166,28 +1190,30 @@ export async function checkGateWeb(
   const traced = discovered
     .filter((d) => d.excluded === "native-only-trace")
     .map((d) => d.leg);
-  await buildMirrorView(
-    sourceDir,
-    new Map(),
-    views.native,
-    def.viewGroups,
-    traced,
-  );
-  await buildMirrorView(
-    sourceDir,
-    blankMap,
-    views.blank,
-    def.viewGroups,
-    traced,
-  );
-  await buildMirrorView(sourceDir, webMap, views.web, def.viewGroups, traced);
-  await buildMirrorView(
-    sourceDir,
-    bandedMap,
-    views.banded,
-    def.viewGroups,
-    traced,
-  );
+  await timeJudge(gateOut, "buildMirrorViews", { gate: def.gate }, async () => {
+    await buildMirrorView(
+      sourceDir,
+      new Map(),
+      views.native,
+      def.viewGroups,
+      traced,
+    );
+    await buildMirrorView(
+      sourceDir,
+      blankMap,
+      views.blank,
+      def.viewGroups,
+      traced,
+    );
+    await buildMirrorView(sourceDir, webMap, views.web, def.viewGroups, traced);
+    await buildMirrorView(
+      sourceDir,
+      bandedMap,
+      views.banded,
+      def.viewGroups,
+      traced,
+    );
+  });
   const native = await runChecker(def, views.native);
   const blank = await runChecker(def, views.blank);
   const web = await runChecker(def, views.web);

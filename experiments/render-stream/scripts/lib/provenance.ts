@@ -65,6 +65,7 @@ export function probeGamescopeVersion(): string | null {
     const result = spawnSync("gamescope", ["--version"], {
       encoding: "utf8",
       timeout: 5000,
+      killSignal: "SIGKILL",
     });
     if (result.status !== 0) return null;
     const line = (result.stdout || result.stderr || "").split("\n")[0].trim();

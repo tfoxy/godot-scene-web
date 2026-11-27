@@ -20,11 +20,9 @@
 // Predictions come from the gates' own expected.json and the source recordings, never from a GSW
 // run (Q7).
 
-import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-
 import { decodePngRgba } from "./gate-minus1-checks";
 import { loadRecording, RECORDING_NAME } from "./gate0-checks";
 import type { Gate4Expected } from "./gate4-expected";
@@ -37,6 +35,7 @@ import type {
 import { itemIdsByName } from "./gate5d-checks";
 import type { Gate7Check } from "./gate7-adapters";
 import { compositorProblems, mk } from "./gate7-gsw";
+import { JUDGE_CHILD_TIMEOUT_MS, judgeSpawnSync } from "./gate7-judge-child";
 
 export interface G45Ctx {
   out: string;
@@ -490,7 +489,7 @@ async function loweringParity(ctx: G45Ctx): Promise<Gate7Check> {
       continue;
     }
     const { ids } = itemIdsByName(e, await loadRecording(recording));
-    const r = spawnSync(
+    const r = judgeSpawnSync(
       ctx.rsCoreCheck,
       [
         "lowered",
@@ -501,6 +500,9 @@ async function loweringParity(ctx: G45Ctx): Promise<Gate7Check> {
         join(capture, "store"),
       ],
       { encoding: "utf8", maxBuffer: 1 << 30 },
+      { group: "g7-45", view: recording, checker: ctx.rsCoreCheck },
+      ctx.out,
+      JUDGE_CHILD_TIMEOUT_MS,
     );
     if (r.status !== 0) {
       problems.push(`${fix}: rs-core-check lowered: ${r.stderr.trim()}`);
