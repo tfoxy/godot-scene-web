@@ -681,6 +681,24 @@ const char *env(const char *name) {
   if (found == values.end()) found = values.emplace(name, std::set<std::string>{}).first;
   return found->second.insert(std::move(value)).first->c_str();
 }
+bool env_any_with_prefix(const char *prefix) {
+  std::wstring wide;
+  if (!widen(prefix, &wide)) return false;
+  wchar_t *block = ::GetEnvironmentStringsW();
+  if (!block) return false;
+  bool found = false;
+  for (const wchar_t *entry = block; *entry; entry += std::wcslen(entry) + 1) {
+    const std::size_t length = std::wcslen(entry);
+    if (length >= wide.size() &&
+        ::CompareStringOrdinal(entry, static_cast<int>(wide.size()), wide.c_str(),
+                               static_cast<int>(wide.size()), TRUE) == CSTR_EQUAL) {
+      found = true;
+      break;
+    }
+  }
+  ::FreeEnvironmentStringsW(block);
+  return found;
+}
 std::optional<ThreadCensus> thread_census() {
   const HANDLE snapshot = ::CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
   if (snapshot == INVALID_HANDLE_VALUE) return std::nullopt;

@@ -6,11 +6,7 @@
 #include <string>
 #include <string_view>
 #include <vector>
-#if defined(__APPLE__)
-#include <crt_externs.h>
-#elif !defined(_WIN32)
-extern "C" { extern char **environ; }
-#endif
+#include "rs_platform.h"
 namespace grc::audio {
 struct Config {
   bool godot_sample = true;
@@ -22,27 +18,18 @@ struct Config {
 };
 inline bool configure(bool granted, Config *out, std::string *error) {
   *out = Config{};
-#if defined(__APPLE__)
-  char **environment = *_NSGetEnviron();
-#elif defined(_WIN32)
-  char **environment = _environ;
-#else
-  char **environment = environ;
-#endif
-  for (char **p = environment; p && *p; ++p) {
-    const std::string_view entry(*p);
-    if (!entry.starts_with("GRC_LIVE_AUDIO_")) continue;
-    if (!granted) { *error = "audio-not-granted"; return false; }
-
+  // Read through rs::env so a value the host process sets after start is seen on Windows too.
+  if (!granted) {
+    if (rs::env_any_with_prefix("GRC_LIVE_AUDIO_")) { *error = "audio-not-granted"; return false; }
+    return true;
   }
-  if (!granted) return true;
   const auto fail = [&](const char *reason) { *error = reason; return false; };
-  if (const char *v = std::getenv("GRC_LIVE_AUDIO_GODOT")) {
+  if (const char *v = rs::env("GRC_LIVE_AUDIO_GODOT")) {
     if (std::string_view(v) != "sample" && std::string_view(v) != "off") return fail("audio-godot-invalid");
     out->godot_sample = std::string_view(v) == "sample";
   }
   const auto number = [&](const char *name, unsigned lo, unsigned hi, unsigned *dest, const char *reason) {
-    const char *v = std::getenv(name);
+    const char *v = rs::env(name);
     if (!v) return true;
     if (!*v) return fail(reason);
     unsigned n = 0;
@@ -58,7 +45,7 @@ inline bool configure(bool granted, Config *out, std::string *error) {
       !number("GRC_LIVE_AUDIO_LANE_LATE_MS", 10, 1000, &out->lane_late_ms, "audio-lane-late-ms-invalid") ||
       !number("GRC_LIVE_AUDIO_STALL_MS", 500, 30000, &out->stall_ms, "audio-stall-ms-invalid") ||
       !number("GRC_LIVE_AUDIO_STORE_MAX_MS", 1000, 60000, &out->store_max_ms, "audio-store-max-ms-invalid")) return false;
-  if (const char *v = std::getenv("GRC_LIVE_AUDIO_NO_STORE_BUSES")) {
+  if (const char *v = rs::env("GRC_LIVE_AUDIO_NO_STORE_BUSES")) {
     std::string value(v);
     for (std::size_t start = 0; start < value.size();) {
       auto end = value.find(',', start);

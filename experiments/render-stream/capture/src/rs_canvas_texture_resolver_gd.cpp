@@ -1,5 +1,6 @@
 #include "rs_canvas_texture_resolver.h"
 #include "rs_canvas_texture_derive.h"
+#include "rs_platform.h"
 
 #include <atomic>
 #include <chrono>
@@ -193,7 +194,7 @@ class DeriveReader final : public CanvasTextureDeriveReader {
     if (!safe_copy(address, out, bytes)) return false;
     // Probe-only sabotage changes a local copy, never engine memory. It must refuse before
     // the global/storage pointer is read, and exercises the ordinary decoder refusal path.
-    const char *sabotage = std::getenv("GRC_CTRES_SABOTAGE");
+    const char *sabotage = rs::env("GRC_CTRES_SABOTAGE");
     if (kind == Range::code && bytes == 29 && sabotage &&
         std::strcmp(sabotage, "derive-create-opcode") == 0)
       static_cast<unsigned char *>(out)[0] ^= 1;
@@ -211,7 +212,7 @@ class DeriveReader final : public CanvasTextureDeriveReader {
 void canvas_texture_resolver_attach(const Calibration &calib, const ProcessFingerprint &fp) {
   if (attachment_initialized) return;
   attachment_initialized = true;
-  const char *flag = std::getenv("GRC_CANVAS_TEXTURE_RESOLVE");
+  const char *flag = rs::env("GRC_CANVAS_TEXTURE_RESOLVE");
   if (!flag || std::strcmp(flag, "1") != 0) { resolver.attach(false, nullptr, "flag-off"); return; }
   if (!resolver.permanent_failure().empty()) {
     resolver.attach(true, nullptr, resolver.permanent_failure()); return;

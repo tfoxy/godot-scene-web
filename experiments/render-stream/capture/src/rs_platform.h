@@ -11,6 +11,11 @@
 #include <time.h>
 #include <unistd.h>
 #endif
+#if defined(__APPLE__)
+#include <crt_externs.h>
+#elif !defined(_WIN32)
+extern "C" { extern char **environ; }
+#endif
 #include <filesystem>
 #include <map>
 #include <optional>
@@ -262,6 +267,24 @@ bool env_utf8(const char *name, std::string *out);
 const char *env(const char *name);
 #else
 inline const char *env(const char *name) { return std::getenv(name); }
+#endif
+// Whether any variable's name starts with `prefix`, read from the same environment as env(): on
+// Windows the process block (case-insensitive names), which sees SetEnvironmentVariableW changes
+// the C runtime's startup copy misses.
+#if defined(_WIN32)
+bool env_any_with_prefix(const char *prefix);
+#else
+inline bool env_any_with_prefix(const char *prefix) {
+#if defined(__APPLE__)
+  char **environment = *_NSGetEnviron();
+#else
+  char **environment = environ;
+#endif
+  const std::size_t length = std::strlen(prefix);
+  for (char **p = environment; p && *p; ++p)
+    if (std::strncmp(*p, prefix, length) == 0) return true;
+  return false;
+}
 #endif
 #if defined(_WIN32)
 std::uint32_t process_id();

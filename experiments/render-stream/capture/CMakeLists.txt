@@ -1194,6 +1194,13 @@ add_executable(rs_env_test test/rs_env_test.cpp)
 target_include_directories(rs_env_test PRIVATE src)
 target_link_libraries(rs_env_test PRIVATE grc_warnings grc_platform)
 grc_add_test(NAME rs_env COMMAND rs_env_test)
+# Linux-only: Python source-tree check runs on the build host.
+if(NOT GRC_WINDOWS)
+grc_add_test(NAME rs_env_source
+  COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/test/env-source-test.py)
+else()
+  grc_linux_only("rs_env_source" "Python source-tree check runs on the build host.")
+endif()
 
 add_executable(rs_process_test test/rs_process_test.cpp)
 target_include_directories(rs_process_test PRIVATE src)

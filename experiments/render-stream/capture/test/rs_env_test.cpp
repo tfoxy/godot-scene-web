@@ -53,8 +53,14 @@ int main() {
   check(empty && *empty == '\0', "set but empty");
   check(empty == grc::rs::env("GRC_RS_ENV_TEST"), "empty value reuses storage");
 #endif
+  check(grc::rs::env_any_with_prefix("GRC_RS_ENV_T"), "prefix seen after an in-process set");
+#if defined(_WIN32)
+  check(grc::rs::env_any_with_prefix("grc_rs_env_t"), "prefix match ignores case like env names");
+#endif
+  check(!grc::rs::env_any_with_prefix("GRC_RS_ENV_TESTX"), "longer prefix not matched");
   set_value(nullptr);
   check(grc::rs::env("GRC_RS_ENV_TEST") == nullptr, "removed");
+  check(!grc::rs::env_any_with_prefix("GRC_RS_ENV_T"), "prefix gone after an in-process unset");
   check(changed && std::strcmp(changed, "café-日本") == 0, "removed pointer readable");
   std::printf("rs_env_test: %d checks, %d failures\n", checks, failures);
   return failures ? 1 : 0;
