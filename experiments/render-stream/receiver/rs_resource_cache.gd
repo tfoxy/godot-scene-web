@@ -99,6 +99,10 @@ var _memory_total: int = 0
 ## hash -> the same, for the disk cache's files. Seeded from mtime for a warm cache's existing
 ## files (open()), updated on every write and cache-hit read.
 var _disk_order: Dictionary[String, int] = {}
+## Payload-file totals, seeded at open and maintained on successful writes and deletions.
+## The cache directory is owned by this instance while open.
+var _disk_entries: int = 0
+var _disk_bytes: int = 0
 var _access_counter: int = 0
 ## This transaction's needed set (set_needed()): hashes eviction must not
 ## touch. Replaced, never accumulated, on every call.
@@ -136,8 +140,8 @@ func open(cache_dir: String, cache_mode: String, origin_dir: String) -> String:
 	var made: Error = DirAccess.make_dir_recursive_absolute(dir.path_join(CACHE_SUBDIR))
 	if made != OK:
 		return RsWire.err("resource-unavailable", "cannot create %s: %s" % [dir.path_join(CACHE_SUBDIR), error_string(made)])
-	entries_before = entries()
 	_seed_disk_order_from_mtime()
+	entries_before = entries()
 	return ""
 
 
@@ -145,12 +149,17 @@ func open(cache_dir: String, cache_mode: String, origin_dir: String) -> String:
 ## same counter runtime touches use, so the two orderings never collide on scale. A fresh cache
 ## has no files yet, so this is a no-op for it.
 func _seed_disk_order_from_mtime() -> void:
+	_disk_entries = 0
+	_disk_bytes = 0
+	_disk_order.clear()
 	if dir == "":
 		return
 	var base: String = dir.path_join(CACHE_SUBDIR)
 	var by_mtime: Array[Dictionary] = []
 	for file_name: String in DirAccess.get_files_at(base):
 		if _is_payload_file(file_name):
+			_disk_entries += 1
+			_disk_bytes += _file_bytes(base.path_join(file_name))
 			by_mtime.append({"hash": file_name.get_basename(), "mtime": FileAccess.get_modified_time(base.path_join(file_name))})
 	by_mtime.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return a["mtime"] < b["mtime"])
 	for entry: Dictionary in by_mtime:
@@ -166,31 +175,25 @@ static func _has_any_entry(path: String) -> bool:
 	return listing.get_files().size() > 0 or listing.get_directories().size() > 0
 
 
-## The number of `.grt`, (G5e) `.grm` and (G55d) `.grp` files in the cache.
+## The number of payload files (.grt/.grm/.grp/.ktx2). Constant time; no filesystem I/O.
 func entries() -> int:
-	if dir == "":
-		return 0
-	var count: int = 0
-	for file_name: String in DirAccess.get_files_at(dir.path_join(CACHE_SUBDIR)):
-		if _is_payload_file(file_name):
-			count += 1
-	return count
+	return _disk_entries
 
 
-## The total size of the cache's `.grt`, `.grm` and `.grp` files.
+## The payload files' total byte length. Constant time; no filesystem I/O.
 func bytes() -> int:
-	if dir == "":
-		return 0
-	var total: int = 0
-	var base: String = dir.path_join(CACHE_SUBDIR)
-	for file_name: String in DirAccess.get_files_at(base):
-		if not _is_payload_file(file_name):
-			continue
-		var file: FileAccess = FileAccess.open(base.path_join(file_name), FileAccess.READ)
-		if file != null:
-			total += file.get_length()
-			file.close()
-	return total
+	return _disk_bytes
+
+
+## Stat known payload paths without opening them, only for seeding and replacement accounting.
+## A failed stat contributes zero bytes; per-frame accessors never inspect the filesystem.
+static func _file_bytes(path: String) -> int:
+	return maxi(FileAccess.get_size(path), 0)
+
+
+## Measure the closed staging file, so disk counters reflect even a short buffered write.
+func _staged_bytes(path: String) -> int:
+	return FileAccess.get_size(path)
 
 
 static func _is_payload_file(file_name: String) -> bool:
@@ -293,6 +296,8 @@ func _evict_disk_over_budget() -> void:
 		if DirAccess.remove_absolute(base.path_join(victim_name)) != OK:
 			continue
 		total -= RsWire.as_int(entry["bytes"])
+		_disk_entries -= 1
+		_disk_bytes -= RsWire.as_int(entry["bytes"])
 		_disk_order.erase(hash)
 		_ever_evicted[hash] = true
 		evictions_disk += 1
@@ -610,13 +615,18 @@ func obtain(hash: String, mesh: bool = false, shader: bool = false, ktx2: bool =
 func _write_cache(hash: String, payload: PackedByteArray) -> String:
 	var base: String = dir.path_join(CACHE_SUBDIR)
 	var final_path: String = base.path_join(file_name(hash, is_mesh_payload(payload), is_shader_payload(payload), is_ktx2_payload(payload)))
+	var existed: bool = FileAccess.file_exists(final_path)
+	var previous_bytes: int = _file_bytes(final_path) if existed else 0
 	var temp_path: String = base.path_join(".%s.tmp" % hash)
 	var file: FileAccess = FileAccess.open(temp_path, FileAccess.WRITE)
 	if file == null:
 		return RsWire.err("resource-unavailable", "cannot write %s: %s" % [temp_path, error_string(FileAccess.get_open_error())])
 	file.store_buffer(payload)
 	file.close()
+	var stored: int = _staged_bytes(temp_path)
 	var renamed: Error = DirAccess.rename_absolute(temp_path, final_path)
 	if renamed != OK:
 		return RsWire.err("resource-unavailable", "cannot rename %s: %s" % [temp_path, error_string(renamed)])
+	_disk_entries += 0 if existed else 1
+	_disk_bytes += stored - previous_bytes
 	return ""

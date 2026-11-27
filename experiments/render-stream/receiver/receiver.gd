@@ -428,6 +428,10 @@ var _inline_since_applied: int = 0
 # off) and RS_RECEIVER_LOG (full default | summary, drops _transactions from applied.json).
 var _perf: RsPerf = null
 var _perf_out_path: String = ""
+var _perf_flush_ms: int = 0
+var _perf_flush_due_ms: int = 0
+var _quit_after_s: int = 0
+var _live_first_applied_us: int = -1
 var _log_mode: String = "full"
 var _perf_headless: bool = false
 # G7o3: RS_RECEIVER_PERF_SAMPLES=1 (file mode, with RS_RECEIVER_PERF_OUT): perf.json also lists each
@@ -910,6 +914,13 @@ func _parse_perf_env() -> bool:
 	if _perf_out_path != "" and not _perf_out_path.is_absolute_path():
 		_log("error: RS_RECEIVER_PERF_OUT must be an absolute path (got %s)" % JSON.stringify(_perf_out_path))
 		return false
+	_perf_flush_ms = _non_negative_env("RS_RECEIVER_PERF_FLUSH_MS", 10000 if _perf_out_path != "" else 0)
+	if _perf_flush_ms < 0:
+		return false
+	_quit_after_s = _non_negative_env("RS_RECEIVER_QUIT_AFTER_S", 0)
+	if _quit_after_s < 0:
+		return false
+	_perf_flush_due_ms = Time.get_ticks_msec() + _perf_flush_ms
 	_log_mode = RsConfig.get_env("RS_RECEIVER_LOG").strip_edges()
 	if _log_mode == "":
 		_log_mode = "full"
@@ -924,6 +935,7 @@ func _parse_perf_env() -> bool:
 	# state dumps that read body identities, so keep SHA-256; web file replay retains its deferred path.
 	_digest_none = digest == "none" or (digest == "" and _log_mode == "summary" and _state_seqs.is_empty() and _windows.is_empty() and not RsConfig.is_web())
 	if _perf_out_path != "":
+		DirAccess.make_dir_recursive_absolute(_perf_out_path.get_base_dir())
 		_perf = RsPerf.new()
 		_perf_headless = DisplayServer.get_name() == "headless"
 	var samples: String = RsConfig.get_env("RS_RECEIVER_PERF_SAMPLES").strip_edges()
@@ -1458,7 +1470,12 @@ func _fit_host_content() -> void:
 
 
 func _process(_delta: float) -> void:
+	if _finished:
+		return
+	if _live and _quit_after_s > 0 and _maybe_finish_live(Time.get_ticks_usec()):
+		return
 	if _perf != null:
+		_maybe_flush_perf(Time.get_ticks_msec())
 		_perf.record_frame_interval()
 		_perf.record_render_time(_perf_headless)
 		# G6s: memory-cache entries/bytes and live RIDs per kind fill the fields G6r left
@@ -2849,6 +2866,7 @@ func _finish_apply(entry: Dictionary, meta: Dictionary, prefetched: Dictionary) 
 	var stats: Dictionary = applied["stats"]
 	var now_us: int = Time.get_ticks_usec()
 	entry["applied_us"] = now_us
+	_note_live_applied(now_us)
 	_note_applied(entry, meta, stats)
 	var seq: int = entry["seq"]
 	# G7q: the transactions folded into this apply first, in seq order.
@@ -3246,6 +3264,26 @@ func _send(message: Dictionary) -> void:
 		_log("warning: could not send %s (%s)" % [RsLiveClient.encode(message), error_string(sent)])
 
 
+## Start the measured session window only after the first successful apply, excluding join
+## and resource-fetch time. Reconnects and later applies do not restart the session timer.
+func _note_live_applied(now_us: int) -> void:
+	if _live_first_applied_us < 0:
+		_live_first_applied_us = now_us
+
+
+func _maybe_finish_live(now_us: int) -> bool:
+	if not _live or _finished or _quit_after_s == 0 or _live_first_applied_us < 0:
+		return false
+	if now_us - _live_first_applied_us < _quit_after_s * 1000000:
+		return false
+	if _client != null:
+		_client.close(1000, "quit-after")
+	_stream_report["closed_by"] = "receiver"
+	_stream_report["close_code"] = 1000
+	_finish_live()
+	return true
+
+
 func _finish_live() -> void:
 	var missed: Array[int] = []
 	for window: Dictionary in _windows:
@@ -3343,9 +3381,21 @@ func _write_report() -> void:
 	_write_perf_report()
 
 
+## A late frame writes once and starts a new interval; never catch up with a burst of writes.
+func _maybe_flush_perf(now_ms: int) -> void:
+	if _live and not _finished and _perf != null and _perf_flush_ms > 0 and now_ms >= _perf_flush_due_ms:
+		_perf_flush_due_ms = now_ms + _perf_flush_ms
+		_write_perf_report(false)
+
+
+func _notification(what: int) -> void:
+	if _live and not _finished and (what == NOTIFICATION_APPLICATION_PAUSED or what == NOTIFICATION_WM_CLOSE_REQUEST):
+		_write_perf_report(false)
+
+
 ## RS_RECEIVER_PERF_OUT (G6r): render-stream-receiver-perf/1, written alongside applied.json on
 ## every exit path (_fail, _finish, _finish_live all call _write_report()).
-func _write_perf_report() -> void:
+func _write_perf_report(final: bool = true) -> void:
 	if _perf == null:
 		return
 	var headless: bool = DisplayServer.get_name() == "headless"
@@ -3353,14 +3403,32 @@ func _write_perf_report() -> void:
 	# Acks (received/applied/submitted) are a live-transport concept; file mode has none, so
 	# `counts` stays null there rather than a misleading all-zero (D9: declared, not guessed).
 	_perf.payloads = _payload_counters(true)
-	var doc: Dictionary = _perf.to_dict(viewport_rid, headless, _acks_sent if _live else null)
-	DirAccess.make_dir_recursive_absolute(_perf_out_path.get_base_dir())
-	var file: FileAccess = FileAccess.open(_perf_out_path, FileAccess.WRITE)
+	var doc: Dictionary = _perf.to_dict(viewport_rid, headless, _acks_sent if _live else null, final)
+	var temp_path: String = _perf_out_path + ".tmp"
+	var file: FileAccess = FileAccess.open(temp_path, FileAccess.WRITE)
 	if file == null:
 		_log("error: cannot write %s: %s" % [_perf_out_path, error_string(FileAccess.get_open_error())])
 		return
-	file.store_string(JSON.stringify(doc, "  ", false) + "\n")
+	var text: String = JSON.stringify(doc, "  ", false) + "\n"
+	var encoded_bytes: int = text.to_utf8_buffer().size()
+	var stored: bool = file.store_string(text)
+	var written: Error = file.get_error()
 	file.close()
+	var staged_bytes: int = _staged_bytes(temp_path)
+	if not stored or written != OK or staged_bytes != encoded_bytes:
+		_log("error: cannot write %s: stored=%s, %s, %d of %d bytes" % [temp_path, str(stored), error_string(written), staged_bytes, encoded_bytes])
+		DirAccess.remove_absolute(temp_path)
+		return
+	# Same-directory rename replaces an existing destination atomically on Linux: readers
+	# retain the previous complete document until the new complete document takes its place.
+	var renamed: Error = DirAccess.rename_absolute(temp_path, _perf_out_path)
+	if renamed != OK:
+		_log("error: cannot rename %s: %s" % [temp_path, error_string(renamed)])
+
+
+## close() may lose buffered bytes without updating get_error(); stat before publishing.
+func _staged_bytes(path: String) -> int:
+	return FileAccess.get_size(path)
 
 
 func _quit(code: int) -> void:

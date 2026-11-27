@@ -89,6 +89,10 @@ gamescope.
 | `RS_RECEIVER_VARIANT_POLICY`                                        | `keep` (default) or `upgrade`: whether a better variant that appears later is refetched.                                                                                                 |
 | `RS_RECEIVER_CORE`, `RS_RECEIVER_CORE_EXT`                          | `rust` (the only core) and the adapter's `.gdextension` (default `res://ext/rs_core.gdextension`).                                                                                       |
 
+`RsResourceCache.entries()` and `bytes()` return maintained payload-file totals in constant time,
+with no filesystem I/O. A warm open scans once (one size read per payload); writes, replacements
+and evictions update the totals. The receiver owns its cache directory while it is open.
+
 ## Run: live mode
 
 ```bash
@@ -131,20 +135,35 @@ reconnect writes `received-2.rs2`, a second `streams[]` entry and `shots/stream-
 
 ## Diagnostics and evidence
 
-| Variable                                           | Meaning                                                                                                                                                                                                                                    |
-| -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `RS_RECEIVER_LOG`                                  | `full` (default) or `summary` (drops the per-transaction arrays from `applied.json`).                                                                                                                                                      |
-| `RS_RECEIVER_DIGEST`                               | `inline` or `none`. Defaults to `none` only for native `summary` runs with no state seqs or shot windows; otherwise `inline` (deferred in web file replay). `none` empties `record_sha256` and skips per-transaction w11/dynamic evidence. |
-| `RS_RECEIVER_PERF_OUT`, `RS_RECEIVER_PERF_SAMPLES` | A `perf.json` path (off when unset); `1` adds per-transaction timings (file mode).                                                                                                                                                         |
-| `RS_RECEIVER_RSS_EVERY`                            | File mode: one memory line every N applied transactions.                                                                                                                                                                                   |
-| `RS_RECEIVER_FETCH_TRACE`                          | `1`: opt-in native HTTP response framing diagnostics (code, length, transfer/content encoding, bytes, status, poll error, elapsed milliseconds); request headers and credentials are omitted.                                              |
-| `RS_RECEIVER_TRANSCODE_LOG`                        | `1`: hash each KTX2 transcode's uploaded blocks into the report.                                                                                                                                                                           |
-| `RS_RECEIVER_BUILD_SHA256`                         | Recorded in `applied.json`'s `receiver` block.                                                                                                                                                                                             |
-| `RS_RECEIVER_SABOTAGE`                             | Test-only faults (`reupload`, `ignore-cache`, `ignore-clip`, `ignore-material`, `stale-texture`, `ignore-presentation`, …; the full list is in `receiver.gd`). Each exists only to make a named check fail.                                |
+| Variable                                           | Meaning                                                                                                                                                                                                                                                                         |
+| -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `RS_RECEIVER_LOG`                                  | `full` (default) or `summary` (drops the per-transaction arrays from `applied.json`).                                                                                                                                                                                           |
+| `RS_RECEIVER_DIGEST`                               | `inline` or `none`. Defaults to `none` only for native `summary` runs with no state seqs or shot windows; otherwise `inline` (deferred in web file replay). `none` empties `record_sha256` and skips per-transaction w11/dynamic evidence.                                      |
+| `RS_RECEIVER_PERF_OUT`, `RS_RECEIVER_PERF_SAMPLES` | An absolute `perf.json` path (off when unset); `1` adds per-transaction timings (file mode). Exit writes have `final: true`; live snapshots have `final: false`.                                                                                                                |
+| `RS_RECEIVER_PERF_FLUSH_MS`                        | Live perf snapshot interval in integer milliseconds (default 10000 with `RS_RECEIVER_PERF_OUT`, otherwise 0). 0 disables periodic snapshots. Pause and close notifications still flush.                                                                                         |
+| `RS_RECEIVER_QUIT_AFTER_S`                         | Live session duration in integer seconds after the first successfully applied transaction, excluding join and initial fetch time. Unset or 0 never ends the session automatically. Reconnects do not restart it. Normal exit writes `applied.json` and perf with `final: true`. |
+| `RS_RECEIVER_RSS_EVERY`                            | File mode: one memory line every N applied transactions.                                                                                                                                                                                                                        |
+| `RS_RECEIVER_FETCH_TRACE`                          | `1`: opt-in native HTTP response framing diagnostics (code, length, transfer/content encoding, bytes, status, poll error, elapsed milliseconds); request headers and credentials are omitted.                                                                                   |
+| `RS_RECEIVER_TRANSCODE_LOG`                        | `1`: hash each KTX2 transcode's uploaded blocks into the report.                                                                                                                                                                                                                |
+| `RS_RECEIVER_BUILD_SHA256`                         | Recorded in `applied.json`'s `receiver` block.                                                                                                                                                                                                                                  |
+| `RS_RECEIVER_SABOTAGE`                             | Test-only faults (`reupload`, `ignore-cache`, `ignore-clip`, `ignore-material`, `stale-texture`, `ignore-presentation`, …; the full list is in `receiver.gd`). Each exists only to make a named check fail.                                                                     |
 
 **Exit codes.** `0` ok; `3` replay-failure (`applied.json` written); `2` usage error (a missing or
 relative `RS_RECEIVER_OUT`, a malformed seq list, an unknown mode, a malformed live variable), with
 nothing written. Every output line starts with `[receiver]`.
+
+Perf writes use `<RS_RECEIVER_PERF_OUT>.tmp` followed by a same-directory rename over the previous
+file, so readers see complete JSON. A killed process leaves the latest completed snapshot; its
+`final: false` means the session may have continued after that snapshot. Notification flushes are
+best effort; a force-stop need not deliver a notification.
+
+Instrumentation selftests (headless, no capture host required):
+
+```bash
+mise exec -- godot --headless --path experiments/render-stream/receiver --script res://tests/cache_counters_selftest.gd
+mise exec -- godot --headless --path experiments/render-stream/receiver --script res://tests/perf_flush_selftest.gd
+mise exec -- godot --headless --path experiments/render-stream/receiver --script res://tests/live_quit_selftest.gd
+```
 
 ## `applied.json`
 

@@ -252,7 +252,9 @@ func sample_timeline(cache_entries_disk: int, cache_bytes_disk: int, cache_entri
 ## The full render-stream-receiver-perf/1 document. `counts` is the caller's own
 ## {"received", "applied", "submitted"} (receiver.gd's _acks_sent, not duplicated here), or null
 ## in file mode, which has no acks (D9: declared, not guessed, rather than a misleading all-zero).
-func to_dict(viewport_rid: RID, headless: bool, counts: Variant) -> Dictionary:
+## `final` is true on the exit write, false on a periodic or application-notification snapshot.
+## A false snapshot is complete JSON, but the session may have continued after it.
+func to_dict(viewport_rid: RID, headless: bool, counts: Variant, final: bool = true) -> Dictionary:
 	var histograms: Dictionary = {
 		"decode_us": decode_us.to_dict(),
 		"apply_us": apply_us.to_dict(),
@@ -273,6 +275,7 @@ func to_dict(viewport_rid: RID, headless: bool, counts: Variant) -> Dictionary:
 			histograms[key] = histogram.to_dict()
 	var doc: Dictionary = {
 		"schema": SCHEMA,
+		"final": final,
 		"histograms": histograms,
 		"unavailable_stages": [
 			{"stage": "resolve_us", "reason": "combined with decode_us inside RsRustApplier.accept, which G6r does not split"},
