@@ -8,6 +8,7 @@ run/main_scene="res://shell.tscn"
 [display]
 window/size/viewport_width=640
 window/size/viewport_height=360
+window/size/mode.windows=3
 window/stretch/mode="disabled"
 ; Keep A/B frame pacing comparable; choose a Swappy mode deliberately later.
 window/frame_pacing/android/enable_frame_pacing=false
@@ -15,6 +16,8 @@ window/frame_pacing/android/enable_frame_pacing=false
 [rendering]
 renderer/rendering_method="mobile"
 renderer/rendering_method.mobile="mobile"
+renderer/rendering_method.windows="forward_plus"
+rendering_device/driver.windows="vulkan"
 textures/vram_compression/import_etc2_astc=true
 textures/default_filters/use_nearest_mipmap_filter=false
 environment/defaults/default_clear_color=Color(0.08, 0.08, 0.08, 1)

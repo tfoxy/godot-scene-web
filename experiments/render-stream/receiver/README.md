@@ -298,6 +298,63 @@ mismatch diagnostics still compare the physical window with the host and may be 
 when fitting to a different size; they do not prevent drawing. Stream stretch mode `viewport`
 remains unsupported as before.
 
+## Windows script-pack shell
+
+Cross-build the x86_64 shell and native receiver DLL on Linux:
+
+```bash
+experiments/render-stream/scripts/build-windows-shell.sh
+```
+
+This uses the existing, verified llvm-mingw toolchain and installed Rust
+`x86_64-pc-windows-gnullvm` target, with offline Cargo dependencies. The template fetcher
+reuses the digest-pinned official non-mono Godot 4.5.1 Windows release template, downloading
+only that official archive if needed. `GRC_WINDOWS_TEMPLATE` overrides its cached path.
+The adapter statically links libc++ and libunwind; no compiler runtime DLLs are required.
+The build checks its sole `rs_core_ext_init` export and Windows system imports.
+Rebuild after receiver or core changes to refresh the copied scripts and DLL.
+
+Copy `android-shell/build/windows/shell.exe`, `shell.pck` and `rs_core_ext.dll` together
+to Windows. `build.json` records the template, shell, PCK and adapter SHA-256 digests,
+Godot version, renderer, driver and D3D12 variant status. Staged projects, logs and the
+native-code-free demo pack stay under the ignored Windows build directory, separate
+from Android outputs. Serve its demo pack from Linux with:
+
+```bash
+python3 experiments/render-stream/scripts/serve-android-pack.py \
+  --directory experiments/render-stream/android-shell/build/windows --host 0.0.0.0 --port 8765
+```
+
+On Windows, use a reachable pack server address (for example its Tailscale IP) after `--`:
+
+```powershell
+.\shell.exe -- --pack-base=http://100.64.0.1:8765
+```
+
+The shell's existing `--pack-base` argument controls the manifest and pack URLs on every
+platform; it defaults to loopback for Android's port reverse. A downloaded client pack
+owns its host connection arguments. Receiver-based client packs can accept ordinary environment
+variables or `--rs-env=NAME=VALUE` after `--`, including `RS_RECEIVER_MODE=live`,
+`RS_RECEIVER_URL=ws://<host>:<port>/<route>` and `RS_RECEIVER_ALLOW_LAN=1` for a non-loopback
+host. The bundled demo remains a recording replay. Packs do not replace the shell's engine settings.
+
+Windows overrides select Forward+ with Vulkan and borderless fullscreen at the current
+monitor's native desktop size, including a 1920×1080 panel at 125% scaling. Godot's
+`--windowed` engine argument can override fullscreen for diagnostics. Android keeps its
+Mobile renderer and frame pacing settings.
+
+For the unscored D3D12 variant, pass Godot's engine argument before `--`:
+
+```powershell
+.\shell.exe --rendering-driver d3d12 -- --pack-base=http://100.64.0.1:8765
+```
+
+The official template includes D3D12 code, but its archive supplies no Agility SDK DLLs.
+This build bundles none and downloads no SDK. Godot first tries the Agility SDK in
+`x86_64/` under the working directory (then the working directory itself), and can fall back
+to the system D3D12 loader. Driver/device support must be checked on Windows; D3D12
+availability and performance have not been validated by the Linux cross-build.
+
 ## Android script-pack shell spike
 
 This shell is a spike, kept so packs can be tried on a phone. It will move to its own app
