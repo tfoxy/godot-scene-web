@@ -44,6 +44,8 @@ extends RefCounted
 ## (obtain() and add_fetched() each complete a fetch in one call), so no separate "pinned by an
 ## in-progress fetch" bookkeeping is needed here. `no_evict` (RS_RECEIVER_SABOTAGE=no-evict)
 ## disables both budgets so a soak's residency-bounded check can fail on purpose.
+## Inline payloads the core forbids fetching are also protected from memory eviction, including
+## newly carried records that arrive before the next needed set. These pins can exceed the budget.
 ## `evictions_memory`, `evictions_disk` and `refetch_after_evict` count what happened.
 
 const CACHE_SUBDIR: String = "sha256"
@@ -75,6 +77,9 @@ var no_evict: bool = false
 ## at most what memory holds. Null (RS_RECEIVER_SABOTAGE=verify-in-frame, or no applier yet): only
 ## the SHA-256 is checked here, and the core verifies and decodes inside the frame.
 var stager: RsRustApplier = null
+## The shared core's fetch predicate also defines which inline payloads cannot be evicted.
+## Independent of stager so verify-in-frame still honours protocol retention.
+var retention_core: RsRustApplier = null
 ## G7o3: the time spent verifying payloads on arrival (stage, or the SHA-256 check), since the
 ## last take_verify_us(): receiver.gd's payload_verify_us, outside decode_us and apply_us.
 var _verify_us: int = 0
@@ -250,7 +255,7 @@ func _evict_memory_over_budget() -> void:
 	for hash: String in _memory_order:
 		if total <= memory_budget_bytes:
 			break
-		if _needed.has(hash) or not _lengths.has(hash):
+		if _needed.has(hash) or _must_retain_inline(hash) or not _lengths.has(hash):
 			continue
 		victims.append(hash)
 		total -= _lengths[hash]
@@ -263,6 +268,12 @@ func _evict_memory_over_budget() -> void:
 		evictions_memory += 1
 		if stager != null:
 			stager.unstage(hash)
+
+
+## Reuse rs-core's /11 rule through the existing capi/wasm API: bytes that cannot be
+## fetched again must survive an opt-in budget. release() still drops them when they leave H.
+func _must_retain_inline(hash: String) -> bool:
+	return retention_core != null and retention_core.check_fetch(hash) != ""
 
 
 ## G6s: the same, for the cache directory's files, bounded by `cache_budget_bytes` (0: unlimited,
@@ -432,7 +443,7 @@ func drop_droppable(keep: Array) -> int:
 		kept[value] = true
 	var victims: Array[String] = []
 	for hash: String in _droppable:
-		if not kept.has(hash):
+		if not kept.has(hash) and not _must_retain_inline(hash):
 			victims.append(hash)
 	for hash: String in victims:
 		_droppable.erase(hash)

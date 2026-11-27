@@ -3132,6 +3132,7 @@ func _new_applier() -> void:
 	# G7o3 (D31): payloads are verified and decoded by the core as they arrive (the cache stages
 	# them), not in the frame; the verify-in-frame sabotage keeps the pre-G7o3 path.
 	_cache.stager = null if _sabotage == "verify-in-frame" else _applier
+	_cache.retention_core = _applier
 
 
 ## RS_RECEIVER_TEXTURE_ENCODINGS and
@@ -3458,6 +3459,7 @@ func _dispose_applier() -> void:
 		_log("disposed: %d RIDs freed" % freed)
 		_applier = null
 	_cache.stager = null
+	_cache.retention_core = null
 
 
 ## G7o3: the Rust core's payload counters (staged on arrival, refused, unstaged by an eviction,

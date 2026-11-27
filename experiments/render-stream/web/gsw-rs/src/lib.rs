@@ -2835,6 +2835,11 @@ impl GswRs {
         let gl_bytes = self.payloads.bytes_of(&gl);
         let mut referenced = a.referenced_payload_hashes();
         self.held.protect_payloads(&mut referenced);
+        if let Some(v) = self.validator.as_ref() {
+            referenced.extend(
+                self.payloads.hashes().filter(|h| v.check_fetch(h).is_err()).copied(),
+            );
+        }
         let pinned = self.payloads.bytes_of(&referenced);
         (gl_bytes, pinned)
     }
@@ -2937,6 +2942,11 @@ impl GswRs {
                 let mut referenced = a.referenced_payload_hashes();
                 // Budgeted definitions still need this code after the apply's cache sweep.
                 self.held.protect_payloads(&mut referenced);
+                // The same shared predicate native uses: named/carried inline bytes cannot
+                // be fetched again, even when no currently drawn command references them.
+                referenced.extend(
+                    self.payloads.hashes().filter(|h| v.check_fetch(h).is_err()).copied(),
+                );
                 let gl: std::collections::HashSet<_> = a.resident_texture_hashes().collect();
                 let store_budget = budget.saturating_sub(self.payloads.bytes_of(&gl));
                 let evicted = self.payloads.evict_unreferenced(&referenced, store_budget);

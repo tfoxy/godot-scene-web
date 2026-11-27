@@ -48,6 +48,8 @@ func _run_checks() -> void:
 	_check_row_log()
 	_check_cache_budget()
 	_check_native_queries()
+	_check_inline_budget()
+	_check_inline_budget(false)
 	_check_digest_policies()
 	_check_summary_uploads()
 	_check_protocol_helpers()
@@ -270,6 +272,72 @@ func _check_cache_budget() -> void:
 	_checked += 1
 	if cache.memory_bytes() != 0 or cache.memory_entries() != 0:
 		_fail("clear_memory leaves %d bytes" % cache.memory_bytes())
+
+
+## Inline records must survive budget pressure before the first apply, including records
+## for a later scene while the needed set still belongs to the preceding apply.
+func _check_inline_budget(staged: bool = true) -> void:
+	var data: PackedByteArray = FileAccess.get_file_as_bytes("res://../protocol/golden-11/inline.rs11")
+	var records: Array[Dictionary] = RsWire.split_records(data, 11)["records"]
+	var view := InputView.new()
+	root.add_child(view)
+	view._new_applier()
+	var applier: RsRustApplier = view.get("_applier")
+	var cache: RsResourceCache = view.get("_cache")
+	if not staged:
+		cache.stager = null
+	cache.memory_budget_bytes = 0
+	var peak_bytes: int = 0
+	var inline_hashes: Array[String] = []
+	var fixture: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://../protocol/golden-11/inline.decoded.json"))
+	var session_record: Dictionary = fixture["records"][0]
+	var policy: Dictionary = session_record["meta"]["resources"]
+	policy["inline_max_bytes"] = 4096
+	policy["delivery"] = "mixed"
+	policy["fetch"] = "directory"
+	var session: Dictionary = applier.accept_session(_tap_record(session_record), 0, 11)
+	if session["kind"] != "session":
+		_fail("inline budget session rejected: %s" % session["errors"])
+		view.free()
+		return
+	applier.begin_session()
+	for i: int in range(1, records.size()):
+		var accepted: Dictionary = applier.accept(data, RsWire.as_int(records[i]["offset"]))
+		var errors: PackedStringArray = accepted["errors"]
+		if not errors.is_empty():
+			_fail("inline budget record %d rejected: %s" % [i, errors])
+			break
+		if accepted["kind"] == "resource":
+			var hash: String = accepted["record"]["meta"]["hash"]
+			inline_hashes.append(hash)
+			var error: String = cache.add_inline(hash, applier.resource_payload())
+			peak_bytes = maxi(peak_bytes, cache.memory_bytes())
+			_checked += 1
+			if error != "":
+				_fail("inline budget resource rejected: %s" % error)
+			if applier.check_fetch(hash) != "" and not cache.has_in_memory(hash):
+				_fail("inline budget evicted carried payload: %s" % applier.check_fetch(hash))
+		elif accepted["kind"] == "transaction":
+			for value: Variant in applier.take_released():
+				var released_hash: String = value
+				cache.release(released_hash)
+				_checked += 1
+				if cache.has_in_memory(released_hash):
+					_fail("inline budget retained released payload %s" % released_hash)
+			for hash: String in inline_hashes:
+				_checked += 1
+				if applier.check_fetch(hash) != "" and not cache.has_in_memory(hash):
+					_fail("inline budget evicted named payload %s" % hash)
+			# An apply may need none of the already resident resources. That must not
+			# remove protocol retention protection from their source bytes.
+			cache.set_needed([])
+	print("[inline-budget] staged=%s records=%d peak_bytes=%d budget_bytes=0" % [staged, inline_hashes.size(), peak_bytes])
+	cache.clear_memory()
+	_checked += 1
+	if cache.memory_entries() != 0 or cache.memory_bytes() != 0:
+		_fail("inline pins survived session memory reset")
+	view._dispose_applier()
+	view.free()
 
 
 func _check_scripts() -> void:
