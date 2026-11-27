@@ -7,6 +7,8 @@ as probe-capture-attach.sh --resources --extension. The production sources stay 
 Run at least three fresh probes, recording load/GPU utilization alongside each run, then
 report RUN... to summarize each resident arm. This diagnostic includes tracing overhead;
 use its results as upper bounds under the recorded load, never as an idle timing budget.
+materials RUN... reads arm_ns and the exclusive phase counters from ordinary resource results.
+The in-flight/default-texture times are subsets of the texture phases, not additional phases.
 frames RUN... reports the worst three attached callbacks with inclusive phase timings and
 the callback time outside those phases. In particular, hello-wait is fixture synchronization,
 not adoption work. Frame numbers are capture callback numbers, not the fixture's process ticks.
@@ -22,11 +24,33 @@ import json
 from pathlib import Path
 
 parser = argparse.ArgumentParser(description=__doc__)
-parser.add_argument("mode", choices=("prepare", "report", "frames"))
+parser.add_argument("mode", choices=("prepare", "report", "frames", "materials"))
 parser.add_argument("paths", nargs="+", type=Path)
 args = parser.parse_args()
 root = Path(__file__).resolve().parents[4]
 cap = root / "experiments/render-stream/capture"
+if args.mode == "materials":
+    # Read ordinary result.json counters; no tracing library or profiling overhead is needed.
+    # Baselines without phase counters still contribute arm_ns and their existing counts.
+    phases = ("tag_node_map", "resolve_pending", "shader_cached", "shader_readback",
+              "shader_preprocessed", "material_params", "instance_params", "texture_warm",
+              "texture_queued", "texture_other")
+    rows = []
+    for path in args.paths:
+        for index, kind in enumerate(("first-arm", "rearm", "reattach")):
+            result = json.loads((path / f"resident/resource-result-{index}.json").read_text())
+            stats = result["stream"]["gate8"]["adopt_stats"]["material_adoption"]
+            row = dict(run=str(path.resolve()), arm=index, kind=kind, **stats)
+            fields = [f"arm_{phase}_ns" for phase in phases]
+            if all(field in stats for field in fields):
+                total = sum(stats[field] for field in fields)
+                assert abs(total - stats["arm_ns"]) <= stats["arm_ns"] * .05, (
+                    f"{path}: arm {index} exclusive phase sum differs from arm_ns by over 5%")
+                row["phase_sum_ns"] = total
+            rows.append(row)
+    print(json.dumps({"material_adoption": rows}, indent=2))
+    raise SystemExit(0)
+
 if args.mode in ("report", "frames"):
     def union_ns(spans):
         end = 0

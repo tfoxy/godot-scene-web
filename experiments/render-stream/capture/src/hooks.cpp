@@ -3806,7 +3806,7 @@ void hook_material_set_param(void *self, RID material, const void *name, const v
     rs::DecodedParam decoded;
     const rs::MaterialParamCopy copy = decode_material_param(value, &decoded);
     if (decoded.type == "rid" && decoded.status == "ok") {
-      rs::materialize(decoded.tex_rid, rs::RefKind::Texture);  // G8r: a texture parameter naming a pre-arm texture
+      rs::materialize_param_texture(decoded.tex_rid);  // G8r: a texture parameter naming a pre-arm texture
     }
     if (decoded.type == "array") {
       note_array_param(param_name, decoded);  // PM7: counters.json captured.array_params
@@ -4014,7 +4014,7 @@ void hook_set_instance_shader_parameter(void *self, RID item, const void *name,
     rs::DecodedParam decoded;
     const rs::MaterialParamCopy copy = decode_material_param(value, &decoded);
     if (decoded.type == "rid" && decoded.status == "ok") {
-      rs::materialize(decoded.tex_rid, rs::RefKind::Texture);  // G8r
+      rs::materialize_param_texture(decoded.tex_rid);  // G8r
     }
     if (streaming()) {
       mirror().set_instance_shader_parameter(item.id, param_name, decoded, current_frame());
@@ -7326,7 +7326,7 @@ void hooks_adopt_default_texture(uint64_t shader, const std::string &name, uint6
   if (shader == 0 || !streaming() || !log_active()) {
     return;
   }
-  rs::materialize(texture, rs::RefKind::Texture);
+  rs::materialize_param_texture(texture, true);
   std::lock_guard<std::mutex> order(g_texture_order);
   mirror().shader_set_default_texture_parameter(shader, name, texture, index, current_frame());
   resources().shader_set_default_texture_parameter(tap_context(), shader, name, texture, index,
@@ -7344,7 +7344,7 @@ bool hooks_adopt_material(uint64_t material, uint64_t shader,
   for (std::size_t i = 0; i < params.size(); ++i) {
     decoded[i].second = decode_material_param(params[i].variant, &decoded[i].first);
     if (decoded[i].first.type == "rid" && decoded[i].first.status == "ok") {
-      rs::materialize(decoded[i].first.tex_rid, rs::RefKind::Texture);
+      rs::materialize_param_texture(decoded[i].first.tex_rid);
     }
   }
   std::lock_guard<std::mutex> order(g_texture_order);
@@ -7398,7 +7398,7 @@ void hooks_adopt_instance_param(uint64_t item, const std::string &name, const vo
   rs::DecodedParam decoded;
   const rs::MaterialParamCopy copy = decode_material_param(variant, &decoded);
   if (decoded.type == "rid" && decoded.status == "ok") {
-    rs::materialize(decoded.tex_rid, rs::RefKind::Texture);
+    rs::materialize_param_texture(decoded.tex_rid);
   }
   mirror().set_instance_shader_parameter(item, name, decoded, current_frame());
   if (log_active()) {

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Rendered late-load evidence, standby counters, and resident detach/attach browser proof.
 # Uses runner-owned projects; never changes the source fixtures or capture implementation.
-# Usage: probe-capture-attach.sh --out DIR [--gsw-bundle DIR] [--cycle [--sabotage-detach]] [--resources] [--large-textures] [--extension FILE]
+# Usage: probe-capture-attach.sh --out DIR [--gsw-bundle DIR] [--cycle [--sabotage-detach]] [--resources] [--large-textures] [--extension FILE] [--canvas-texture-resolve 0|1]
 # Prerequisites: build-capture.sh. Default replay also needs receiver --import + build-rs-core-ext.sh.
 # --cycle requires --gsw-bundle (build-rs-core.sh + gate7-tool.ts gsw-bundle) and Python Pillow.
 # --resource-baseline checks an older extension without the identity/census reuse counters.
@@ -19,11 +19,15 @@ LARGE_TEXTURES=0
 PROBE_CALIBRATION=""
 PROBE_EXTENSION=""
 RESOURCE_BASELINE=0
+CANVAS_TEXTURE_RESOLVE=""
 while [ "$#" -gt 0 ]; do
 	case "$1" in
 	--out) OUT="$2"; shift 2 ;;
 	--gsw-bundle) BUNDLE="$(realpath "$2")"; shift 2 ;;
 	--calibration) PROBE_CALIBRATION="$(realpath "$2")"; shift 2 ;;
+	--canvas-texture-resolve)
+		case "${2:-}" in 0|1) CANVAS_TEXTURE_RESOLVE="$2" ;; *) echo '--canvas-texture-resolve requires 0 or 1' >&2; exit 2 ;; esac
+		shift 2 ;;
 	--resource-baseline) RESOURCE_BASELINE=1; shift ;;
 	--extension) PROBE_EXTENSION="$(realpath "$2")"; shift 2 ;;
 	--cycle) CYCLE=1; shift ;;
@@ -128,6 +132,9 @@ PYPROJECT
 		GRC_EVIDENCE_DIR="$OUT/resident/evidence" GRC_LIVE_LISTEN="127.0.0.1:0"
 		GRC_LIVE_ALLOWED_ORIGINS="http://127.0.0.1:$GATE7_HARNESS_PORT"
 		RS_RESIDENT_REARM="$RESOURCES" RS_RESIDENT_LARGE_TEXTURES="$LARGE_TEXTURES" RS_RESIDENT_OUT="$OUT/resident" RS_RESIDENT_SKIP_DETACH="$SABOTAGE_DETACH" XDG_DATA_HOME="$OUT/resident/xdg-data")
+	if [ -n "$CANVAS_TEXTURE_RESOLVE" ]; then
+		LEG_ENV+=(GRC_CANVAS_TEXTURE_RESOLVE="$CANVAS_TEXTURE_RESOLVE")
+	fi
 	RENDERED_TIMEOUT_S=300
 	RENDERED_EXTRA_ARGS=(--max-fps 60)
 	(

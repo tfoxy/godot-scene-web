@@ -1056,6 +1056,29 @@ std::uint64_t now_ns() {
                                         .count());
 }
 
+// Only the arm thread records phases. Nested phases charge exclusive time to their own bucket;
+// frame-boundary/lazy adoption and off-main hooks do not read the clock for these diagnostics.
+thread_local AdoptMaterialStats *g_arm_profile = nullptr;
+using ArmTime = std::uint64_t AdoptMaterialStats::*;
+thread_local ArmTime g_arm_phase = nullptr;
+thread_local std::uint64_t g_arm_since = 0;
+
+void arm_phase(ArmTime phase) {
+  const auto now = now_ns();
+  if (g_arm_phase) g_arm_profile->*g_arm_phase += now - g_arm_since;
+  g_arm_since = now;
+  g_arm_phase = phase;
+}
+struct ArmPhase {
+  ArmTime previous = nullptr;
+  explicit ArmPhase(ArmTime phase) {
+    if (g_arm_profile) { previous = g_arm_phase; arm_phase(phase); }
+  }
+  void set(ArmTime phase) { if (g_arm_profile) arm_phase(phase); }
+  ~ArmPhase() { if (g_arm_profile) arm_phase(previous); }
+};
+
+
 }  // namespace
 
 bool adopt_binds_ready(std::string *missing) {
@@ -2293,6 +2316,8 @@ void reload_one(ReloadEntry entry, const void *path, bool check_mipmaps, bool ch
 // growing, a texture_replace) keeps G8r's rule: an atlas page or a cached compressed texture is
 // current, anything else creation. The census is built only when such a texture needs it.
 void adopt_texture_locked_out(std::uint64_t rid) {
+  ArmPhase phase(&AdoptMaterialStats::arm_texture_other_ns);
+  if (g_arm_profile) ++g_arm_profile->arm_texture_other;
   const std::uint64_t t0 = now_ns();
   const bool main = std::this_thread::get_id() == g_res_main;
   rs::RegistryKind kind = rs::RegistryKind::Texture2d;
@@ -2352,6 +2377,16 @@ void adopt_texture_locked_out(std::uint64_t rid) {
         }
         ++g_warm_stats.served;
         if (in_flight) ++g_warm_stats.served_in_flight;
+        if (g_arm_profile) {
+          --g_arm_profile->arm_texture_other;
+          ++g_arm_profile->arm_texture_warm;
+          // Charge the entire lookup/promotion/publication to the warm phase.
+          g_arm_phase = &AdoptMaterialStats::arm_texture_warm_ns;
+          if (in_flight) {
+            ++g_arm_profile->arm_texture_in_flight;
+            g_arm_profile->arm_texture_in_flight_ns += now_ns() - t0;
+          }
+        }
       } else {
         ++g_warm_stats.discarded_superseded;
         if (warm->source == WarmSource::Reload) ++g_reload_stats.dropped_unreferenced;
@@ -2362,7 +2397,14 @@ void adopt_texture_locked_out(std::uint64_t rid) {
   }
   // Warm hits retain their eager arm-time preparation and promotion. Only misses wait
   // for the attached frame callback, including the main-thread Image duplication.
-  if (rid != g_stage_current && stage_queue(rid)) return;
+  if (rid != g_stage_current && stage_queue(rid)) {
+    if (g_arm_profile) {
+      --g_arm_profile->arm_texture_other;
+      ++g_arm_profile->arm_texture_queued;
+      g_arm_phase = &AdoptMaterialStats::arm_texture_queued_ns;
+    }
+    return;
+  }
   RegistryHoldRef hold;
   const bool held = registered_now && registry_hold(rid, &hold);
   {
@@ -4324,6 +4366,8 @@ bool preprocess_with_temp(const std::string &raw, const std::string &path, std::
 // Ensures the mirror knows the Shader resource `shader` (RID `rid`), adopting it with its
 // preprocessed code (or the typed shader-adopt-include) and its default textures.
 bool ensure_shader(void *shader, std::uint64_t rid) {
+  ArmPhase phase(&AdoptMaterialStats::arm_shader_cached_ns);
+  if (g_arm_profile) ++g_arm_profile->arm_shader_cached;
   if (rid == 0 || shader == nullptr) {
     return false;
   }
@@ -4332,6 +4376,11 @@ bool ensure_shader(void *shader, std::uint64_t rid) {
     return true;
   }
   if (mat_sabotage() == AdoptMaterialSabotage::None && replay_shader_descriptor(rid)) return true;
+  phase.set(&AdoptMaterialStats::arm_shader_preprocessed_ns);
+  if (g_arm_profile) {
+    --g_arm_profile->arm_shader_cached;
+    ++g_arm_profile->arm_shader_preprocessed;
+  }
   ShaderDescriptor descriptor;
   std::uint64_t epoch;
   { std::lock_guard<std::mutex> lock(g_descriptor_mutex); epoch = g_descriptor_epoch; }
@@ -4385,6 +4434,8 @@ bool ensure_shader(void *shader, std::uint64_t rid) {
 // (0 when none did: an adopted material's shader RID has no getter). Returns the RID the mirror
 // knows the shader by, 0 when none.
 std::uint64_t ensure_cim_shader(void *cim, std::uint64_t named) {
+  ArmPhase phase(&AdoptMaterialStats::arm_shader_cached_ns);
+  if (g_arm_profile) ++g_arm_profile->arm_shader_cached;
   Mirror &m = mirror_instance();
   if (named != 0 && m.knows_shader(named)) {
     return named;
@@ -4503,6 +4554,8 @@ std::unique_ptr<VariantSlot> server_value(std::unique_ptr<VariantSlot> v) {
 
 // D11/D12: adopts the Material resource `material` (RID `rid`) with its shader and parameters.
 bool adopt_material_object(void *material, std::uint64_t rid, bool at_arm) {
+  ArmPhase phase(&AdoptMaterialStats::arm_material_params_ns);
+  if (g_arm_profile) ++g_arm_profile->arm_material_calls;
   Mirror &m = mirror_instance();
   if (m.knows_material(rid)) {
     return true;
@@ -4552,7 +4605,13 @@ bool adopt_material_object(void *material, std::uint64_t rid, bool at_arm) {
       const auto it = g_material_values.find(rid);
       if (it != g_material_values.end()) shader_rid = it->second.shader;
     }
-    if (shader_rid == 0 || (!m.knows_shader(shader_rid) && !replay_shader_descriptor(shader_rid)))
+    bool shader_ready = shader_rid != 0 && m.knows_shader(shader_rid);
+    if (shader_rid != 0 && !shader_ready) {
+      ArmPhase shader_phase(&AdoptMaterialStats::arm_shader_cached_ns);
+      if (g_arm_profile) ++g_arm_profile->arm_shader_cached;
+      shader_ready = replay_shader_descriptor(shader_rid);
+    }
+    if (!shader_ready)
       shader_rid = ensure_cim_shader(material, 0);
     else if ((shader_rid & kSyntheticShader) != 0)
       // The arm cleared this index. A replay must register its synthetic identity so a later
@@ -4654,6 +4713,8 @@ std::vector<ServerParameter> server_parameters(std::uint64_t shader, void *serve
 // Retained code covers headless and born captures. A rendered late attach reads the server's
 // preprocessed code and default textures once, before the material or emitter is published.
 bool materialize_shader(std::uint64_t rid) {
+  ArmPhase phase(&AdoptMaterialStats::arm_shader_cached_ns);
+  if (g_arm_profile) ++g_arm_profile->arm_shader_cached;
   if (rid == 0) return false;
   Mirror &m = mirror_instance();
   if (m.knows_shader(rid)) return true;
@@ -4666,6 +4727,11 @@ bool materialize_shader(std::uint64_t rid) {
   void *server = singleton_object("RenderingServer");
   if (server == nullptr) return false;
   if (replay_shader_descriptor(rid)) return true;
+  phase.set(&AdoptMaterialStats::arm_shader_readback_ns);
+  if (g_arm_profile) {
+    --g_arm_profile->arm_shader_cached;
+    ++g_arm_profile->arm_shader_readback;
+  }
   ShaderDescriptor descriptor;
   std::uint64_t epoch;
   { std::lock_guard<std::mutex> lock(g_descriptor_mutex); epoch = g_descriptor_epoch; }
@@ -4710,6 +4776,8 @@ bool materialize_shader(std::uint64_t rid) {
 // reference, for the residual) and its recorded parameters (texture values adopted by
 // hooks_adopt_material). No getter is read, so the dummy's NIL material_get_param does not matter.
 bool adopt_material_registered(std::uint64_t rid, const rs::RegistryMaterial &reg, bool at_arm) {
+  ArmPhase phase(&AdoptMaterialStats::arm_material_params_ns);
+  if (g_arm_profile) ++g_arm_profile->arm_material_calls;
   Mirror &m = mirror_instance();
   if (m.knows_material(rid)) {
     return true;
@@ -4848,7 +4916,10 @@ void resolve_pending_once(bool at_arm) {
 void resolve_pending(bool at_arm) {
   Mirror &m = mirror_instance();
   for (int round = 0; round < 4 && m.has_pending_material_refs(); ++round) {
+    const auto start = g_arm_profile ? now_ns() : 0;
+    if (g_arm_profile) ++g_arm_profile->arm_resolve_rounds;
     resolve_pending_once(at_arm);
+    if (g_arm_profile) g_arm_profile->arm_resolve_round_ns[round] += now_ns() - start;
   }
 }
 
@@ -4989,17 +5060,70 @@ void adopt_materials_at_arm() {
       !adopt_binds_ready(nullptr) || std::this_thread::get_id() != g_res_main) {
     return;
   }
+  AdoptMaterialStats profile;
   const std::uint64_t t0 = now_ns();
+  g_arm_profile = &profile;
+  g_arm_phase = &AdoptMaterialStats::arm_tag_node_map_ns;
+  g_arm_since = t0;
+  ++profile.arm_tag_node_map_calls;
   g_mat_tags.resolve();
   node_map_connect();
+  arm_phase(&AdoptMaterialStats::arm_resolve_pending_ns);
   resolve_pending(true);
+  arm_phase(&AdoptMaterialStats::arm_instance_params_ns);
   if (mat_sabotage() != AdoptMaterialSabotage::SkipParams) {
     for (std::uint64_t item : g_walk_material_items) {
+      ++profile.arm_instance_items;
       adopt_instance_params(item);
     }
   }
-  const std::uint64_t t1 = now_ns();
-  mat_stat([&](AdoptMaterialStats &s) { s.arm_ns += t1 - t0; });
+  arm_phase(nullptr);
+  profile.arm_ns = g_arm_since - t0;
+  g_arm_profile = nullptr;
+  mat_stat([&](AdoptMaterialStats &s) {
+    s.arm_ns += profile.arm_ns;
+    s.arm_tag_node_map_calls += profile.arm_tag_node_map_calls;
+    for (int i = 0; i < 4; ++i) s.arm_resolve_round_ns[i] += profile.arm_resolve_round_ns[i];
+    s.arm_tag_node_map_ns += profile.arm_tag_node_map_ns;
+    s.arm_resolve_pending_ns += profile.arm_resolve_pending_ns;
+    s.arm_shader_cached_ns += profile.arm_shader_cached_ns;
+    s.arm_shader_readback_ns += profile.arm_shader_readback_ns;
+    s.arm_shader_preprocessed_ns += profile.arm_shader_preprocessed_ns;
+    s.arm_material_params_ns += profile.arm_material_params_ns;
+    s.arm_instance_params_ns += profile.arm_instance_params_ns;
+    s.arm_texture_warm_ns += profile.arm_texture_warm_ns;
+    s.arm_texture_queued_ns += profile.arm_texture_queued_ns;
+    s.arm_texture_other_ns += profile.arm_texture_other_ns;
+    s.arm_resolve_rounds += profile.arm_resolve_rounds;
+    s.arm_shader_cached += profile.arm_shader_cached;
+    s.arm_shader_readback += profile.arm_shader_readback;
+    s.arm_shader_preprocessed += profile.arm_shader_preprocessed;
+    s.arm_material_calls += profile.arm_material_calls;
+    s.arm_instance_items += profile.arm_instance_items;
+    s.arm_texture_warm += profile.arm_texture_warm;
+    s.arm_texture_queued += profile.arm_texture_queued;
+    s.arm_texture_other += profile.arm_texture_other;
+    s.arm_texture_references += profile.arm_texture_references;
+    s.arm_texture_in_flight += profile.arm_texture_in_flight;
+    s.arm_default_textures += profile.arm_default_textures;
+    s.arm_texture_in_flight_ns += profile.arm_texture_in_flight_ns;
+    s.arm_default_textures_ns += profile.arm_default_textures_ns;
+  });
+}
+
+bool materialize_param_texture(std::uint64_t rid, bool shader_default) {
+  if (!g_arm_profile) return materialize(rid, RefKind::Texture);
+  // The outer phase includes known textures and proxy/CanvasTexture dispatch. Each 2D
+  // dependency adopts in its own nested phase, so several channels cannot overwrite a result.
+  ArmPhase phase(&AdoptMaterialStats::arm_texture_other_ns);
+  ++g_arm_profile->arm_texture_references;
+  const auto start = g_arm_since;
+  const bool result = materialize(rid, RefKind::Texture);
+  if (shader_default) {
+    ++g_arm_profile->arm_default_textures;
+    g_arm_profile->arm_default_textures_ns += now_ns() - start;
+  }
+  return result;
 }
 
 void adopt_materials_resolve() {

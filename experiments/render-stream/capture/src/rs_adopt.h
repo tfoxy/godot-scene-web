@@ -608,6 +608,38 @@ struct AdoptMaterialStats {
   std::uint32_t items_adopted = 0;
   bool node_map_connected = false;         // SceneTree.node_added connected
   std::uint64_t arm_ns = 0;                // the walk's material and instance-parameter reads
+  // Arm-only exclusive phases: sum these ten *_ns fields to recover arm_ns.
+  // Shader cached includes retained registry code and already-known shaders; readback is the
+  // server getter path; preprocessed is the temporary Shader path. Counts are phase entries.
+  std::uint64_t arm_tag_node_map_ns = 0;
+  std::uint64_t arm_resolve_pending_ns = 0;
+  std::uint64_t arm_shader_cached_ns = 0;
+  std::uint64_t arm_shader_readback_ns = 0;
+  std::uint64_t arm_shader_preprocessed_ns = 0;
+  std::uint64_t arm_material_params_ns = 0;
+  std::uint64_t arm_instance_params_ns = 0;
+  std::uint64_t arm_texture_warm_ns = 0;
+  std::uint64_t arm_texture_queued_ns = 0;
+  std::uint64_t arm_texture_other_ns = 0;
+  std::uint32_t arm_resolve_rounds = 0;
+  std::uint32_t arm_shader_cached = 0;
+  std::uint32_t arm_shader_readback = 0;
+  std::uint32_t arm_shader_preprocessed = 0;
+  std::uint32_t arm_material_calls = 0;
+  std::uint32_t arm_instance_items = 0;
+  std::uint32_t arm_texture_warm = 0;
+  std::uint32_t arm_texture_queued = 0;
+  std::uint32_t arm_texture_other = 0;
+  // References include known textures; outcomes count 2D adoptions, including dependencies.
+  std::uint32_t arm_texture_references = 0;
+  std::uint32_t arm_tag_node_map_calls = 0;
+  // Inclusive per-round times contain shader/material/texture phases; do not add to arm_ns.
+  std::uint64_t arm_resolve_round_ns[4] = {};
+  // Subsets, already included in the texture phase totals above; do not add to arm_ns.
+  std::uint32_t arm_texture_in_flight = 0;
+  std::uint64_t arm_texture_in_flight_ns = 0;
+  std::uint32_t arm_default_textures = 0;
+  std::uint64_t arm_default_textures_ns = 0;
   std::uint64_t resolve_ns = 0;            // every frame-boundary resolution
 };
 
@@ -623,6 +655,8 @@ AdoptMaterialStats adopt_material_stats();
 // the first transaction): connects the node map to SceneTree.node_added, resolves every adopted
 // item's material and reads the adopted items' instance parameters.
 void adopt_materials_at_arm();
+// Same materialization contract, with arm-only timing for parameter/default texture references.
+bool materialize_param_texture(std::uint64_t rid, bool shader_default = false);
 
 // item identity through the node map, which is
 // reference-counted between adoption and TAG. node_map_acquire_tag() connects SceneTree.node_added

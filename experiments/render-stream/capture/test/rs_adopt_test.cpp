@@ -56,6 +56,7 @@ bool g_texture_readback_adopt = false;
 bool g_stage_test_adopt = false;
 grc::rs::CanvasTextureResolver *g_canvas_resolver = nullptr;
 grc::rs::CanvasTextureReader *g_canvas_reader = nullptr;
+bool g_warm_fixture_in_flight = false;
 std::uint64_t g_stage_test_ns = 0;
 std::uint64_t stage_test_clock() { return g_stage_test_ns; }
 
@@ -470,6 +471,7 @@ bool hooks_warm_texture(void *image, rs::WarmBody *out) {
   std::memcpy(bytes->data(), &image, sizeof(image));
   out->copy.status = "ok";
   out->bytes = std::move(bytes);
+  if (g_warm_fixture_in_flight) out->job = std::make_shared<rs::TextureJob>(out->copy);
   return true;
 }
 bool hooks_adopt_texture_warm(uint64_t rid, rs::WarmBody body, rs2::AdoptedContent content,
@@ -495,9 +497,19 @@ bool hooks_adopt_shader(uint64_t rid, const std::string &code) {
   return true;
 }
 bool hooks_adopt_shader_refused(uint64_t, rs2::ShaderReason) { return false; }
-void hooks_adopt_default_texture(uint64_t, const std::string &, uint64_t, int32_t) {}
+void hooks_adopt_default_texture(uint64_t, const std::string &, uint64_t texture, int32_t) {
+  rs::materialize_param_texture(texture, true);
+}
 bool hooks_adopt_material(uint64_t rid, uint64_t shader, const std::vector<rs::AdoptParam> &params) {
   g_material_adopt_shaders[rid] = shader;
+  for (const auto &p : params) {
+    if (g_iface.variant_get_type(const_cast<void *>(p.variant)) != GDEXTENSION_VARIANT_TYPE_RID)
+      continue;
+    uint64_t texture = 0;
+    g_iface.get_variant_to_type_constructor(GDEXTENSION_VARIANT_TYPE_RID)(
+        &texture, const_cast<void *>(p.variant));
+    rs::materialize_param_texture(texture);
+  }
   for (const auto &p : params) if (p.name == "gain") {
     double value = 0;
     g_iface.get_variant_to_type_constructor(GDEXTENSION_VARIANT_TYPE_FLOAT)(&value, const_cast<void *>(p.variant));
@@ -2929,6 +2941,11 @@ void test_cim_rearm_named_shader() {
       check(m.knows_material(material) && m.knows_shader(synthetic) &&
                 m.snapshot(1, 1).state.shaders.size() == 1,
             "cim rearm: arm adopts exactly one synthetic shader");
+      if (arm > 0) {
+        const auto stats = adopt_material_stats();
+        check(stats.arm_shader_cached == 1 && stats.arm_shader_cached_ns > 0,
+              "cim rearm: descriptor replay counts and times one cached shader");
+      }
       // Compare a first-arm rebind with a re-arm that replayed the synthetic descriptor.
       if (arm == sequence) {
         m.material_set_shader(material, named, 2);
@@ -3203,6 +3220,82 @@ void test_staged_canvas_texture_rereads() {
   fake::install();
 }
 
+// A warm parameter reference is synchronous inside arm; a cold one only queues. Neither
+// belongs to the enclosing material/shader phase, and lazy work must leave arm counters alone.
+void test_material_arm_phases(bool in_flight) {
+  using namespace grc::rs;
+  uint64_t warm = 0xfa00, cold = 0xfa01;
+  constexpr uint64_t material = 0xfa02, shader = 0xfa03;
+  std::vector<uint64_t> reads;
+  fake_rendering_server(&reads);
+  auto &w = fake::world();
+  auto &image = w.make({"Object", "Image"});
+  w.overrides["RenderingServer.texture_2d_get"] = [&](fake::Object *, FakeArgs args, void *ret) {
+    reads.push_back(fake::arg_u64(args, 0));
+    fake::put_object(ret, &image);
+  };
+  for (const auto *name : {"Image.get_width", "Image.get_height"})
+    w.overrides[name] = [](fake::Object *, FakeArgs, void *ret) { fake::put_int(ret, 2); };
+  registry_configure(true, RegistryFault::None);
+  stream_begin();
+  adopt_materials_configure(AdoptMaterialSabotage::None);
+  auto &m = mirror_instance();
+  g_stage_test_adopt = true;
+  g_material_adopt_to_mirror = true;
+  g_warm_fixture_in_flight = in_flight;
+  registry_note_texture_create(warm, {2, 2, 0, false, true}, false);
+  check(adopt_warm_at_arm(warm_now_ns(), "sync").queued == 1,
+        "arm phases: parameter texture is warm before arm");
+  registry_note_texture_create(cold, {2, 2, 0, false, true}, false);
+  registry_note_create(shader, RegistryKind::Shader);
+  const auto *code = &fake::intern("shader_type canvas_item; uniform sampler2D paint;");
+  registry_note_shader_code(shader, RegistryValue(&code, [](const void *) {}));
+  registry_note_shader_default_texture(shader, "paint", warm, 0);
+  registry_note_create(material, RegistryKind::Material);
+  registry_note_material_shader(material, shader);
+  alignas(8) unsigned char warm_value[24]{}, cold_value[24]{};
+  fake::detail::from_type<uint64_t, GDEXTENSION_VARIANT_TYPE_RID>(warm_value, &warm);
+  fake::detail::from_type<uint64_t, GDEXTENSION_VARIANT_TYPE_RID>(cold_value, &cold);
+  registry_note_material_param(material, "paint", RegistryValue(warm_value, [](const void *) {}));
+  registry_note_material_param(material, "cold", RegistryValue(cold_value, [](const void *) {}));
+  m.adopt_item(0xfa04, 1);
+  m.set_material(0xfa04, material, 1);
+  adopt_stage_begin(3000, warm_now_ns());
+  adopt_materials_at_arm();
+  const auto stats = adopt_material_stats();
+  const auto sum = stats.arm_tag_node_map_ns + stats.arm_resolve_pending_ns +
+      stats.arm_shader_cached_ns + stats.arm_shader_readback_ns + stats.arm_shader_preprocessed_ns +
+      stats.arm_material_params_ns + stats.arm_instance_params_ns + stats.arm_texture_warm_ns +
+      stats.arm_texture_queued_ns + stats.arm_texture_other_ns;
+  check(stats.arm_ns > 0 && sum <= stats.arm_ns * 1.05 && sum >= stats.arm_ns * 0.95,
+        "arm phases: exclusive phase sum is within five percent of arm_ns");
+  check(stats.arm_texture_warm == 1 && stats.arm_texture_warm_ns > 0 &&
+            stats.arm_texture_in_flight == (in_flight ? 1u : 0u) &&
+            (stats.arm_texture_in_flight_ns > 0) == in_flight &&
+            stats.arm_texture_queued == 1 && stats.arm_texture_queued_ns > 0 &&
+            stats.arm_texture_other == 0 && stats.arm_texture_references == 3 &&
+            stats.arm_default_textures == 1 &&
+            stats.arm_default_textures_ns > 0,
+        "arm phases: warm default, known param and queued cold param are counted separately");
+  check(stats.arm_resolve_rounds == 1 && stats.arm_resolve_round_ns[0] > 0 &&
+            stats.arm_resolve_round_ns[1] == 0 && stats.arm_tag_node_map_calls == 1 &&
+            stats.arm_material_calls == 1 &&
+            stats.arm_shader_cached == 1 && stats.arm_shader_readback == 0 &&
+            stats.arm_shader_preprocessed == 0 && stats.params == 2,
+        "arm phases: resolve, material and cached shader counts move");
+  check(m.knows_texture(warm) && !m.knows_texture(cold) && reads == std::vector<uint64_t>({warm}),
+        "arm phases: warm hit is served inside arm and cold getter stays deferred");
+  materialize_param_texture(warm);
+  check(adopt_material_stats().arm_texture_other == stats.arm_texture_other,
+        "arm phases: lazy reference does not change arm counters");
+  g_stage_test_adopt = false;
+  g_warm_fixture_in_flight = false;
+  g_material_adopt_to_mirror = false;
+  stream_end();
+  adopt_release();
+  registry_configure(false, RegistryFault::None);
+}
+
 void test_staged_texture_budget() {
   using namespace grc::rs;
   std::vector<uint64_t> reads;
@@ -3335,6 +3428,8 @@ int main() {
   test_proxy_materialize();
   test_viewports_live_node_map();
   test_cim_rearm_named_shader();
+  test_material_arm_phases(false);
+  test_material_arm_phases(true);
   test_staged_texture_budget();
   test_staged_canvas_texture_rereads();
   test_staged_recovery_evidence();
