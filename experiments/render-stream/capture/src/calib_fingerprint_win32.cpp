@@ -25,7 +25,7 @@ bool collect_engine_fingerprint(ProcessFingerprint *out, std::string *error) {
   if (!pe_parse_headers(base, nt->OptionalHeader.SizeOfHeaders, &h, error)) return false;
   uint64_t bytes = 0;
   const auto hash_start = std::chrono::steady_clock::now();
-  const bool hash_ok = pe_image_sha256(out->exe_path, &out->image_sha256, &bytes, &out->image_base, error, &out->exe_sha256);
+  const bool hash_ok = pe_image_sha256(out->exe_path, &out->image_sha256, &bytes, &out->image_base, error);
   const double hash_ms = std::chrono::duration<double, std::milli>(
       std::chrono::steady_clock::now() - hash_start).count();
   std::printf("[grc] fingerprint: image hash %.3f ms over %llu bytes\n", hash_ms,

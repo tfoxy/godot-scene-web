@@ -42,8 +42,9 @@ int main(int argc, char **argv) {
   const bool collected = collect_engine_fingerprint(&fp, &error);
   check(collected, error.empty() ? "collect PE fingerprint" : error.c_str());
   if (!collected) return 1;
-  check(fp.exe_sha256.size() == 64 && fp.exe_sha256 == sha256_file(fp.exe_path),
-        "collection retains whole-file digest for derivation");
+  // Collection hashes headers, code and .rdata only. The whole-file digest belongs to derivation:
+  // an executable with embedded game data makes it a multi-second main-thread read.
+  check(fp.exe_sha256.empty() && fp.image_sha256.size() == 64, "collection skips the whole-file digest");
   std::string timed_hash; uint64_t timed_bytes = 0, timed_base = 0;
   const auto start = std::chrono::steady_clock::now();
   const bool hashed = pe_image_sha256(fp.exe_path, &timed_hash, &timed_bytes, &timed_base, &error);
