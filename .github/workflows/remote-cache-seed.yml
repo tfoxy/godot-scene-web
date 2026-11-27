@@ -45,7 +45,8 @@ jobs:
   seed:
     # a run branch dispatching this would save its caches where only that branch can read them
     if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
+    # the same image as remote-validate.yml's jobs: they restore these caches, native binaries included
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

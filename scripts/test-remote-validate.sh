@@ -708,6 +708,18 @@ check "run branches only restore caches: the setup action saves behind inputs.sa
 	&& ! grep -q 'save:' '$ROOT/.github/workflows/remote-validate.yml'"
 check "the seed workflow runs on main only, saves, and is cron plus dispatch" bash -c \
 	"grep -q \"github.ref == 'refs/heads/main'\" '$ROOT/.github/workflows/remote-cache-seed.yml' && grep -q 'save: \"true\"' '$ROOT/.github/workflows/remote-cache-seed.yml' && grep -q 'cron:' '$ROOT/.github/workflows/remote-cache-seed.yml' && ! grep -q pull_request '$ROOT/.github/workflows/remote-cache-seed.yml'"
+check "the seed runs on the validate jobs' image, and locally built native caches key on the image" python3 - "$ROOT" <<'PYTEST'
+import pathlib, re, sys, yaml
+root = pathlib.Path(sys.argv[1])
+seed = yaml.safe_load((root / '.github/workflows/remote-cache-seed.yml').read_text())
+validate = yaml.safe_load((root / '.github/workflows/remote-validate.yml').read_text())
+images = {j.get('runs-on') for j in validate['jobs'].values() if 'ubuntu' in str(j.get('runs-on'))}
+assert len(images) == 1 and 'latest' not in next(iter(images)), images
+assert seed['jobs']['seed']['runs-on'] in images, (seed['jobs']['seed']['runs-on'], images)
+steps = yaml.safe_load((root / '.github/actions/rs-setup/action.yml').read_text())['runs']['steps']
+keys = {s['id']: s['with']['key'] for s in steps if s.get('id') in ('capture-cache', 'rs-core-ext-cache')}
+assert len(keys) == 2 and all('steps.image.outputs.os' in k for k in keys.values()), keys
+PYTEST
 check "only the cleanup job and the janitor may write contents" bash -c \
 	"[ \"\$(grep -c 'contents: write' '$ROOT/.github/workflows/remote-validate.yml')\" = 1 ]"
 # the Trim artifact step must not follow symlinks (a run dir holds symlinks into

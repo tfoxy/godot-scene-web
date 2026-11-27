@@ -430,12 +430,20 @@ runs:
       shell: bash
       run: find experiments/render-stream/capture -path '*/build' -prune -o -type f -exec touch -d 2000-01-01 {} +
 
+    # Locally built native outputs link against the runner image's glibc, so their keys name the image:
+    # a seed on a newer image must never hand its binaries to jobs on an older one.
+    - name: Runner image
+      id: image
+      if: inputs.capture-build == 'true' || inputs.rs-core-ext == 'true'
+      shell: bash
+      run: echo "os=${ImageOS:?ImageOS is unset on this runner}" >>"$GITHUB_OUTPUT"
+
     - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       id: capture-cache
       if: inputs.capture-build == 'true'
       with:
         path: experiments/render-stream/capture/build
-        key: capture-build-${{ runner.os }}-${{ hashFiles('experiments/render-stream/capture/**', 'experiments/render-stream/scripts/build-capture.sh', 'packages/input/godot/addons/gsw_input/*.gd') }}
+        key: capture-build-${{ runner.os }}-${{ steps.image.outputs.os }}-${{ hashFiles('experiments/render-stream/capture/**', 'experiments/render-stream/scripts/build-capture.sh', 'packages/input/godot/addons/gsw_input/*.gd') }}
 
     - name: Capture build
       if: inputs.capture-build == 'true' && steps.capture-cache.outputs.cache-hit != 'true'
@@ -455,7 +463,7 @@ runs:
       if: inputs.rs-core-ext == 'true'
       with:
         path: experiments/render-stream/receiver/ext/build
-        key: rs-core-ext-${{ runner.os }}-${{ inputs.rust-version }}-${{ hashFiles('experiments/render-stream/rs-core/**', 'experiments/render-stream/rs-core-capi/**', 'packages/canvas/rust-draw-list/**', 'experiments/render-stream/receiver/ext/*.cpp', 'experiments/render-stream/receiver/ext/*.h', 'experiments/render-stream/capture/vendor/**', 'experiments/render-stream/scripts/build-rs-core-ext.sh') }}
+        key: rs-core-ext-${{ runner.os }}-${{ steps.image.outputs.os }}-${{ inputs.rust-version }}-${{ hashFiles('experiments/render-stream/rs-core/**', 'experiments/render-stream/rs-core-capi/**', 'packages/canvas/rust-draw-list/**', 'experiments/render-stream/receiver/ext/*.cpp', 'experiments/render-stream/receiver/ext/*.h', 'experiments/render-stream/capture/vendor/**', 'experiments/render-stream/scripts/build-rs-core-ext.sh') }}
 
     - name: rs-core GDExtension
       if: inputs.rs-core-ext == 'true' && steps.rs-core-ext-cache.outputs.cache-hit != 'true'
