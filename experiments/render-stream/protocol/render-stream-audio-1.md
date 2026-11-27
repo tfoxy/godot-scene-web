@@ -72,9 +72,11 @@ never FMOD banks, engine code, or client-side event/parameter replay.
   do one relaxed load and return. Before the first FMOD subscriber the host module remains unloaded.
 - A viewer's Audio toggle opens/closes this connection. The client
   `@godot-scene-web/render-stream-client/audio` subpath exports `openAudioTrack`
-  independently of the main entry and tracks subpath. Secure contexts default
-  to Worker transport and AudioWorklet mixing; otherwise main-thread WebAudio
-  nodes implement the same scheduling. Godot web-driver ports retain MIT notices.
+  independently of the main entry and tracks subpath. Secure contexts default to Worker transport
+  and AudioWorklet mixing. Elsewhere, when Workers exist, the Worker still owns sockets, decoding,
+  clocks and take assembly and posts pre-timed command batches to main-thread WebAudio nodes; only
+  without a Worker does the session run on the main thread. All implement the same scheduling. Godot
+  web-driver ports retain MIT notices.
 - Every seat event text carries event capture time `t` and carrier hand-off
   time `s`; blocks carry made/due/sent times. Opt-in client stage tables and
   seat `render-stream-live-audio/1` evidence expose counts, drops, gaps, stalls
@@ -211,8 +213,10 @@ or an end.
   `A + (t − t_start)`, where `A` is the context time the voice actually started. Durations inside
   a voice are therefore exact, whatever the network delay.
 - **`stop {reason:"end"}`** stops the voice at that mapped time if it is still playing.
-- **Lane blocks** play at `due_us + 60 ms` (the jitter target). After a stall, the backlog is
-  dropped, never played late.
+- **Lane blocks** play at `due_us + L`, the jitter target: 60 ms by default. A client whose
+  scheduling thread lags may raise L to cover the measured lag, up to 250 ms, and lowers it only on
+  session reset or when no lane has audio scheduled. A block that cannot start by `due_us + L` with
+  L at its cap is dropped, never played late.
 
 ## Carriage per carrier
 

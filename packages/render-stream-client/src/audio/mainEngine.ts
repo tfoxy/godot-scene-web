@@ -19,6 +19,10 @@ export type AudioContextLike = Pick<
   | "createChannelSplitter"
   | "createChannelMerger"
 >;
+export const LANE_LEAD_MIN_S = 0.06;
+export const LANE_LEAD_MAX_S = 0.25;
+export const LANE_LEAD_MARGIN_S = 0.02;
+
 export interface AudioStage {
   type: string;
   handledMs: number;
@@ -32,6 +36,11 @@ export interface AudioStage {
   made_us?: number;
   due_us?: number;
   sent_us?: number;
+  path?: "main" | "worker" | "worklet";
+  lag_ms?: number;
+  items?: number;
+  lead_ms?: number;
+  at?: "worker";
 }
 interface Voice {
   gain: GainNode;
@@ -44,11 +53,13 @@ interface Voice {
 }
 interface Lane {
   jitter: LaneJitterBuffer;
+  epoch: number;
   voice: Voice;
 }
 export class MainAudioEngine {
   private voices = new Set<Voice>();
   private sampleActive = 0;
+  private laneLead = LANE_LEAD_MIN_S;
   private buffers = new WeakMap<Take, AudioBuffer>();
   private takes = new Map<number, Voice[]>();
   private lanes = new Map<number, Lane>();
@@ -58,6 +69,7 @@ export class MainAudioEngine {
   constructor(
     readonly context: AudioContextLike,
     private stage?: (row: Omit<AudioStage, "handledMs">) => void,
+    private options: { laneLead?: "adaptive" } = {},
   ) {
     this.keepAlive = createKeepAlive(
       context as AudioContext,
@@ -211,25 +223,48 @@ export class MainAudioEngine {
     this.voices.delete(v);
     this.touch();
   }
-  laneBlock(block: Block, lane: LinkLane, dueContextTime: number): void {
+  private setLaneLead(lead: number): void {
+    if (lead === this.laneLead) return;
+    this.laneLead = lead;
+    this.stage?.({ type: "lane-lead", lead_ms: lead * 1000 });
+  }
+  laneBlock(
+    block: Block,
+    lane: LinkLane,
+    dueContextTime: number,
+    pcm?: Float32Array[],
+  ): void {
     let state = this.lanes.get(lane.id);
     if (!state) {
       state = {
         jitter: new LaneJitterBuffer(),
+        epoch: -1,
         voice: this.voice(lane.group, 1, 1, false),
       };
       this.lanes.set(lane.id, state);
       this.updateLaneGate(lane.id);
     }
     const h = block.header;
+    const adaptive = this.options.laneLead === "adaptive";
+    if (
+      adaptive &&
+      block.header.stream > state.epoch &&
+      [...this.lanes.values()].every((l) => l.voice.sources.size === 0)
+    )
+      this.setLaneLead(LANE_LEAD_MIN_S);
+    const need = this.context.currentTime - dueContextTime + LANE_LEAD_MARGIN_S;
+    const raised = adaptive && need > this.laneLead && need <= LANE_LEAD_MAX_S;
+    const target = raised ? need : this.laneLead;
     const decision = state.jitter.accept(
       h.stream,
       h.block,
       dueContextTime,
       this.context.currentTime,
       !!(h.flags & 8),
+      target,
     );
-    if (!decision) {
+    state.epoch = Math.max(state.epoch, h.stream);
+    if (!decision || (adaptive && need > LANE_LEAD_MAX_S)) {
       this.stage?.({
         type: "lane-drop",
         lane: lane.id,
@@ -238,12 +273,18 @@ export class MainAudioEngine {
       });
       return;
     }
+    if (raised) this.setLaneLead(target);
     if (decision.newEpoch && state.voice.sources.size) {
       const volume = state.voice.volume;
       this.stop(state.voice);
       state.voice = this.voice(lane.group, volume, 1, false);
     }
-    this.schedule(state.voice, blockPcm(block), decision.at, decision.fade);
+    this.schedule(
+      state.voice,
+      pcm ?? blockPcm(block),
+      decision.at,
+      decision.fade || raised,
+    );
     this.stage?.({
       type: "lane-start",
       lane: lane.id,
@@ -287,6 +328,7 @@ export class MainAudioEngine {
     this.lanes.clear();
     this.groups = {};
     this.loopKeys.clear();
+    this.setLaneLead(LANE_LEAD_MIN_S);
   }
   dispose(): void {
     this.reset();

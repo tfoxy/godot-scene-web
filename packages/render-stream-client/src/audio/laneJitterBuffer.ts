@@ -13,6 +13,7 @@ export class LaneJitterBuffer {
     dueContextTime: number,
     now: number,
     gap: boolean,
+    target = 0.06,
   ): { at: number; fade: boolean; newEpoch: boolean } | null {
     if (epoch < this.epoch || (epoch === this.epoch && index < this.next))
       return null;
@@ -20,7 +21,7 @@ export class LaneJitterBuffer {
     const fade = gap || newEpoch || index !== this.next;
     this.epoch = epoch;
     this.next = index + 1;
-    const at = dueContextTime + 0.06;
+    const at = dueContextTime + target;
     if (at < now) return null;
     return { at, fade, newEpoch };
   }

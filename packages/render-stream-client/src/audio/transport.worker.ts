@@ -8,11 +8,12 @@ import {
   type OpenAudioTrackOptions,
   openAudioTrack,
 } from "./session";
+import { SinkBatcher, type SinkPost } from "./sinkBatch";
 import { type Take, TakeStore } from "./takeStore";
 import { WorkletAudioEngine } from "./workletEngine";
 
 const scope = globalThis as unknown as {
-  postMessage(message: unknown): void;
+  postMessage(message: unknown, transfer?: Transferable[]): void;
   onmessage: ((e: MessageEvent) => void) | null;
 };
 let track: AudioTrack | undefined;
@@ -23,16 +24,24 @@ let anchor = {
   stamp: {} as AudioTimestamp,
 };
 let engine: WorkletAudioEngine;
+let batcher: SinkBatcher | undefined;
 let credentialId = 0;
 const credentials = new Map<
   number,
   { resolve(value: string): void; reject(error: Error): void }
 >();
 const now = () => performance.timeOrigin + performance.now();
-const post = (kind: string, data?: unknown) =>
-  scope.postMessage({ kind, data });
+const send = (message: SinkPost) => {
+  if (batcher) batcher.push(message);
+  else scope.postMessage(message);
+};
+const post = (kind: string, data?: unknown) => send({ kind, data });
 scope.onmessage = (e: MessageEvent) => {
   const m = e.data;
+  if (m.kind === "batch-ack") {
+    batcher?.ack();
+    return;
+  }
   if (m.kind === "anchor") {
     anchor = m.data;
     return;
@@ -50,7 +59,18 @@ scope.onmessage = (e: MessageEvent) => {
   }
   if (m.kind !== "init") return;
   anchor = m.anchor;
-  engine = new WorkletAudioEngine(m.port);
+  const currentTime = () =>
+    anchor.currentTime + (anchor.running ? (now() - anchor.now) / 1000 : 0);
+  batcher =
+    m.sink === "main"
+      ? new SinkBatcher(
+          (batch, transfer) => scope.postMessage(batch, transfer),
+          currentTime,
+        )
+      : undefined;
+  engine = new WorkletAudioEngine(
+    batcher ? { postMessage: (message) => batcher!.push(message) } : m.port,
+  );
   const store = new TakeStore();
   for (const take of m.takes as Take[]) store.put(take);
   const put = store.put.bind(store);
@@ -60,9 +80,7 @@ scope.onmessage = (e: MessageEvent) => {
   };
   const context = {
     get currentTime() {
-      return (
-        anchor.currentTime + (anchor.running ? (now() - anchor.now) / 1000 : 0)
-      );
+      return currentTime();
     },
     getOutputTimestamp: () => anchor.stamp,
   } as AudioContextLike;
@@ -79,7 +97,7 @@ scope.onmessage = (e: MessageEvent) => {
               new Promise<string>((resolve, reject) => {
                 const id = ++credentialId;
                 credentials.set(id, { resolve, reject });
-                scope.postMessage({ kind: "credential", id, data: ctx });
+                send({ kind: "credential", id, data: ctx });
               })
           : options.credential,
         onState: (state) => post("state", state),

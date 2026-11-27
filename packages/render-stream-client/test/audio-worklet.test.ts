@@ -2,7 +2,11 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import packageJson from "../package.json";
-import type { AudioContextLike, AudioStage } from "../src/audio/mainEngine";
+import {
+  type AudioContextLike,
+  type AudioStage,
+  MainAudioEngine,
+} from "../src/audio/mainEngine";
 import { MixerCore } from "../src/audio/mixerCore";
 import {
   openAudioTrack as openPublicTrack,
@@ -262,7 +266,34 @@ describe("audio worklet port", () => {
 
 describe("audio path lifecycle", () => {
   function context(addModule = vi.fn(async () => {})) {
+    function node() {
+      const n = {
+        gain: {
+          value: 1,
+          setTargetAtTime: vi.fn(),
+          setValueAtTime: vi.fn(),
+          linearRampToValueAtTime: vi.fn(),
+        },
+        offset: { value: 0 },
+        playbackRate: { value: 1 },
+        connect: vi.fn(() => n),
+        disconnect: vi.fn(),
+        start: vi.fn(),
+        stop: vi.fn(),
+      };
+      return n;
+    }
     return {
+      destination: {},
+      createGain: node,
+      createBufferSource: node,
+      createConstantSource: node,
+      createChannelMerger: node,
+      createChannelSplitter: node,
+      createBuffer: (_c: number, n: number) => ({
+        getChannelData: () => new Float32Array(n),
+      }),
+      decodeAudioData: vi.fn(async () => ({})),
       currentTime: 0,
       state: "running",
       audioWorklet: { addModule },
@@ -370,5 +401,299 @@ describe("audio path lifecycle", () => {
     expect(portClose).toHaveBeenCalledTimes(1);
     expect(vi.getTimerCount()).toBe(0);
     expect(openMainTrack).not.toHaveBeenCalled();
+  });
+  function fakeWorker() {
+    class FakeWorker {
+      static instances: FakeWorker[] = [];
+      onerror: (() => void) | null = null;
+      onmessage: ((e: { data: unknown }) => void) | null = null;
+      postMessage = vi.fn();
+      terminate = vi.fn();
+      constructor() {
+        FakeWorker.instances.push(this);
+      }
+      receive(data: unknown) {
+        this.onmessage?.({ data });
+      }
+    }
+    vi.stubGlobal("Worker", FakeWorker);
+    return FakeWorker;
+  }
+  function fallbackTrack() {
+    let finish!: (info: unknown) => void;
+    const track = {
+      state: "connecting",
+      ready: null,
+      snapshot: null,
+      samples: new Map(),
+      store: new TakeStore(),
+      finished: new Promise((resolve) => {
+        finish = resolve;
+      }),
+      close: vi.fn(() => finish({ reason: "client-close" })),
+    } as unknown as AudioTrack;
+    vi.mocked(openMainTrack).mockReturnValue(track);
+    return track;
+  }
+  it.each([
+    "auto",
+    "worklet",
+  ] as const)("uses the Worker and main sink on insecure origins (%s)", async (path) => {
+    vi.stubGlobal("isSecureContext", false);
+    const Worker = fakeWorker(),
+      ctx = context(),
+      onStage = vi.fn();
+    vi.stubGlobal("AudioWorkletNode", vi.fn());
+    const track = openPublicTrack({
+      url: "ws://localhost/render-stream",
+      credential: "token",
+      context: ctx,
+      path,
+      onStage,
+    });
+    const worker = Worker.instances[0];
+    expect(worker.postMessage.mock.calls[0]).toEqual([
+      expect.objectContaining({ kind: "init", sink: "main" }),
+      [],
+    ]);
+    expect(worker.postMessage.mock.calls[0][0]).not.toHaveProperty("port");
+    expect(
+      (ctx as unknown as AudioContext).audioWorklet.addModule,
+    ).not.toHaveBeenCalled();
+    expect(AudioWorkletNode).not.toHaveBeenCalled();
+    expect(onStage).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "audio-path", path: "worker" }),
+    );
+    worker.receive({
+      kind: "batch",
+      postedMs: performance.timeOrigin + performance.now(),
+      items: [
+        { kind: "state", data: "open" },
+        { kind: "open", data: { lanes: [] } },
+      ],
+    });
+    expect(track.state).toBe("open");
+    expect(worker.postMessage).toHaveBeenLastCalledWith({ kind: "batch-ack" });
+    expect(onStage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "sink-batch",
+        items: 2,
+        lag_ms: expect.any(Number),
+      }),
+    );
+    track.close();
+    await track.finished;
+    expect(worker.terminate).toHaveBeenCalledTimes(1);
+    expect(openMainTrack).not.toHaveBeenCalled();
+  });
+  it("keeps the secure worklet init message and transfer unchanged", async () => {
+    secure();
+    const Worker = fakeWorker(),
+      ctx = context(),
+      onStage = vi.fn();
+    const port1 = { close: vi.fn() },
+      port2 = { close: vi.fn() };
+    vi.stubGlobal(
+      "MessageChannel",
+      class {
+        port1 = port1;
+        port2 = port2;
+      },
+    );
+    vi.stubGlobal(
+      "AudioWorkletNode",
+      class {
+        connect = vi.fn();
+        disconnect = vi.fn();
+        port = {
+          close: vi.fn(),
+          onmessage: null as ((event: { data: unknown }) => void) | null,
+          postMessage: () =>
+            queueMicrotask(() =>
+              this.port.onmessage?.({ data: { kind: "ready" } }),
+            ),
+        };
+      },
+    );
+    const store = new TakeStore();
+    store.put(take);
+    const track = openPublicTrack({
+      url: "ws://localhost/render-stream",
+      credential: "token",
+      context: ctx,
+      store,
+      onStage,
+    });
+    for (let i = 0; i < 6; i++) await Promise.resolve();
+    expect(Worker.instances).toHaveLength(1);
+    expect(Worker.instances[0].postMessage.mock.calls[0]).toEqual([
+      {
+        kind: "init",
+        options: {
+          url: "ws://localhost/render-stream",
+          webTransport: undefined,
+          carrier: undefined,
+          credential: "token",
+          client: undefined,
+          codecs: undefined,
+          reconnect: undefined,
+          readyTimeoutMs: undefined,
+          credentialTimeoutMs: undefined,
+        },
+        provider: false,
+        port: port1,
+        anchor: {
+          currentTime: 0,
+          now: expect.any(Number),
+          running: true,
+          stamp: {},
+        },
+        takes: [take],
+        diag: true,
+      },
+      [port1],
+    ]);
+    expect(onStage).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "audio-path", path: "worklet" }),
+    );
+    track.close();
+    await track.finished;
+  });
+  it("allows explicit Worker selection even on a secure page", async () => {
+    secure();
+    const Worker = fakeWorker(),
+      ctx = context();
+    const track = openPublicTrack({
+      url: "ws://localhost/render-stream",
+      credential: "token",
+      context: ctx,
+      path: "worker",
+    });
+    expect(Worker.instances[0].postMessage.mock.calls[0][0].sink).toBe("main");
+    expect(
+      (ctx as unknown as AudioContext).audioWorklet.addModule,
+    ).not.toHaveBeenCalled();
+    track.close();
+    await track.finished;
+  });
+  it.each([
+    "main",
+    "no-worker",
+    "transport",
+    "clock",
+  ])("selects all-main for %s", async (mode) => {
+    secure();
+    const Worker = fakeWorker(),
+      result = fallbackTrack(),
+      onStage = vi.fn();
+    if (mode === "no-worker") vi.stubGlobal("Worker", undefined);
+    const extra =
+      mode === "main"
+        ? { path: "main" as const }
+        : mode === "transport"
+          ? { transport: vi.fn() }
+          : mode === "clock"
+            ? { clock: { now: () => 0 } }
+            : {};
+    const track = openPublicTrack({
+      url: "ws://localhost/render-stream",
+      credential: "token",
+      context: context(),
+      onStage,
+      ...extra,
+    });
+    expect(track).toBe(result);
+    expect(Worker.instances).toHaveLength(0);
+    expect(openMainTrack).toHaveBeenCalledTimes(1);
+    expect(onStage).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "audio-path", path: "main" }),
+    );
+    track.close();
+    await track.finished;
+  });
+  it("falls back once on Worker failure before open, preserving the store", async () => {
+    vi.stubGlobal("isSecureContext", false);
+    const Worker = fakeWorker(),
+      result = fallbackTrack(),
+      ctx = context(),
+      onStage = vi.fn(),
+      store = new TakeStore();
+    const track = openPublicTrack({
+      url: "ws://localhost/render-stream",
+      credential: "token",
+      context: ctx,
+      store,
+      onStage,
+    });
+    const worker = Worker.instances[0],
+      error = worker.onerror!;
+    error();
+    error();
+    worker.receive({
+      kind: "batch",
+      items: [{ kind: "error", data: "again" }],
+    });
+    expect(openMainTrack).toHaveBeenCalledTimes(1);
+    expect(openMainTrack).toHaveBeenCalledWith(
+      expect.objectContaining({ context: ctx, store }),
+    );
+    expect(
+      onStage.mock.calls
+        .filter(([r]) => r.type === "audio-path")
+        .map(([r]) => r.path),
+    ).toEqual(["worker", "main"]);
+    expect(worker.terminate).toHaveBeenCalledTimes(1);
+    track.close();
+    await track.finished;
+    expect(result.close).toHaveBeenCalledTimes(1);
+  });
+  it("closes on Worker failure after open, including a missing main take", async () => {
+    vi.stubGlobal("isSecureContext", false);
+    const Worker = fakeWorker(),
+      onClose = vi.fn();
+    const track = openPublicTrack({
+      url: "ws://localhost/render-stream",
+      credential: "token",
+      context: context(),
+      onClose,
+    });
+    Worker.instances[0].receive({
+      kind: "batch",
+      postedMs: 0,
+      items: [
+        { kind: "open", data: {} },
+        { epoch: 0, command: { kind: "load", key: "missing/key" } },
+      ],
+    });
+    expect((await track.finished).reason).toBe("audio-protocol");
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(openMainTrack).not.toHaveBeenCalled();
+  });
+  it("handles main take mirrors and sink commands in one ordered batch", async () => {
+    vi.stubGlobal("isSecureContext", false);
+    const Worker = fakeWorker(),
+      play = vi.spyOn(MainAudioEngine.prototype, "play");
+    const track = openPublicTrack({
+      url: "ws://localhost/render-stream",
+      credential: "token",
+      context: context(),
+    });
+    Worker.instances[0].receive({
+      kind: "batch",
+      postedMs: 0,
+      items: [
+        { kind: "take", data: take },
+        { epoch: 0, command: { kind: "load", key: "bank/key" } },
+        {
+          epoch: 0,
+          command: { kind: "play", key: "bank/key", cue, handledMs: 0 },
+        },
+      ],
+    });
+    expect(play).toHaveBeenCalledWith(take, cue);
+    expect(track.store.peek("bank", "key")).toBe(take);
+    track.close();
+    await track.finished;
+    play.mockRestore();
   });
 });
