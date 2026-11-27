@@ -28,9 +28,8 @@ source "$HERE/lib/gamescope.sh"
 source "$HERE/lib/legs.sh"
 trap 'if [ -n "$CURRENT_CHILD_PID" ]; then kill "$CURRENT_CHILD_PID" 2>/dev/null || true; fi; quiet_release' EXIT
 LEG_ENV=()
-run_headless "$OUT/import" none -- mise exec -- godot --headless --path "$OUT/project" --editor --import
+run_headless "$OUT/import" none -- mise exec -- godot --headless --path "$OUT/project" --import
 [ "$(cat "$OUT/import/exit-code.txt")" = 0 ]
-if rg -n "SCRIPT ERROR|Parse Error|ERROR:" "$OUT/import/stdout.log"; then exit 1; fi
 MODES=("$MODE")
 [ "$MODE" != all ] || MODES=(probe log off)
 for mode in "${MODES[@]}"; do
@@ -47,6 +46,7 @@ for mode in "${MODES[@]}"; do
 		run_headless "$OUT/$mode" none -- "$BINARY" --headless --path "$OUT/project"
 	fi
 	[ "$(cat "$OUT/$mode/exit-code.txt")" = 0 ]
+	if grep -En 'SCRIPT ERROR|Parse Error|ERROR:' "$OUT/$mode/stdout.log"; then exit 1; fi
 	python3 "$HERE/check-audio-seam.py" "$OUT/$mode" "$mode"
 done
 legs_quiet_summary

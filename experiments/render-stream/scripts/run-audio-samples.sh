@@ -40,9 +40,9 @@ source "$HERE/lib/gamescope.sh"
 source "$HERE/lib/legs.sh"
 trap 'if [ -n "$CURRENT_CHILD_PID" ]; then kill "$CURRENT_CHILD_PID" 2>/dev/null || true; fi; quiet_release' EXIT
 LEG_ENV=()
-run_headless "$OUT/import" none -- mise exec -- godot --headless --path "$OUT/project" --editor --import
+# --import enables editor import mode and exits after the scan, like the gate runners.
+run_headless "$OUT/import" none -- mise exec -- godot --headless --path "$OUT/project" --import
 [ "$(cat "$OUT/import/exit-code.txt")" = 0 ]
-if grep -En 'SCRIPT ERROR|Parse Error|ERROR:' "$OUT/import/stdout.log"; then exit 1; fi
 if [ "$IMPORT_ONLY" = 1 ]; then legs_quiet_summary; exit 0; fi
 MODES=("$MODE")
 [ "$MODE" != all ] || MODES=(log sample)

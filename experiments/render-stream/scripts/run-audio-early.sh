@@ -29,7 +29,7 @@ source "$HERE/lib/legs.sh"
 trap quiet_release EXIT
 LEG_ENV=()
 rm -f "$OUT/project/.godot/extension_list.cfg"
-run_headless "$OUT/import" none -- mise exec -- godot --headless --editor --import --path "$OUT/project"
+run_headless "$OUT/import" none -- mise exec -- godot --headless --import --path "$OUT/project"
 [ "$(cat "$OUT/import/exit-code.txt")" = 0 ]
 printf '%s\n' "$ROOT/experiments/render-stream/capture/build/render_stream_capture.gdextension" > "$OUT/project/.godot/extension_list.cfg"
 LEG_ENV=(GRC_LIVE_TRACKS=audio GRC_AUDIO=sample GRC_AUDIO_ABI_TABLE="$HERE/../calibration/abi/godot-4.5.1-audio-driver.json" GRC_EVIDENCE_DIR="$OUT/early/evidence")

@@ -27,6 +27,12 @@ const env = { ...process.env };
 for (const key of Object.keys(env)) if (key.startsWith("GRC_")) delete env[key];
 const viewToken = "ef".repeat(32);
 const protocol = "render-stream-audio.1";
+const pollMs = 20;
+// Bound the backlog this fixture may create, including TCP buffers beyond the
+// sender's carrier queue. A larger backlog must fail rather than extend the wait.
+const maxPausedFrames = 8192;
+const blockBytes = 48 + 512 * 2 * 2;
+const maxFrameBytes = blockBytes + 4; // Unmasked WS frame with a u16 length.
 let passed = 0;
 function check(value: unknown, name: string) {
   assert.ok(value, name);
@@ -36,7 +42,7 @@ async function until(predicate: () => boolean, name: string, ms = 6000) {
   const end = Date.now() + ms;
   while (!predicate()) {
     assert.ok(Date.now() < end, `timeout: ${name}`);
-    await delay(20);
+    await delay(pollMs);
   }
 }
 interface Connection {
@@ -151,8 +157,10 @@ async function open(port: number, credential: string) {
   check(status.includes("101"), "audio websocket accepted");
   // RawTrack owns text/close handling; this observer decodes the same unmasked server frames.
   const blocks: Buffer[] = [];
+  const received = { bytes: 0, frames: 0, maxPayloadBytes: 0 };
   let buf = Buffer.alloc(0);
   track.socket.on("data", (d: Buffer) => {
+    received.bytes += d.length;
     buf = Buffer.concat([buf, d]);
     while (buf.length >= 2) {
       let len = buf[1] & 127;
@@ -167,6 +175,8 @@ async function open(port: number, credential: string) {
         off = 10;
       }
       if (buf.length < off + len) break;
+      received.frames++;
+      received.maxPayloadBytes = Math.max(received.maxPayloadBytes, len);
       if ((buf[0] & 15) === 2)
         blocks.push(Buffer.from(buf.subarray(off, off + len)));
       buf = buf.subarray(off + len);
@@ -188,7 +198,7 @@ async function open(port: number, credential: string) {
     () => texts().some((t) => t.type === "take-ready"),
     "initial snapshot and take",
   );
-  return { track, texts, blocks };
+  return { track, texts, blocks, received };
 }
 const live = await start("stall", true);
 try {
@@ -283,27 +293,80 @@ try {
   );
 
   const dropped = stats().backpressured_lane_drops;
+  const receivedBeforePause = { ...first.received };
+  let laneSent = stats().classes.lane.sent;
+  let blockedSince = Date.now();
+  const pausedAt = Date.now();
   first.track.socket.pause();
   await until(
-    () => stats().backpressured_lane_drops > dropped + 3,
+    () => {
+      const current = stats();
+      if (current.classes.lane.sent !== laneSent) {
+        laneSent = current.classes.lane.sent;
+        blockedSince = Date.now();
+      }
+      // A transient full carrier may drain into TCP's growing receive window.
+      // Establish a sustained block before testing the reliable stall deadline.
+      return (
+        current.backpressured_lane_drops > dropped + 3 &&
+        Date.now() - blockedSince >= 1500
+      );
+    },
     "second real socket stall",
     90000,
   );
   // A voice remains active at the source even if this connection loses it at stall-close.
-  await live.command("start");
-  await live.command("cue");
+  await live.command("start\ncue");
   await until(
     () => stats().stalls === 1,
     "reliable class stalls and closes",
     7000,
   );
   check(stats().closed, "stalled connection retained as closed in evidence");
+  // Closed sender counters are final: each handed-off frame is either already
+  // parsed or ahead of the close. Include the close itself, outside audio stats.
+  const pendingFrames =
+    Object.values(stats().classes).reduce((n, c) => n + c.sent, 0) -
+    first.received.frames +
+    1;
+  check(
+    pendingFrames > 0 && pendingFrames <= maxPausedFrames,
+    `paused backlog is bounded: ${pendingFrames} <= ${maxPausedFrames} frames`,
+  );
+  // TCP retransmission backoff can delay the close after reads resume. Its
+  // doubling interval is bounded by elapsed retry time plus the base RTO.
+  // The pause bounds retry time; the control budget covers the base RTO and
+  // transfer of the finite backlog. Existing deadlines also bound the pause.
+  const pausedMs = Date.now() - pausedAt;
+  const drainBudgetMs = 6000 + pausedMs;
+  const drainStarted = Date.now();
   first.track.socket.resume();
   await until(
     () => first.track.closed !== null,
     "audio-stalled close arrives",
-    10000,
+    drainBudgetMs,
   );
+  const drain = {
+    pending_frames: pendingFrames,
+    max_frames: maxPausedFrames,
+    max_bytes: pendingFrames * maxFrameBytes,
+    bytes: first.received.bytes - receivedBeforePause.bytes,
+    frames: first.received.frames - receivedBeforePause.frames,
+    paused_ms: pausedMs,
+    wall_ms: Date.now() - drainStarted,
+    budget_ms: drainBudgetMs,
+  };
+  check(
+    first.received.maxPayloadBytes <= blockBytes &&
+      drain.bytes <= drain.max_bytes,
+    "drained bytes fit the bounded fixture frames",
+  );
+  check(
+    drain.frames === pendingFrames,
+    "every queued frame precedes the close",
+  );
+  writeFileSync(join(live.dir, "stall-drain.json"), JSON.stringify(drain));
+  console.log(`audio-stalled drain: ${JSON.stringify(drain)}`);
   check(
     first.track.closed?.code === 1001 &&
       first.track.closed?.reason === "audio-stalled",

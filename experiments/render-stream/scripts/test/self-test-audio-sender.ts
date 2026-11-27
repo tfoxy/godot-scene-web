@@ -116,7 +116,9 @@ try {
     return { ws, messages, until };
   };
   const first = await open();
-  const texts = first.messages.filter((m) => !Buffer.isBuffer(m));
+  const texts = first.messages.filter(
+    (m): m is Record<string, unknown> => !Buffer.isBuffer(m),
+  );
   check(
     texts[0].type === "track-ready" && texts[1].type === "audio-state",
     "ready then snapshot",
@@ -226,7 +228,8 @@ try {
   );
   const second = await open();
   const start2 = second.messages.find(
-    (m) => !Buffer.isBuffer(m) && m.type === "start",
+    (m): m is Record<string, unknown> =>
+      !Buffer.isBuffer(m) && m.type === "start",
   );
   check(
     start2 &&
