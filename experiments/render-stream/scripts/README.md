@@ -225,6 +225,13 @@ An exact `canvas_texture_storage` calibration record takes precedence. Unexpecte
 or self-check results leave the existing `no-image` refusal, with a counted
 `canvas-texture-unresolved:<reason>` in `canvas-texture-resolver.json`.
 
+In `canvas-texture-resolver.json`, `canvas_textures_resolved` counts distinct wrappers on their
+first successful resolve per arm. `canvas_texture_rereads` counts additional successful storage
+reads of wrappers already resolved in that arm, including retries while channel textures are
+staged. Both counters accumulate across arms and reset on detach; cache hits increment neither.
+The cache and first-success tracking clear each arm. Refusal counts are unchanged, and resolve
+timing totals include every read, including retries.
+
 Before any resolved channel enters readback, RenderingDevice backends require a live RD texture
 with `texture_type == TEXTURE_TYPE_2D`. Other dimensions refuse `not-2d`; an unavailable or
 failed type query refuses `type-unknown`. GLES3 has no public type getter, so `gl_compatibility`

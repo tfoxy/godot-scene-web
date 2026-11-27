@@ -195,8 +195,11 @@ def judge(root, renderer, negative=False, mismatch=False, derived=False, bad_der
             require(hashlib.sha256(pixels).hexdigest() == image["pixel_sha256"]
                     and pixels == bytes.fromhex(image["hex"]), "adopted diffuse equals source pixels")
         snapshot = load(["resolved.json", "rearmed.json", "final.json"][arm - 1])
-        previous = load("resolved.json")["canvas_textures_resolved"] if arm == 2 else 0
-        retries = snapshot["canvas_textures_resolved"] - previous - len(source["canvases"])
+        previous_resolved = load("resolved.json")["canvas_textures_resolved"] if arm == 2 else 0
+        require(snapshot["canvas_textures_resolved"] - previous_resolved == len(source["canvases"]),
+                directory.name + ": first successful resolve counted once per wrapper per arm")
+        previous_rereads = load("resolved.json")["canvas_texture_rereads"] if arm == 2 else 0
+        retries = snapshot["canvas_texture_rereads"] - previous_rereads
         require(retries >= (2 if arm == 1 else 3), directory.name + ": successful retry rereads counted")
     return checks
 

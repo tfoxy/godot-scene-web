@@ -79,11 +79,11 @@ void CanvasTextureResolver::attach(bool enabled, const CanvasTextureRecord *reco
 }
 
 void CanvasTextureResolver::detach() {
-  cache_.clear(); unresolved_.clear();
+  cache_.clear(); resolved_this_arm_.clear(); unresolved_.clear();
   record_ = {};
   enabled_ = false; checked_ = false;
   reason_ = "detached";
-  resolved_ = selfchecks_ = selfcheck_samples_ = total_ns_ = max_ns_ = 0;
+  resolved_ = rereads_ = selfchecks_ = selfcheck_samples_ = total_ns_ = max_ns_ = 0;
   arm_total_ns_ = arm_max_ns_ = 0;
 }
 
@@ -91,6 +91,7 @@ void CanvasTextureResolver::arm_begin() {
   // Bindings may change while disarmed without entering the lean registry. Keep the validated
   // attachment/self-check state, but retry both successes and refusals on the next first use.
   cache_.clear();
+  resolved_this_arm_.clear();
   arm_total_ns_ = arm_max_ns_ = 0;
 }
 
@@ -187,8 +188,10 @@ bool CanvasTextureResolver::resolve(CanvasTextureReader &reader, std::uint64_t r
   std::string why = reason_;
   CanvasTextureChannels c;
   ok = ready() && read(reader, rid, &c, &why, true);
-  if (ok) ++resolved_;
-  else ++unresolved_["canvas-texture-unresolved:" + (why.empty() ? "selfcheck-not-run" : why)];
+  if (ok) {
+    if (resolved_this_arm_.insert(rid).second) ++resolved_;
+    else ++rereads_;
+  } else ++unresolved_["canvas-texture-unresolved:" + (why.empty() ? "selfcheck-not-run" : why)];
   cache_[rid] = {c, ok};
   *out = c;
   return ok;
@@ -206,6 +209,7 @@ std::string CanvasTextureResolver::json() const {
   j.object_begin();
   j.field("enabled", enabled_).field("ready", ready()).field("reason", reason_);
   j.field("canvas_textures_resolved", static_cast<std::int64_t>(resolved_));
+  j.field("canvas_texture_rereads", static_cast<std::int64_t>(rereads_));
   j.key("canvas_textures_unresolved").object_begin();
   for (const auto &[reason, count] : unresolved_) j.field(reason, static_cast<std::int64_t>(count));
   j.object_end();

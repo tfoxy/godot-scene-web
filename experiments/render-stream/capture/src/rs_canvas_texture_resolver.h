@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <map>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -64,10 +65,11 @@ class CanvasTextureResolver {
   struct Cached { CanvasTextureChannels channels; bool ok = false; };
   CanvasTextureRecord record_;
   std::map<std::uint64_t, Cached> cache_;
+  std::set<std::uint64_t> resolved_this_arm_;
   std::map<std::string, std::uint64_t> unresolved_;
   bool enabled_ = false, checked_ = false;
   std::string reason_, permanent_failure_;
-  std::uint64_t resolved_ = 0, selfchecks_ = 0, selfcheck_samples_ = 0;
+  std::uint64_t resolved_ = 0, rereads_ = 0, selfchecks_ = 0, selfcheck_samples_ = 0;
   std::uint64_t total_ns_ = 0, max_ns_ = 0;
   std::uint64_t arm_total_ns_ = 0, arm_max_ns_ = 0;
 };

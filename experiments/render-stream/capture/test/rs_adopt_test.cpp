@@ -20,6 +20,7 @@
 #include "fake_godot_iface.h"
 #include "hooks.h"
 #include "rs_adopt.h"
+#include "rs_canvas_texture_resolver.h"
 #include "rs_evict.h"
 #include "rs_json_lite.h"
 #include "rs_registry.h"
@@ -53,6 +54,8 @@ std::map<uint64_t, uint64_t> g_material_adopt_shaders;
 std::map<uint64_t, std::string> g_shader_adopt_codes;
 bool g_texture_readback_adopt = false;
 bool g_stage_test_adopt = false;
+grc::rs::CanvasTextureResolver *g_canvas_resolver = nullptr;
+grc::rs::CanvasTextureReader *g_canvas_reader = nullptr;
 std::uint64_t g_stage_test_ns = 0;
 std::uint64_t stage_test_clock() { return g_stage_test_ns; }
 
@@ -422,6 +425,15 @@ std::vector<std::pair<uint64_t, grc::rs::Mirror::ParticlesAdopt>> g_particles_ho
 // rs_adopt.cpp calls the hooks' copy path through these; the engine side never runs here.
 namespace grc {
 namespace rs {
+bool adopt_test_canvas_texture_resolve(std::uint64_t rid, CanvasTextureChannels *out) {
+  if (!g_canvas_resolver) return canvas_texture_resolve(rid, out);
+  g_stage_test_ns += 1000000;
+  return g_canvas_resolver->resolve(*g_canvas_reader, rid, out);
+}
+void adopt_test_canvas_texture_forget(std::uint64_t rid) {
+  if (g_canvas_resolver) g_canvas_resolver->forget(rid);
+  else canvas_texture_resolver_forget(rid);
+}
 void adopt_test_before_warm_free_classify() {
   if (g_warm_free_probe) g_warm_free_probe();
 }
@@ -539,6 +551,10 @@ bool hooks_adopt_multimesh(uint64_t rid, rs::Mirror::MultimeshAdopt a) {
 bool hooks_adopt_canvas_texture(uint64_t rid, uint64_t diffuse, uint64_t normal, uint64_t specular,
                                 int32_t filter, int32_t repeat) {
   g_ctex_hook_calls.push_back({rid, diffuse, normal, specular, filter, repeat});
+  if (g_canvas_resolver) {
+    rs::mirror_instance().canvas_texture_adopt(rid, diffuse, normal, specular, filter, repeat, 1);
+    return true;
+  }
   return false;
 }
 // LATE-RES: the node_added adoption stamps its taps with the hook frame; the engine side never
@@ -3090,6 +3106,103 @@ void test_staged_recovery_evidence() {
   registry_configure(false, RegistryFault::None);
 }
 
+// Real resolver accounting through the adoption retry, with a fake storage owner and clock.
+void test_staged_canvas_texture_rereads() {
+  using namespace grc::rs;
+  struct Storage : CanvasTextureReader {
+    unsigned char memory[32768] = {};
+    CanvasTextureRecord record{0x1000, {0x5000,128,64,56,0,8,16,44,48},
+                                      {0x6000,128,64,56,0,8,16,44,48}};
+    static uint64_t wrapper(uint64_t index) { return (uint64_t(7)<<32)|index; }
+    bool copy(uint64_t address, void *out, std::size_t bytes) override {
+      if (address > sizeof(memory) || bytes > sizeof(memory)-address) return false;
+      std::memcpy(out, memory+address, bytes);
+      return true;
+    }
+    bool live_texture(uint64_t rid) override { return rid>=0xf001 && rid<=0xf004; }
+    int64_t texture_type(uint64_t) override { return 1; }
+    void put64(uint64_t address, uint64_t value) {
+      std::memcpy(memory+address, &value, sizeof(value));
+    }
+    void put32(uint64_t address, uint32_t value) {
+      std::memcpy(memory+address, &value, sizeof(value));
+    }
+    Storage() {
+      put64(0x1000,0x2000); put64(0x2000,0x5000);
+      put64(0x2088,0x3000); put32(0x2098,4); put32(0x209c,4); put32(0x20a4,1);
+      put64(0x3000,0x4000);
+      for (uint64_t index=1; index<=3; ++index) {
+        put64(0x4000+64*index,0xf000+index);
+        put32(0x4000+64*index+56,7);
+      }
+    }
+  } storage;
+  CanvasTextureResolver resolver;
+  resolver.attach(true,&storage.record,"");
+  check(resolver.selfcheck(storage,{{Storage::wrapper(1),{0xf001,0,0,0,0}},
+                                    {Storage::wrapper(2),{0xf002,0,0,0,0}},
+                                    {Storage::wrapper(3),{0xf003,0,0,0,0}}}),
+        "staged ctex: validate storage fixture");
+  std::vector<uint64_t> reads;
+  fake_rendering_server(&reads);
+  auto &w=fake::world();
+  auto &image=w.make({"Object","Image"});
+  w.overrides["RenderingServer.texture_2d_get"] = [&](fake::Object *, FakeArgs args, void *ret) {
+    const auto rid=fake::arg_u64(args,0);
+    reads.push_back(rid);
+    if (storage.live_texture(rid)) {
+      g_stage_test_ns+=1500000;
+      fake::put_object(ret,&image);
+    }
+  };
+  for (const auto *name : {"Image.get_width","Image.get_height"})
+    w.overrides[name]=[](fake::Object *, FakeArgs, void *ret) { fake::put_int(ret,2); };
+  registry_configure(true,RegistryFault::None);
+  stream_begin();
+  g_stage_test_adopt=true;
+  g_canvas_resolver=&resolver;
+  g_canvas_reader=&storage;
+  g_stage_test_ns=1000000;
+  adopt_stage_begin(3000,g_stage_test_ns,stage_test_clock);
+  for (uint64_t channel=0xf001; channel<=0xf004; ++channel)
+    registry_note_texture_create(channel,{2,2,0,false,true},false);
+  for (uint64_t index=1; index<=3; ++index) materialize(Storage::wrapper(index),RefKind::Texture);
+  adopt_frame_drain();
+  check(g_ctex_hook_calls.empty() && adopt_stage_stats().pending==6,
+        "staged ctex: three resolved wrappers wait on their pending channels");
+  check(resolver.json().find("\"canvas_textures_resolved\": 3")!=std::string::npos &&
+        resolver.json().find("\"canvas_texture_rereads\": 0")!=std::string::npos,
+        "staged ctex: first drain counts three distinct wrappers");
+  // The first wrapper is still unknown: setters cannot update the mirror yet.
+  storage.put64(0x4040,0xf004);
+  storage.put32(0x406c,1);
+  storage.put32(0x4070,2);
+  for (int frame=0; frame<4; ++frame) adopt_frame_drain();
+  std::printf("staged_canvas_texture_counters: %s\n",resolver.json().c_str());
+  json_lite::JValue counters;
+  check(json_lite::Reader(resolver.json()).parse(&counters),"staged ctex: resolver counters are JSON");
+  const auto *resolved=counters.get("canvas_textures_resolved");
+  const auto *rereads=counters.get("canvas_texture_rereads");
+  check(resolved && resolved->text=="3" && rereads && std::stoull(rereads->text)>=3,
+        "staged ctex: retries preserve three distinct resolves and count at least three rereads");
+  check(adopt_stage_stats().pending==0 && !adopt_stage_holds_publish() &&
+        g_ctex_hook_calls.size()==3,
+        "staged ctex: all three wrappers finish adoption");
+  const auto changed=std::find_if(g_ctex_hook_calls.begin(),g_ctex_hook_calls.end(),
+      [](const auto &call) { return call.rid==Storage::wrapper(1); });
+  check(changed!=g_ctex_hook_calls.end() && changed->diffuse==0xf004 &&
+        changed->filter==1 && changed->repeat==2 && mirror_instance().knows_texture(0xf004),
+        "staged ctex: channel and sampling changes during drain survive adoption");
+  check(adopt_resource_stats().canvas_residual==3 && adopt_resource_stats().textures_refused==0,
+        "staged ctex: retries are dependencies without refusals");
+  g_canvas_resolver=nullptr;
+  g_canvas_reader=nullptr;
+  g_stage_test_adopt=false;
+  stream_end();
+  registry_configure(false,RegistryFault::None);
+  fake::install();
+}
+
 void test_staged_texture_budget() {
   using namespace grc::rs;
   std::vector<uint64_t> reads;
@@ -3223,6 +3336,7 @@ int main() {
   test_viewports_live_node_map();
   test_cim_rearm_named_shader();
   test_staged_texture_budget();
+  test_staged_canvas_texture_rereads();
   test_staged_recovery_evidence();
   test_staged_texture_replace_source();
   std::printf("rs_adopt_test: %d checks, %d failures\n", g_checks, g_failures);

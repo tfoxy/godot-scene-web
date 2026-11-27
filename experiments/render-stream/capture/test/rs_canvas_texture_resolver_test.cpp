@@ -67,9 +67,37 @@ int main() {
     a.forget(g.rid);
     check(a.resolve(g,g.rid,&out) && out.diffuse==102 && out.filter==1 && g.reads>before,
           "forget re-reads pending channel and sampling mutation");
-    check(a.json().find("\"canvas_textures_resolved\": 2") != std::string::npos &&
+    check(a.json().find("\"canvas_textures_resolved\": 1") != std::string::npos &&
+          a.json().find("\"canvas_texture_rereads\": 1") != std::string::npos &&
           a.json().find("\"runs\": 1") != std::string::npos,
-          "retry reread counts as resolve without another self-check");
+          "retry counts a reread without another wrapper or self-check");
+    const auto snapshot=a.json();
+    check(a.resolve(g,g.rid,&out) && a.json()==snapshot,
+          "cached retry changes neither counter");
+    a.arm_begin();
+    check(a.resolve(g,g.rid,&out) &&
+          a.json().find("\"canvas_textures_resolved\": 2") != std::string::npos &&
+          a.json().find("\"canvas_texture_rereads\": 1") != std::string::npos,
+          "same RID counts a first success in a new arm with cumulative rereads");
+    a.detach();
+    check(a.json().find("\"canvas_textures_resolved\": 0") != std::string::npos &&
+          a.json().find("\"canvas_texture_rereads\": 0") != std::string::npos,
+          "detach resets both counters");
+    g.put<std::uint64_t>(0x4040,101); g.put<std::int32_t>(0x406c,2);
+    check(g.start(a) && a.resolve(g,g.rid,&out) &&
+          a.json().find("\"canvas_textures_resolved\": 1") != std::string::npos &&
+          a.json().find("\"canvas_texture_rereads\": 0") != std::string::npos,
+          "detach clears first-success tracking");
+  }
+  { Fake g; CanvasTextureResolver a;
+    const auto second=(std::uint64_t(8)<<32)|2;
+    std::memcpy(g.memory+0x4080,g.memory+0x4040,64);
+    g.put<std::uint32_t>(0x40b8,8);
+    check(g.start(a) && a.resolve(g,g.rid,&out) && a.resolve(g,second,&out),
+          "resolve two distinct wrappers");
+    check(a.json().find("\"canvas_textures_resolved\": 2") != std::string::npos &&
+          a.json().find("\"canvas_texture_rereads\": 0") != std::string::npos,
+          "distinct wrappers count first successes only");
   }
   { Fake g; CanvasTextureResolver a;
     check(g.start(a),"prepare forget refusal");

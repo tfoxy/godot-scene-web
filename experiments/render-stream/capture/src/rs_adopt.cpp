@@ -31,6 +31,12 @@
 namespace grc {
 namespace rs {
 
+#ifdef GRC_ADOPT_TEST
+// Exercise storage resolution and staging together without an attached engine.
+bool adopt_test_canvas_texture_resolve(std::uint64_t rid, CanvasTextureChannels *out);
+void adopt_test_canvas_texture_forget(std::uint64_t rid);
+#endif
+
 namespace {
 
 // ------------------------------------------------------------------ the engine-free application
@@ -2090,7 +2096,11 @@ bool adopt_canvas_texture_locked_out(std::uint64_t rid) {
 // caches bindings until the next arm or detach; channel images follow the normal adoption path.
 bool adopt_canvas_texture_resolved(std::uint64_t rid) {
   CanvasTextureChannels c;
+#ifdef GRC_ADOPT_TEST
+  if (!adopt_test_canvas_texture_resolve(rid, &c)) return false;
+#else
   if (!canvas_texture_resolve(rid, &c)) return false;
+#endif
   materialize_texture(c.diffuse);
   materialize_texture(c.normal);
   materialize_texture(c.specular);
@@ -2099,7 +2109,11 @@ bool adopt_canvas_texture_resolved(std::uint64_t rid) {
   if (stage_pending(c.diffuse) || stage_pending(c.normal) || stage_pending(c.specular)) {
     // Setters cannot update a wrapper until it is known. Re-read storage on the retry so a
     // channel or sampling change during these frame drains survives adoption.
+#ifdef GRC_ADOPT_TEST
+    adopt_test_canvas_texture_forget(rid);
+#else
     canvas_texture_resolver_forget(rid);
+#endif
     stage_queue(rid);
     return false;
   }
