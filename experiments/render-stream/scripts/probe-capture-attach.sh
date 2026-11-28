@@ -101,6 +101,19 @@ if [ "$CYCLE" = 1 ]; then
 	cp "$SCRIPT_DIR/lib/resident-attach-probe.gd" "$fixture/resident_probe.gd"
 	if [ "$RESOURCES" = 1 ]; then
 		cp "$SCRIPT_DIR/lib/late-attach-resources.gd" "$fixture/late_resources.gd"
+		# Time API calls in the runner-owned copy; the fixture source stays unchanged.
+		python3 - "$fixture/resident_probe.gd" <<'PYTIMING'
+from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+source = path.read_text()
+needle = '\tvar status: int = _api.call(method, options)'
+assert source.count(needle) == 1
+source = source.replace(needle, '\tvar invoke_start_us := Time.get_ticks_usec()\n' + needle +
+    '\n\t_write("api-timing.jsonl", {"method": method, "round": _round, "frame": _frame, '
+    '"elapsed_us": Time.get_ticks_usec() - invoke_start_us})')
+path.write_text(source)
+PYTIMING
 	fi
 	python3 - "$EXPERIMENT_DIR/fixtures/live-swap/project.godot" "$fixture" <<'PYPROJECT'
 from pathlib import Path

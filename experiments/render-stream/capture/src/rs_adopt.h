@@ -370,6 +370,15 @@ struct AdoptStageStats {
 };
 void adopt_stage_begin(std::uint64_t budget_us, std::uint64_t arm_ns,
                        std::uint64_t (*clock)() = nullptr);
+// Called only on attachment lifecycle boundaries and existing attached frame callbacks.
+void adopt_census_attach(bool dummy_host);
+void adopt_census_detach();
+void adopt_census_frame(std::uint64_t budget_us, std::uint64_t (*clock)() = nullptr);
+// Main-thread census slice; the optional clock supports deterministic deadline tests.
+bool adopt_census_step(std::uint64_t deadline, std::uint64_t (*clock)() = nullptr);
+#ifdef GRC_ADOPT_TEST
+std::vector<std::string> adopt_census_test_snapshot();
+#endif
 bool adopt_stage_holds_publish();
 void adopt_stage_published();
 AdoptStageStats adopt_stage_stats();
@@ -425,6 +434,7 @@ struct AdoptResourceStats {
   std::uint32_t fonts = 0;             // TextServer font RIDs the census found
   std::uint32_t cached_compressed = 0; // CompressedTexture2D RIDs the census found
   std::uint32_t cache_paths = 0;       // resource paths the census listed
+  std::uint64_t census_slices = 0;     // slices spent on this census
   std::uint64_t census_ns = 0;         // the one-time census (fonts, resource cache)
   std::uint64_t lookup_ns = 0;         // every adoption's read-back, census excluded
 };

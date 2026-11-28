@@ -5,6 +5,7 @@
 // Also: the three walk sabotages, the strict/skip handling of a canvas the plan leaves out, the
 // mirror's configurable caps, and the seam's refusal without an engine.
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <cstring>
 #include <cstdio>
@@ -2214,6 +2215,226 @@ void test_warm_held_images() {
   grc::rs::registry_configure(false, grc::rs::RegistryFault::None);
 }
 
+// A real-shaped packed String/Array fixture, including recursive paths, theme/cache
+// font overlap, multiple size caches and atlas pages. Each engine call costs one tick;
+// a directory listing costs ten, making budget overshoot deterministic.
+void test_sliced_census() {
+  using namespace grc::rs;
+  auto &w = fake::world();
+  const auto saved = grc::g_iface;
+  static std::vector<std::vector<std::array<std::uint64_t, 3>>> arrays;
+  arrays.clear(); arrays.reserve(20);
+  static std::uint64_t census_tick_ns = 1;
+  grc::g_iface.string_new_with_utf8_chars = [](void *out, const char *text) {
+    const auto *value = &fake::intern(text);
+    std::memcpy(out, &value, 8);
+  };
+  grc::g_iface.string_to_utf8_chars = [](const void *value, char *out, GDExtensionInt n) -> GDExtensionInt {
+    const std::string *text = nullptr;
+    std::memcpy(&text, value, 8);
+    if (!text) return 0;
+    if (out) std::memcpy(out, text->data(), std::min<std::size_t>(n, text->size()));
+    return text->size();
+  };
+  grc::g_iface.variant_get_ptr_builtin_method = [](GDExtensionVariantType, GDExtensionConstStringNamePtr,
+                                                 GDExtensionInt) -> GDExtensionPtrBuiltInMethod {
+    return [](GDExtensionTypePtr self, const GDExtensionConstTypePtr *, GDExtensionTypePtr out, int) {
+      const std::vector<std::array<std::uint64_t, 3>> *a = nullptr;
+      std::memcpy(&a, self, 8);
+      *static_cast<std::int64_t *>(out) = a ? a->size() : 0;
+    };
+  };
+  grc::g_iface.array_operator_index_const = [](const void *self, GDExtensionInt i) -> GDExtensionVariantPtr {
+    const std::vector<std::array<std::uint64_t, 3>> *a = nullptr;
+    std::memcpy(&a, self, 8);
+    return a && i >= 0 && i < static_cast<std::int64_t>(a->size())
+        ? const_cast<std::uint64_t *>((*a)[i].data()) : nullptr;
+  };
+  grc::g_iface.get_variant_to_type_constructor = [](GDExtensionVariantType type) -> GDExtensionTypeFromVariantConstructorFunc {
+    if (type == GDEXTENSION_VARIANT_TYPE_VECTOR2I) return &fake::detail::to_type<std::uint64_t>;
+    return fake::detail::to_type_ctor(type);
+  };
+  auto &font = w.make({"Object", "Font"});
+  auto &theme = w.make({"Object", "Theme"});
+  auto &compressed = w.make({"Object", "Resource", "CompressedTexture2D"}, 101);
+  auto &canvas = w.make({"Object", "Resource", "CanvasTexture"}, 102);
+  auto &other = w.make({"Object", "Resource"}, 103);
+  w.singletons["ResourceLoader"] = &w.make({"Object", "ResourceLoader"});
+  w.singletons["ThemeDB"] = &w.make({"Object", "ThemeDB"});
+  w.singletons["TextServerManager"] = &w.make({"Object", "TextServerManager"});
+  auto &ts = w.make({"Object", "TextServer"});
+  const auto put_array = [](void *out, std::vector<std::array<std::uint64_t, 3>> values) {
+    arrays.push_back(std::move(values));
+    const auto *a = &arrays.back();
+    std::memcpy(out, &a, 8);
+  };
+  w.overrides["Font.get_rids"] = [&](fake::Object *, FakeArgs, void *out) {
+    g_stage_test_ns += census_tick_ns;
+    put_array(out, {{GDEXTENSION_VARIANT_TYPE_RID, 77, 0}, {GDEXTENSION_VARIANT_TYPE_RID, 78, 0}});
+  };
+  w.overrides["TextServer.font_get_size_cache_list"] = [&](fake::Object *, FakeArgs, void *out) {
+    g_stage_test_ns += census_tick_ns;
+    put_array(out, {{GDEXTENSION_VARIANT_TYPE_VECTOR2I, 16, 0},
+                    {GDEXTENSION_VARIANT_TYPE_VECTOR2I, 24 | (std::uint64_t(1) << 32), 0}});
+  };
+  w.overrides["TextServer.font_get_texture_count"] = [](fake::Object *, FakeArgs, void *out) {
+    g_stage_test_ns += census_tick_ns; fake::put_int(out, 2);
+  };
+  w.overrides["ThemeDB.get_fallback_font"] = [&](fake::Object *, FakeArgs, void *out) { fake::put_object(out, &font); };
+  for (const auto *name : {"ThemeDB.get_default_theme", "ThemeDB.get_project_theme"})
+    w.overrides[name] = [&](fake::Object *, FakeArgs, void *out) { fake::put_object(out, &theme); };
+  w.overrides["Theme.get_default_font"] = w.overrides["ThemeDB.get_fallback_font"];
+  w.overrides["TextServerManager.get_primary_interface"] = [&](fake::Object *, FakeArgs, void *out) { fake::put_object(out, &ts); };
+  const auto path_arg = [](FakeArgs args) { const std::string *p = nullptr; std::memcpy(&p, args[0], 8); return *p; };
+  w.overrides["ResourceLoader.list_directory"] = [&](fake::Object *, FakeArgs args, void *out) {
+    g_stage_test_ns += 10 * census_tick_ns;
+    const auto names = path_arg(args) == "res://" ? std::vector<std::string>{"sub/", "font.tres", "unknown.tres", "other.tres"}
+                                                : std::vector<std::string>{"compressed.ctex", "canvas.tres"};
+    std::vector<std::uint64_t> packed{1, names.size()};
+    for (const auto &name : names) packed.push_back(reinterpret_cast<std::uint64_t>(&fake::intern(name.c_str())));
+    w.cow_storage.push_back(std::move(packed));
+    const void *data = w.cow_storage.back().data() + 2;
+    std::memcpy(static_cast<unsigned char *>(out) + 8, &data, 8);
+  };
+  w.overrides["ResourceLoader.has_cached"] = [&](fake::Object *, FakeArgs args, void *out) {
+    g_stage_test_ns += census_tick_ns;
+    *static_cast<std::uint8_t *>(out) = path_arg(args) != "res://unknown.tres";
+  };
+  w.overrides["ResourceLoader.get_cached_ref"] = [&](fake::Object *, FakeArgs args, void *out) {
+    g_stage_test_ns += census_tick_ns;
+    const auto p = path_arg(args);
+    fake::put_object(out, p == "res://font.tres" ? &font : p == "res://sub/compressed.ctex" ? &compressed :
+                         p == "res://sub/canvas.tres" ? &canvas : &other);
+  };
+  adopt_process_reset(); arrays.clear(); g_stage_test_ns = 0;
+  check(adopt_census_step(UINT64_MAX, stage_test_clock), "census: one shot completes");
+  const auto expected = adopt_census_test_snapshot();
+  const auto stats = adopt_resource_stats();
+  check(expected.size() >= 6 && std::vector<std::string>(expected.begin() + 1, expected.begin() + 6) ==
+            std::vector<std::string>({"res://sub/compressed.ctex:2", "res://sub/canvas.tres:3",
+                                      "res://font.tres:1", "res://unknown.tres:0", "res://other.tres:4"}),
+        "census: original depth-first paths and resource classifications are preserved");
+  check(expected.size() >= 16 && std::vector<std::string>(expected.begin() + 6, expected.begin() + 16) ==
+            std::vector<std::string>({"font:77", "font:78", "page:77:16:0:0", "page:77:16:0:1",
+                "page:77:24:1:0", "page:77:24:1:1", "page:78:16:0:0", "page:78:16:0:1",
+                "page:78:24:1:0", "page:78:24:1:1"}),
+        "census: original unique font order, size keys and page order are preserved");
+  check(stats.fonts == 2 && stats.cached_compressed == 1 && stats.cache_paths == 5,
+        "census: original stats count unique fonts, compressed RIDs and file paths");
+  check(std::count_if(expected.begin(), expected.end(), [](const auto &s) { return s.find("page:") == 0; }) == 8,
+        "census: both fonts, both size caches and every page are present");
+  for (auto budget : {0u, 1u, 5u}) {
+    adopt_process_reset(); arrays.clear(); g_stage_test_ns = 0;
+    int slices = 0;
+    bool done = false;
+    while (!done && slices < 100) {
+      const auto deadline = g_stage_test_ns + budget;
+      done = adopt_census_step(deadline, stage_test_clock);
+      ++slices;
+      check(g_stage_test_ns <= deadline + 10, "census: slice overshoot is bounded by one listing");
+      if (!done) check(adopt_census_test_snapshot().front() == "partial", "census: partial is never built");
+    }
+    check(done && slices > 1, "census: tiny slices yield and finish");
+    check(adopt_census_test_snapshot() == expected, "census: sliced paths, types, font and page lists equal one shot");
+    const auto sliced = adopt_resource_stats();
+    check(sliced.fonts == stats.fonts && sliced.cached_compressed == stats.cached_compressed &&
+              sliced.cache_paths == stats.cache_paths, "census: sliced census stats are unchanged");
+  }
+  // Completion in standby is retained, but it is not an eager warm source on a later arm.
+  adopt_process_reset(); arrays.clear();
+  adopt_census_attach(false);
+  int standby_frames = 0;
+  while (adopt_census_test_snapshot().front() != "built" && standby_frames++ < 100)
+    adopt_census_frame(0, stage_test_clock);
+  check(standby_frames > 3 && standby_frames < 100, "census schedule: attach advances across standby frames");
+  const auto directories = w.count("ResourceLoader.list_directory");
+  for (int arm = 0; arm < 2; ++arm) {
+    mirror_enable(false); mirror_enable(true);
+    adopt_resources_begin(AdoptFault::None, false);
+    const auto warm = adopt_warm_at_arm(warm_now_ns(), "sync");
+    check(warm.scanned.census_unregistered == 0 && warm.queued == 0,
+          "census schedule: standby and retained census never add warm jobs");
+    adopt_stage_begin(1, g_stage_test_ns, stage_test_clock);
+    adopt_frame_drain();
+    adopt_census_frame(1, stage_test_clock);
+    check(w.count("ResourceLoader.list_directory") == directories && adopt_resource_stats().census_ns == 0,
+          "census schedule: arm and re-arm do no census work after standby completion");
+    check(!adopt_stage_holds_publish(), "census schedule: complete census permits first publish");
+    adopt_resources_end(); adopt_release();
+  }
+  // A detach discards unfinished work, then reattach starts at the theme phase.
+  adopt_process_reset(); arrays.clear();
+  adopt_census_attach(false);
+  for (int i = 0; i < 5; ++i) adopt_census_frame(0, stage_test_clock);
+  check(adopt_census_test_snapshot().size() > 1, "census schedule: partial walk has found fonts");
+  adopt_census_detach();
+  const auto calls_at_detach = w.calls;
+  for (int i = 0; i < 5; ++i) adopt_census_frame(0, stage_test_clock);
+  check(w.calls == calls_at_detach && adopt_census_test_snapshot().size() == 1,
+        "census schedule: detached census has no work or retained partial values");
+  adopt_census_attach(false);
+  for (int i = 0; i < 100 && adopt_census_test_snapshot().front() != "built"; ++i)
+    adopt_census_frame(0, stage_test_clock);
+  check(adopt_census_test_snapshot() == expected, "census schedule: reattach rebuilds identical inventory");
+  adopt_census_detach();
+  check(adopt_census_test_snapshot() == expected, "census schedule: detach preserves a complete census");
+
+  // Cold attach+arm queues census-dependent textures until the armed drain completes it.
+  adopt_process_reset(); arrays.clear(); census_tick_ns = 1000000;
+  registry_configure(true, RegistryFault::None);
+  mirror_enable(false); mirror_enable(true);
+  adopt_census_attach(false);
+  adopt_resources_begin(AdoptFault::None, false);
+  adopt_stage_begin(1000, g_stage_test_ns, stage_test_clock);
+  w.singletons["RenderingServer"] = &w.make({"Object", "RenderingServer"});
+  auto &image = w.make({"Object", "Image"});
+  w.overrides["RenderingServer.texture_2d_get"] = [&](fake::Object *, FakeArgs, void *out) { fake::put_object(out, &image); };
+  for (const auto *name : {"Image.get_width", "Image.get_height"})
+    w.overrides[name] = [](fake::Object *, FakeArgs, void *out) { fake::put_int(out, 2); };
+  g_stage_test_adopt = true;
+  constexpr std::uint64_t pristine_rid = 201, held_rid = 202;
+  registry_note_texture_create(pristine_rid, {2, 2, 0, false, true}, false);
+  registry_note_texture_create(held_rid, {2, 2, 0, false, true}, false);
+  RegistryHoldInput held_input;
+  held_input.image = RegistryValue(&image, [](const void *) {});
+  held_input.width = held_input.height = 2; held_input.format = 0; held_input.bytes = 4;
+  check(registry_note_texture_update(held_rid, &held_input) == HoldSkip::None,
+        "census schedule: held texture fixture records its current image");
+  materialize(pristine_rid, RefKind::Texture);
+  materialize(held_rid, RefKind::Texture);
+  check(materialize_texture_replace_source(pristine_rid) && materialize_texture_replace_source(held_rid),
+        "census schedule: pristine and held textures can drain while census is unfinished");
+  const auto census_wait_getters = w.count("RenderingServer.texture_2d_get");
+  check(adopt_census_test_snapshot().front() == "partial",
+        "census schedule: independent texture adoption never runs a synchronous census");
+  materialize(101, RefKind::Texture);
+  check(adopt_stage_holds_publish() && !mirror_instance().knows_texture(101),
+        "census schedule: same-frame arm holds publication and census-dependent texture");
+  int drain_frames = 0;
+  while (adopt_stage_holds_publish() && drain_frames++ < 100) {
+    adopt_frame_drain();
+    if (adopt_census_test_snapshot().front() != "built")
+      check(w.count("RenderingServer.texture_2d_get") == census_wait_getters && !mirror_instance().knows_texture(101),
+            "census schedule: unfinished census cannot adopt dependent textures");
+  }
+  check(drain_frames > 1 && drain_frames < 100 && mirror_instance().knows_texture(101),
+        "census schedule: armed slices finish and drain the waiting texture");
+  check(adopt_resource_stats().census_slices > 1, "census schedule: arm reports each census slice");
+  g_stage_test_adopt = false;
+  adopt_resources_end(); adopt_release();
+  registry_configure(false, RegistryFault::None);
+  census_tick_ns = 1;
+  adopt_process_reset(); arrays.clear();
+  adopt_census_attach(true);
+  const auto dummy_calls = w.calls;
+  adopt_census_frame(0, stage_test_clock);
+  check(w.calls == dummy_calls, "census schedule: dummy attach leaves census at arm");
+
+  adopt_process_reset();
+  grc::g_iface = saved;
+  w.reset_calls();
+}
+
 void test_warm_census_revalidation() {
   auto &w = fake::world();
   const auto saved = grc::g_iface;
@@ -3387,6 +3608,12 @@ void test_staged_texture_budget() {
   adopt_frame_drain();
   check(reads.size() == before_detach && !adopt_stage_holds_publish(),
         "staged: free while queued cancels getter");
+  // Clock/queue overhead can consume a tiny budget before the first texture starts.
+  adopt_stage_begin(1, g_stage_test_ns, []() -> std::uint64_t { return g_stage_test_ns += 2000; });
+  registry_note_texture_create(0xf007, {2, 2, 0, false, true}, false);
+  materialize(0xf007, RefKind::Texture);
+  adopt_frame_drain();
+  check(m.knows_texture(0xf007), "staged: no census preserves first-item progress after clock overhead");
   g_stage_test_adopt = false;
   stream_end();
   adopt_release();
@@ -3420,6 +3647,7 @@ int main() {
   test_htr_restore();
   test_evict_duplicate_rid();
   test_warm_free_during_pass();
+  test_sliced_census();
   test_warm_census_revalidation();
   test_warm_retained_census();
   test_warm_held_images();

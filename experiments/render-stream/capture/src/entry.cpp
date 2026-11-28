@@ -1314,6 +1314,7 @@ std::string result_json() {
       json.field("cached_compressed", static_cast<int64_t>(r.cached_compressed));
       json.field("cache_paths", static_cast<int64_t>(r.cache_paths));
       json.field("census_ns", static_cast<int64_t>(r.census_ns));
+      json.field("census_slices", static_cast<int64_t>(r.census_slices));
       json.field("lookup_ns", static_cast<int64_t>(r.lookup_ns));
       json.object_end();
       // G8m (D11, D12, Q5): material and shader adoption's account (`materials` above is G8a's
@@ -6205,7 +6206,8 @@ bool attempt(const char *phase) {
       // release the initial standby publication even though detach() is idempotent.
       if (g_api->attachment() == cap::Attachment::Detached) attachment_detach();
       else g_api->detach({}, attachment_detach);
-    }
+    } else if (env_positive("GRC_ADOPT_FRAME_BUDGET_US", 4000, &g_stream.adopt_frame_budget_us))
+      rs::adopt_census_attach(g_state.display_server == "headless");
     return true;
   }
   // LATE-SPINE: the vtable is patched (the hooks observe resource creation) but the arm itself
@@ -7083,6 +7085,7 @@ bool attachment_detach_free() {
   api_teardown_finish_blocking();
   stream_finish(rs2::EndReason::Disarm);
   rs::adopt_materials_attachment_end();
+  rs::adopt_census_detach();
   rs::canvas_texture_resolver_detach();
   rs::adopt_warm_cancel();
   rs::texture_worker_pool().stop();
@@ -7323,8 +7326,9 @@ void on_frame() {
   if (rs::evict_pending()) evict_frame();
   if (g_state.standby && !g_state.api_pending_arm) {
     // a standby callback runs the shader clock, the registry's row
-    // and the carriers' flush (one relaxed load with none registered), nothing else: no attempt, no
+    // and the carriers' flush, plus a census slice until complete (then one relaxed load): no attempt, no
     // linger, no live or track work (no hub exists to feed a track receiver before an arm).
+    rs::adopt_census_frame(g_stream.adopt_frame_budget_us);
     hooks_set_frame(g_state.frames_total + 1);
     live::gd_carriers_flush();
     api_flush();

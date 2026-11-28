@@ -7,6 +7,7 @@ as probe-capture-attach.sh --resources --extension. The production sources stay 
 Run at least three fresh probes, recording load/GPU utilization alongside each run, then
 report RUN... to summarize each resident arm. This diagnostic includes tracing overhead;
 use its results as upper bounds under the recorded load, never as an idle timing budget.
+census RUN... reads uninstrumented census/staging counters and API-call timings for three arms.
 materials RUN... reads arm_ns and the exclusive phase counters from ordinary resource results.
 The in-flight/default-texture times are subsets of the texture phases, not additional phases.
 frames RUN... reports the worst three attached callbacks with inclusive phase timings and
@@ -24,11 +25,38 @@ import json
 from pathlib import Path
 
 parser = argparse.ArgumentParser(description=__doc__)
-parser.add_argument("mode", choices=("prepare", "report", "frames", "materials"))
+parser.add_argument("mode", choices=("prepare", "report", "frames", "materials", "census"))
 parser.add_argument("paths", nargs="+", type=Path)
 args = parser.parse_args()
 root = Path(__file__).resolve().parents[4]
 cap = root / "experiments/render-stream/capture"
+if args.mode == "census":
+    # Ordinary, uninstrumented resource probes. Frame intervals include synchronization;
+    # staged_max_frame_ms isolates the census/texture drain from the browser hello wait.
+    runs = []
+    for path in args.paths:
+        resident = path / "resident"
+        timing_path = resident / "api-timing.jsonl"
+        timings = [json.loads(line) for line in timing_path.read_text().splitlines()] if timing_path.exists() else []
+        for index in range(3):
+            result = json.loads((resident / f"resource-result-{index}.json").read_text())
+            adoption = result["stream"]["gate8"]["adopt_stats"]
+            resources = adoption["resources"]
+            stage = adoption["staged"]
+            frames = json.loads((resident / f"adoption-frames-{index}.json").read_text())["frames"]
+            calls = {row["method"]: row["elapsed_us"] / 1000 for row in timings if row["round"] == index}
+            census_ns = resources["census_ns"]
+            slices = resources.get("census_slices", int(census_ns > 0))
+            runs.append(dict(run=str(path.resolve()), arm=index, api_ms=calls,
+                             max_arming_interval_ms=max((f["interval_us"] / 1000 for f in frames
+                                                        if f["phase"] == "arming"), default=0),
+                             staged_max_frame_ms=stage["max_frame_us"] / 1000,
+                             census_ms=census_ns / 1e6, census_slices=slices,
+                             census_mean_slice_ms=census_ns / slices / 1e6 if slices else 0,
+                             arm_to_first_publish_ms=stage["arm_to_first_publish_us"] / 1000))
+    print(json.dumps({"label": "resource probe shape; frame intervals include synchronization", "arms": runs}, indent=2))
+    raise SystemExit(0)
+
 if args.mode == "materials":
     # Read ordinary result.json counters; no tracing library or profiling overhead is needed.
     # Baselines without phase counters still contribute arm_ns and their existing counts.

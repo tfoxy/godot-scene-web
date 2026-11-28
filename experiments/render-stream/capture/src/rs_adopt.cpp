@@ -1646,8 +1646,9 @@ RefusalRecord refusal_record(std::uint64_t rid, const char *reason) {
   return record;
 }
 
+GDExtensionPtrBuiltInMethod g_array_size = nullptr;
 std::int64_t array_size(void *array) {
-  static GDExtensionPtrBuiltInMethod size = nullptr;
+  auto &size = g_array_size;
   if (size == nullptr) {
     StringName name("size");
     size = g_iface.variant_get_ptr_builtin_method(GDEXTENSION_VARIANT_TYPE_ARRAY, name.ptr(),
@@ -1741,65 +1742,96 @@ bool page_consistent(const ImageShape &c, const ImageShape &i) {
   return any;
 }
 
-// The resource-cache walk (D7: ResourceLoader.list_directory + has_cached + get_cached_ref):
-// every Font found contributes its RIDs, every CompressedTexture2D its RID.
-void scan_directory(void *loader, const std::string &dir, int depth, std::vector<std::uint64_t> *fonts,
-                    void *font_tag, void *ctex_tag, void *canvas_tag, std::uint32_t *paths) {
-  if (depth > 32 || *paths > 200000) {
+// Only values and directory listings survive a slice; no cached Resource reference does.
+struct CensusDirectory {
+  std::string path;
+  int depth = 0;
+  bool listed = false;
+  std::vector<std::string> names;
+  std::size_t cursor = 0;
+};
+struct CensusWalk {
+  enum Phase { Themes, Directories, Glyphs, Done } phase = Themes;
+  Census result;
+  int theme = 0;
+  void *loader = nullptr, *font_tag = nullptr, *ctex_tag = nullptr, *canvas_tag = nullptr;
+  std::vector<CensusDirectory> stack;
+  std::vector<std::uint64_t> fonts;
+  std::unordered_set<std::uint64_t> seen;
+  std::size_t font = 0;
+  std::unique_ptr<Builtin> sizes;
+  std::int64_t size = 0, page = 0, pages = 0;
+  std::int32_t key[2] = {0, 0};
+  std::uint64_t elapsed_ns = 0, slices = 0;
+};
+CensusWalk g_census_walk;
+std::atomic<bool> g_census_wanted{false};
+
+void census_font(std::uint64_t rid) {
+  if (g_census_walk.seen.insert(rid).second) g_census_walk.fonts.push_back(rid);
+}
+
+void census_path(void *loader, const std::string &path) {
+  const auto &walk = g_census_walk;
+  void *font_tag = walk.font_tag, *ctex_tag = walk.ctex_tag, *canvas_tag = walk.canvas_tag;
+  g_census_walk.result.paths.push_back({path, CensusKind::Unknown});
+  auto &entry = g_census_walk.result.paths.back();
+  OwnedString arg(path);
+  const GDExtensionConstTypePtr args[1] = {arg.data};
+  std::uint8_t cached = 0;
+  ptrcall(kLoaderHasCached, loader, args, &cached);
+  if (cached == 0) {
     return;
   }
-  Builtin list(GDEXTENSION_VARIANT_TYPE_PACKED_STRING_ARRAY);
-  {
-    OwnedString arg(dir);
-    const GDExtensionConstTypePtr args[1] = {arg.data};
+  RefSlot res;
+  ptrcall(kLoaderGetCachedRef, loader, args, &res.slot);
+  void *object = res.object();
+  if (object == nullptr) {
+    return;
+  }
+  entry.kind = CensusKind::Other;
+  if (g_iface.object_cast_to(object, font_tag) != nullptr) {
+    entry.kind = CensusKind::Font;
+    for (std::uint64_t rid : rids_of_font(object)) {
+      census_font(rid);
+    }
+  } else if (g_iface.object_cast_to(object, ctex_tag) != nullptr) {
+    entry.kind = CensusKind::Compressed;
+    g_census_walk.result.compressed[get_rid(kResourceGetRid, object)] = path;
+  } else if (canvas_tag != nullptr && g_iface.object_cast_to(object, canvas_tag) != nullptr) {
+    // PM9: a cached CanvasTexture, by its RID and path (re-fetched at adoption).
+    entry.kind = CensusKind::Canvas;
+    g_census_walk.result.canvas_textures[get_rid(kResourceGetRid, object)] = path;
+  }
+}
+
+void census_directory(void *loader) {
+  auto &stack = g_census_walk.stack;
+  auto &dir = stack.back();
+  if (!dir.listed) {
+    Builtin list(GDEXTENSION_VARIANT_TYPE_PACKED_STRING_ARRAY);
+    OwnedString arg(dir.path);
+    const GDExtensionConstTypePtr args[] = {arg.data};
     ptrcall(kLoaderListDirectory, loader, args, list.ptr());
+    const unsigned char *cow = nullptr;
+    std::memcpy(&cow, list.data + 8, sizeof(cow));
+    const auto count = cowdata_size(cow);
+    for (std::int64_t i = 0; i < count; ++i) dir.names.push_back(utf8_of(cow + i * 8));
+    dir.listed = true;
+    return;  // Check the deadline immediately after each indivisible listing.
   }
-  // PackedStringArray is a Vector<String>: the write proxy word, then the CowData pointer to
-  // 8-byte Strings (abi.h, memory godot-vector-abi-two-words).
-  const unsigned char *cow = nullptr;
-  std::memcpy(&cow, list.data + 8, sizeof(cow));
-  const std::int64_t count = cowdata_size(cow);
-  std::vector<std::string> names;
-  for (std::int64_t i = 0; i < count; ++i) {
-    names.push_back(utf8_of(cow + i * 8));
+  if (dir.cursor == dir.names.size()) {
+    stack.pop_back();
+    return;
   }
-  for (const std::string &name : names) {
-    const std::string path = dir.back() == '/' ? dir + name : dir + "/" + name;
-    if (!name.empty() && name.back() == '/') {
-      scan_directory(loader, path, depth + 1, fonts, font_tag, ctex_tag, canvas_tag, paths);
-      continue;
-    }
-    if (*paths >= 200000) return;
-    ++*paths;
-    g_census.paths.push_back({path, CensusKind::Unknown});
-    auto &entry = g_census.paths.back();
-    OwnedString arg(path);
-    const GDExtensionConstTypePtr args[1] = {arg.data};
-    std::uint8_t cached = 0;
-    ptrcall(kLoaderHasCached, loader, args, &cached);
-    if (cached == 0) {
-      continue;
-    }
-    RefSlot res;
-    ptrcall(kLoaderGetCachedRef, loader, args, &res.slot);
-    void *object = res.object();
-    if (object == nullptr) {
-      continue;
-    }
-    entry.kind = CensusKind::Other;
-    if (g_iface.object_cast_to(object, font_tag) != nullptr) {
-      entry.kind = CensusKind::Font;
-      for (std::uint64_t rid : rids_of_font(object)) {
-        fonts->push_back(rid);
-      }
-    } else if (g_iface.object_cast_to(object, ctex_tag) != nullptr) {
-      entry.kind = CensusKind::Compressed;
-      g_census.compressed[get_rid(kResourceGetRid, object)] = path;
-    } else if (canvas_tag != nullptr && g_iface.object_cast_to(object, canvas_tag) != nullptr) {
-      // PM9: a cached CanvasTexture, by its RID and path (re-fetched at adoption).
-      entry.kind = CensusKind::Canvas;
-      g_census.canvas_textures[get_rid(kResourceGetRid, object)] = path;
-    }
+  const auto &name = dir.names[dir.cursor++];
+  const auto path = dir.path.back() == '/' ? dir.path + name : dir.path + "/" + name;
+  if (!name.empty() && name.back() == '/') {
+    if (dir.depth < 32) stack.push_back({path, dir.depth + 1, false, {}, 0});
+  } else if (g_census_walk.result.paths.size() < 200000) {
+    census_path(loader, path);
+  } else {
+    stack.clear();
   }
 }
 
@@ -1829,67 +1861,86 @@ void add_theme_fonts(std::vector<std::uint64_t> *fonts) {
   }
 }
 
-// The one-time census, on the main thread, at the first unknown texture (every resource that
-// existed at arm is loaded by then; anything loaded later is created under the hooks).
-void build_census() {
-  const std::uint64_t t0 = now_ns();
-  g_census = Census();
-  g_census.built = true;
-  g_census.built_this_arm = true;
-  g_census.fonts_validated = true;
-  std::vector<std::uint64_t> fonts;
-  add_theme_fonts(&fonts);
-  std::uint32_t paths = 0;
-  void *loader = singleton_object("ResourceLoader");
-  if (loader != nullptr) {
-    StringName font_name("Font");
-    StringName ctex_name("CompressedTexture2D");
-    StringName canvas_name("CanvasTexture");
-    void *font_tag = g_iface.classdb_get_class_tag(font_name.ptr());
-    void *ctex_tag = g_iface.classdb_get_class_tag(ctex_name.ptr());
-    void *canvas_tag = g_iface.classdb_get_class_tag(canvas_name.ptr());
-    if (font_tag != nullptr && ctex_tag != nullptr) {
-      scan_directory(loader, "res://", 0, &fonts, font_tag, ctex_tag, canvas_tag, &paths);
-    }
-  }
-  std::vector<std::uint64_t> unique;
-  for (std::uint64_t rid : fonts) {
-    bool seen = false;
-    for (std::uint64_t u : unique) seen = seen || u == rid;
-    if (!seen) unique.push_back(rid);
-  }
+// Caller holds g_res_mutex for this slice only. Even an expired deadline performs one
+// unit, so arbitrarily small budgets make progress. A directory listing is indivisible.
+bool census_step_locked(std::uint64_t deadline, std::uint64_t (*clock)()) {
+  if (g_census.built) return true;
+  const auto t0 = now_ns();
+  auto &walk = g_census_walk;
+  ++walk.slices;
   RefSlot ts_holder;
-  void *ts = text_server(&ts_holder);
-  if (ts != nullptr) {
-    for (std::uint64_t font : unique) {
-      Builtin sizes(GDEXTENSION_VARIANT_TYPE_ARRAY);
-      const GDExtensionConstTypePtr a1[1] = {&font};
-      ptrcall(kTsFontGetSizeCacheList, ts, a1, sizes.ptr());
-      const std::int64_t n = array_size(sizes.ptr());
-      for (std::int64_t i = 0; i < n; ++i) {
-        std::int32_t size[2] = {0, 0};
-        if (!array_element(sizes.ptr(), i, GDEXTENSION_VARIANT_TYPE_VECTOR2I, &size)) {
-          continue;
+  void *ts = nullptr;
+  bool ts_resolved = false;
+  do {
+    if (walk.phase == CensusWalk::Themes) {
+      void *db = singleton_object("ThemeDB");
+      RefSlot font, theme;
+      if (db) {
+        if (walk.theme == 0) ptrcall(kThemeDbGetFallbackFont, db, nullptr, &font.slot);
+        else {
+          ptrcall(walk.theme == 1 ? kThemeDbGetDefaultTheme : kThemeDbGetProjectTheme,
+                  db, nullptr, &theme.slot);
+          if (theme.object()) ptrcall(kThemeGetDefaultFont, theme.object(), nullptr, &font.slot);
         }
-        const GDExtensionConstTypePtr a2[2] = {&font, size};
-        std::int64_t count = 0;
-        ptrcall(kTsFontGetTextureCount, ts, a2, &count);
-        for (std::int64_t page = 0; page < count; ++page) {
-          FontPage fp;
-          fp.font = font;
-          fp.size[0] = size[0];
-          fp.size[1] = size[1];
-          fp.page = page;
-          g_census.pages.push_back(fp);
+        if (font.object()) for (auto rid : rids_of_font(font.object())) census_font(rid);
+      }
+      if (++walk.theme == 3) {
+        walk.loader = singleton_object("ResourceLoader");
+        walk.font_tag = Tags::tag("Font");
+        walk.ctex_tag = Tags::tag("CompressedTexture2D");
+        walk.canvas_tag = Tags::tag("CanvasTexture");
+        walk.stack.push_back({"res://", 0, false, {}, 0});
+        walk.phase = CensusWalk::Directories;
+      }
+    } else if (walk.phase == CensusWalk::Directories) {
+      if (walk.loader && walk.font_tag && walk.ctex_tag && !walk.stack.empty())
+        census_directory(walk.loader);
+      else walk.phase = CensusWalk::Glyphs;
+    } else if (walk.phase == CensusWalk::Glyphs) {
+      if (!ts_resolved) {
+        ts = text_server(&ts_holder);
+        ts_resolved = true;
+      }
+      if (!ts || walk.font == walk.fonts.size()) walk.phase = CensusWalk::Done;
+      else {
+        const auto font = walk.fonts[walk.font];
+        if (!walk.sizes) {
+          walk.sizes = std::make_unique<Builtin>(GDEXTENSION_VARIANT_TYPE_ARRAY);
+          const GDExtensionConstTypePtr args[] = {&font};
+          ptrcall(kTsFontGetSizeCacheList, ts, args, walk.sizes->ptr());
+        } else if (walk.page < walk.pages) {
+          walk.result.pages.push_back({font, {walk.key[0], walk.key[1]}, walk.page++});
+        } else if (walk.size < array_size(walk.sizes->ptr())) {
+          walk.page = walk.pages = 0;
+          if (array_element(walk.sizes->ptr(), walk.size++, GDEXTENSION_VARIANT_TYPE_VECTOR2I,
+                            &walk.key)) {
+            const GDExtensionConstTypePtr args[] = {&font, walk.key};
+            ptrcall(kTsFontGetTextureCount, ts, args, &walk.pages);
+          }
+        } else {
+          walk.sizes.reset();
+          walk.size = walk.page = walk.pages = 0;
+          ++walk.font;
         }
       }
+    } else {
+      g_census = std::move(walk.result);
+      g_census.built = true;
+      g_census.built_this_arm = true;
+      g_census.fonts_validated = true;
+      g_res_stats.fonts = static_cast<std::uint32_t>(walk.fonts.size());
+      g_res_stats.cached_compressed = static_cast<std::uint32_t>(g_census.compressed.size());
+      g_res_stats.cache_paths = static_cast<std::uint32_t>(g_census.paths.size());
     }
-  }
-  g_res_stats.fonts = static_cast<std::uint32_t>(unique.size());
-  g_res_stats.cached_compressed = static_cast<std::uint32_t>(g_census.compressed.size());
-  g_res_stats.cache_paths = paths;
-  g_res_stats.census_ns = now_ns() - t0;
+  } while (!g_census.built && clock() < deadline);
+  walk.elapsed_ns += now_ns() - t0;
+  g_res_stats.census_ns = walk.elapsed_ns;
+  g_res_stats.census_slices = walk.slices;
+  if (g_census.built) g_census_wanted.store(false, std::memory_order_relaxed);
+  return g_census.built;
 }
+
+void build_census() { census_step_locked(UINT64_MAX, now_ns); }
 
 // Refresh RID/path identities on demand; cached refs never survive a lookup. A freed resource
 // leaves its path in the inventory so a later load at that path can be found without a walk.
@@ -2314,7 +2365,8 @@ void reload_one(ReloadEntry entry, const void *path, bool check_mipmaps, bool ch
 // changed since its create, so the getter's creation copy IS its content: `current`, provably,
 // with no census and no TextServer read. Anything updated (an ImageTexture.update, a glyph page
 // growing, a texture_replace) keeps G8r's rule: an atlas page or a cached compressed texture is
-// current, anything else creation. The census is built only when such a texture needs it.
+// current, anything else creation. Rendered attach slices the census before dependent textures
+// drain; direct callers retain lazy one-shot construction when such a texture needs it.
 void adopt_texture_locked_out(std::uint64_t rid) {
   ArmPhase phase(&AdoptMaterialStats::arm_texture_other_ns);
   if (g_arm_profile) ++g_arm_profile->arm_texture_other;
@@ -2408,8 +2460,14 @@ void adopt_texture_locked_out(std::uint64_t rid) {
   RegistryHoldRef hold;
   const bool held = registered_now && registry_hold(rid, &hold);
   {
-    std::lock_guard<std::mutex> lock(g_res_mutex);
+    std::unique_lock<std::mutex> lock(g_res_mutex);
     if (main && !pristine && !held && !g_census.built) {
+      if (g_census_wanted.load(std::memory_order_relaxed)) {
+        // The current staged item stays pending while attach's census is unfinished.
+        lock.unlock();
+        if (!stage_queue(rid)) queue_offmain(rid, RefKind::Texture);
+        return;
+      }
       build_census();
     }
   }
@@ -3522,13 +3580,14 @@ void adopt_stage_begin(std::uint64_t budget_us, std::uint64_t arm_ns,
 
 bool adopt_stage_holds_publish() {
   std::lock_guard<std::mutex> lock(g_stage_mutex);
-  return g_stage_on && !g_stage_pending.empty();
+  return g_stage_on && (!g_stage_pending.empty() || g_census_wanted.load(std::memory_order_relaxed));
 }
 
 void adopt_stage_published() {
   const auto now = stage_now();
   std::lock_guard<std::mutex> lock(g_stage_mutex);
-  if (!g_stage_on || g_stage_first_drain || !g_stage_pending.empty()) return;
+  if (!g_stage_on || g_stage_first_drain || !g_stage_pending.empty() ||
+      g_census_wanted.load(std::memory_order_relaxed)) return;
   g_stage_stats.arm_to_first_publish_us = (now - g_stage_arm_ns) / 1000;
   g_stage_on = false;  // subsequent first references retain synchronous steady-state adoption
 }
@@ -6050,20 +6109,42 @@ void drain_offmain() {
 }  // namespace
 
 namespace {
-void drain_staged_textures() {
+std::optional<std::uint64_t> drain_census_first() {
+  if (!g_census_wanted.load(std::memory_order_relaxed)) return std::nullopt;
+  std::uint64_t budget = 0;
+  {
+    std::lock_guard<std::mutex> lock(g_stage_mutex);
+    if (!g_stage_on) return std::nullopt;
+    budget = g_stage_stats.budget_us;
+  }
+  const auto start = stage_now();
+  adopt_census_step(start + budget * 1000, g_stage_clock);
+  return start;
+}
+
+void drain_staged_textures(std::optional<std::uint64_t> census_start) {
   std::uint64_t budget = 0;
   {
     std::lock_guard<std::mutex> lock(g_stage_mutex);
     if (!g_stage_on) return;
     if (g_stage_first_drain) g_stage_stats.queue_at_arm = g_stage_pending.size();
     g_stage_first_drain = false;
-    if (g_stage_queue.empty()) return;
+    if (g_stage_queue.empty() && !census_start) return;
     budget = g_stage_stats.budget_us;
     ++g_stage_stats.frames_to_drain;
   }
-  const auto start = stage_now();
-  auto end = start;
-  do {
+  const auto start = census_start ? *census_start : stage_now();
+  auto end = stage_now();
+  const auto deadline = start + budget * 1000;
+  std::size_t attempts = 0;
+  {
+    std::lock_guard<std::mutex> lock(g_stage_mutex);
+    attempts = g_stage_queue.size();
+  }
+  // Census and texture work share one deadline; do not force a texture after a full slice.
+  bool first = true;
+  while (attempts-- && (end < deadline || (!census_start && first))) {
+    first = false;
     std::uint64_t rid = 0;
     {
       std::lock_guard<std::mutex> lock(g_stage_mutex);
@@ -6082,13 +6163,16 @@ void drain_staged_textures() {
       std::lock_guard<std::mutex> lock(g_stage_mutex);
       g_stage_stats.max_texture_us = std::max(g_stage_stats.max_texture_us, (end - before) / 1000);
     }
-  } while ((end - start) / 1000 < budget);  // at least one item, including an oversize one
+  }  // A texture may exceed the remaining budget, as before.
   std::lock_guard<std::mutex> lock(g_stage_mutex);
   g_stage_stats.max_frame_us = std::max(g_stage_stats.max_frame_us, (end - start) / 1000);
 }
 }  // namespace
 
 void adopt_frame_drain() {
+  std::optional<std::uint64_t> census_start;
+  if (adopt_resources_active() && mirror_enabled() && std::this_thread::get_id() == g_res_main)
+    census_start = drain_census_first();
   // Gated as the drains always were: lazy adoption active (entry.cpp calls this only for a
   // GRC_ADOPT=arm stream while armed).
   if (g_res_active.load(std::memory_order_acquire) && fault() != AdoptFault::NoResources &&
@@ -6097,7 +6181,7 @@ void adopt_frame_drain() {
   }
   adopt_materials_resolve();  // LAR3's material queue
   if (adopt_resources_active() && mirror_enabled() && std::this_thread::get_id() == g_res_main)
-    drain_staged_textures();
+    drain_staged_textures(census_start);
   // Recovered particle draws must be visible to process-material keying before publication.
   adopt_particles_resolve();  // LAR4's process-material queue
 }
@@ -6573,9 +6657,58 @@ std::size_t adopt_held() {
   return n;
 }
 
+void adopt_census_attach(bool dummy_host) {
+  if (dummy_host) return;
+  std::lock_guard<std::mutex> lock(g_res_mutex);
+  if (!g_census.built) g_census_wanted.store(true, std::memory_order_relaxed);
+}
+
+void adopt_census_detach() {
+  std::lock_guard<std::mutex> lock(g_res_mutex);
+  g_census_wanted.store(false, std::memory_order_relaxed);
+  if (!g_census.built) {
+    g_census_walk = CensusWalk();
+    g_res_stats.census_ns = g_res_stats.census_slices = 0;
+  }
+}
+
+void adopt_census_frame(std::uint64_t budget_us, std::uint64_t (*clock)()) {
+  if (!g_census_wanted.load(std::memory_order_relaxed)) return;
+  const auto tick = clock ? clock : now_ns;
+  adopt_census_step(tick() + budget_us * 1000, tick);
+}
+
+bool adopt_census_step(std::uint64_t deadline, std::uint64_t (*clock)()) {
+  if (!adopt_binds_ready(nullptr)) return false;
+  std::lock_guard<std::mutex> lock(g_res_mutex);
+  return census_step_locked(deadline, clock ? clock : now_ns);
+}
+
+#ifdef GRC_ADOPT_TEST
+std::vector<std::string> adopt_census_test_snapshot() {
+  std::lock_guard<std::mutex> lock(g_res_mutex);
+  const auto &result = g_census.built ? g_census : g_census_walk.result;
+  std::vector<std::string> out;
+  out.push_back(g_census.built ? "built" : "partial");
+  for (const auto &p : result.paths) out.push_back(p.path + ":" + std::to_string(static_cast<int>(p.kind)));
+  for (auto font : g_census_walk.fonts) out.push_back("font:" + std::to_string(font));
+  for (const auto &p : result.pages) out.push_back("page:" + std::to_string(p.font) + ":" +
+      std::to_string(p.size[0]) + ":" + std::to_string(p.size[1]) + ":" + std::to_string(p.page));
+  for (const auto &p : result.compressed) out.push_back("compressed:" + std::to_string(p.first) + ":" + p.second);
+  for (const auto &p : result.canvas_textures) out.push_back("canvas:" + std::to_string(p.first) + ":" + p.second);
+  return out;
+}
+#endif
+
 void adopt_process_reset() {
   std::lock_guard<std::mutex> lock(g_res_mutex);
   g_census = Census();
+  g_census_walk = CensusWalk();
+  g_census_wanted.store(false, std::memory_order_relaxed);
+#ifdef GRC_ADOPT_TEST
+  // Fake interfaces can replace builtins between fixtures.
+  g_array_size = nullptr;
+#endif
 }
 
 std::size_t adopt_release() {
