@@ -21,6 +21,7 @@
 //   gate7-bench.ts --interleave gsw-ts,gsw-rs,gsw-rs-inline --rounds 5 ...  # G7x's bench protocol
 //   gate7-bench.ts --interleave gsw-rs-base,gsw-rs --rs-build-base <dir> ...  # G7o2: before/after
 //       [--trace-seconds N --trace-from-seq S] # Rust replay trace + frame-budget.json
+//       [--missing skip] # Rust replay: leave absent store payloads cold
 //       [--profile]   # G7o2: the core's phase timers on in every Rust page (diagnostics only)
 // `gsw-ts` is the TypeScript arm (G7x renamed it; G7a retired its `gsw` alias: since G7a the GSW
 // receiver is the Rust core, so `gsw` alone no longer names this arm).
@@ -150,6 +151,7 @@ interface Args {
   traceFromSeq: number;
   fromSeq: number | undefined;
   toSeq: number | undefined;
+  missing: "fail" | "skip";
   /** G7x: Rust-arm sabotages (drop-draws, stale-item-row, digest-skip, skip-payload-hash). */
   rsSabotage: string[];
   /** G7x: host frames whose RGB10_A2 target the Rust arm reads back (pace checks). */
@@ -195,6 +197,7 @@ function parseArgs(argv: string[]): Args {
     traceFromSeq: 0,
     fromSeq: undefined,
     toSeq: undefined,
+    missing: "fail",
     webBundleBase: undefined,
     rsBuild: join(
       SCRIPT_DIR,
@@ -301,6 +304,13 @@ function parseArgs(argv: string[]): Args {
       case "--from":
         a.fromSeq = Number(v());
         break;
+      case "--missing": {
+        const mode = v();
+        if (mode !== "fail" && mode !== "skip")
+          throw new HarnessUsageError("--missing takes fail or skip");
+        a.missing = mode;
+        break;
+      }
       case "--to":
         a.toSeq = Number(v());
         break;
@@ -432,6 +442,11 @@ function parseArgs(argv: string[]): Args {
     );
   if (a.traceFromSeq > 0 && a.traceSeconds === 0)
     throw new HarnessUsageError("--trace-from-seq needs --trace-seconds");
+  if (
+    a.missing === "skip" &&
+    (!usesRustArm(a) || a.interleave.includes("gsw-ts"))
+  )
+    throw new HarnessUsageError("--missing skip needs Rust bench arms");
   if (a.fromSeq !== undefined || a.toSeq !== undefined) {
     if (!usesRustArm(a) || a.interleave.includes("gsw-ts"))
       throw new HarnessUsageError("--from/--to need Rust bench arms");
@@ -832,6 +847,7 @@ function pageUrl(
   });
   if (args.fromSeq !== undefined) q.set("from", String(args.fromSeq));
   if (args.toSeq !== undefined) q.set("to", String(args.toSeq));
+  if (args.missing === "skip") q.set("missing", "skip");
   if (args.rsSabotage.length) q.set("sabotage", args.rsSabotage.join(","));
   if (args.profile || args.traceSeconds > 0) q.set("prof", "1");
   if (args.shotFrames.length) q.set("shot-frames", args.shotFrames.join(","));

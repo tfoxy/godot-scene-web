@@ -72,6 +72,7 @@ export interface GswRs extends ProgramHost {
   /** G7o2 (absent from builds before it). */
   stage_payload?(len: number, hash: string): number;
   provide_staged?(): number;
+  defer_payload?(hash: string): number;
   payload_verify_json?(): string;
   apply(): number;
   draw(): number;
@@ -312,6 +313,11 @@ export async function runBench(
   const warmup = Number(benchParams.get("warmup") ?? "1");
   const repeats = Number(benchParams.get("repeats") ?? "1");
   const replayWindow = readReplayWindow(benchParams);
+  const missing = benchParams.get("missing") ?? "fail";
+  if (missing !== "fail" && missing !== "skip")
+    throw new Error("missing must be fail or skip");
+  const skipMissing = missing === "skip";
+  const missingSkipped = new Set<string>();
   const sabotage = (benchParams.get("sabotage") ?? "")
     .split(",")
     .filter(Boolean);
@@ -461,6 +467,23 @@ export async function runBench(
         const names: string[] = [];
         for (let k = 0; k < n; k++)
           names.push(hex(hashes.subarray(32 * k, 32 * k + 32)));
+        if (skipMissing) {
+          // Deferring removes the hash from the core's needed queue, so later provides keep
+          // their cursor aligned and apply can leave the unavailable resource cold.
+          for (let k = names.length - 1; k >= 0; k--) {
+            const h = names[k];
+            if (payloads.has(h)) continue;
+            if (!gs.defer_payload)
+              throw new Error("missing=skip needs a build with defer_payload");
+            if (gs.defer_payload(h) < 0) {
+              error = `record ${i}: defer ${h}: ${gs.error()}`;
+              break;
+            }
+            missingSkipped.add(h);
+            names.splice(k, 1);
+          }
+          if (error) break;
+        }
         // G7o2: the fetch completion verifies and decodes each payload as it arrives, ahead of
         // the frame that applies it (outside total_us).
         const v0 = nowUs();
@@ -745,6 +768,7 @@ export async function runBench(
       },
       warmup,
       repeats,
+      ...(skipMissing ? { missing_skipped: [...missingSkipped].sort() } : {}),
       ...(replayWindow ? { window: replayWindow } : {}),
       sabotage,
       results: repeatResults,

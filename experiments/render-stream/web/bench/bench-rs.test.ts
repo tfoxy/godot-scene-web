@@ -39,13 +39,21 @@ describe("replay seq window", () => {
   });
 });
 
-it.each([
-  { repeats: 1, windowed: true },
-  { repeats: 2, windowed: true },
-  { repeats: 1, windowed: false },
-])("replays with repeats=$repeats, window=$windowed", async ({
+it.each(
+  [
+    { repeats: 1, windowed: true },
+    { repeats: 2, windowed: true },
+    { repeats: 1, windowed: false },
+    ...[false, true].flatMap((staging) => [
+      { repeats: 1, windowed: true, missing: "fatal", staging },
+      { repeats: 2, windowed: true, missing: "skip", staging },
+    ]),
+  ].map((row) => ({ missing: "none", staging: false, ...row })),
+)("replays with repeats=$repeats, window=$windowed", async ({
   repeats,
   windowed,
+  missing,
+  staging,
 }) => {
   const { runBench } = await import("./bench-rs");
   const memory = new WebAssembly.Memory({ initial: 1 });
@@ -53,10 +61,14 @@ it.each([
   let resets = 0;
   let frames = 0;
   let draws = 0;
+  let deferred = 0;
+  let provided = 0;
+  let staged = 0;
   let uploaded:
     | {
         window: { from: number; to: number };
         repeats: number;
+        missing_skipped?: string[];
         results: {
           error: string | null;
           samples: { seq: number }[];
@@ -82,6 +94,31 @@ it.each([
     accept(index: number) {
       stats[1] = index - 1;
       stats[2] = index;
+      return missing === "none" ? 0 : 3;
+    }
+    needed_count() {
+      return 2;
+    }
+    needed_ptr() {
+      // A missing hash followed by an available one verifies cursor alignment.
+      new Uint8Array(memory.buffer, 256, 32).fill(0);
+      new Uint8Array(memory.buffer, 288, 32).fill(1);
+      return 256;
+    }
+    defer_payload(hash: string) {
+      expect(hash).toBe("00".repeat(32));
+      deferred++;
+      return 0;
+    }
+    alloc_payload() {
+      return 512;
+    }
+    provide() {
+      provided++;
+      return 0;
+    }
+    provide_staged() {
+      provided++;
       return 0;
     }
     pending_shaders() {
@@ -108,6 +145,14 @@ it.each([
     }
     free() {}
   }
+  if (staging)
+    Object.defineProperty(FakeRs.prototype, "stage_payload", {
+      value: (_length: number, hash: string) => {
+        expect(hash).toBe("01".repeat(32));
+        staged++;
+        return 0;
+      },
+    });
   vi.stubGlobal("window", {});
   vi.stubGlobal("self", { crossOriginIsolated: true });
   vi.stubGlobal("navigator", { userAgent: "fake" });
@@ -123,15 +168,32 @@ it.each([
   });
   vi.stubGlobal("fetch", async (_url: string, options?: RequestInit) => {
     if (options?.method === "PUT") uploaded = JSON.parse(String(options.body));
+    if (_url.endsWith("index.jsonl"))
+      return new Response(JSON.stringify({ hash: "01".repeat(32) }));
     return new Response(new Uint8Array(4));
   });
   const measure = vi.spyOn(performance, "measure");
   try {
-    const query = `input=/recording&nonce=test&warmup=0&repeats=${repeats}${windowed ? "&from=1500&to=1800&prof=1" : ""}`;
+    const query = `input=/recording&nonce=test&warmup=0&repeats=${repeats}${windowed ? "&from=1500&to=1800&prof=1" : ""}${missing !== "none" ? "&store=/store" : ""}${missing === "skip" ? "&missing=skip" : ""}`;
     await runBench(new URLSearchParams(query), {
       default: async () => ({ memory }),
       GswRs: FakeRs,
     } as unknown as import("./bench-rs").GswRsModule);
+    if (missing === "fatal") {
+      expect(uploaded?.results[0].error).toBe(
+        `record 1: payload ${"00".repeat(32)} not in the store`,
+      );
+      expect(uploaded?.results[0].samples).toHaveLength(0);
+      expect(deferred).toBe(0);
+      expect(provided).toBe(0);
+      return;
+    }
+    if (missing === "skip") {
+      expect(uploaded?.missing_skipped).toEqual(["00".repeat(32)]);
+      expect(deferred).toBe(1801 * repeats);
+      expect(provided).toBe(1801 * repeats);
+      expect(staged).toBe(staging ? 1801 * repeats : 0);
+    } else expect(uploaded).not.toHaveProperty("missing_skipped");
     expect(uploaded?.repeats).toBe(repeats);
     if (windowed) expect(uploaded?.window).toEqual({ from: 1500, to: 1800 });
     else expect(uploaded).not.toHaveProperty("window");
