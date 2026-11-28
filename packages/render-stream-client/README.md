@@ -164,6 +164,15 @@ simulation or redraws. A one-shot retires after `lifetime * (2 - explosiveness)`
 sight emitting, checked on the next apply or presentation. If nothing else redraws, retirement can
 appear late; there is no expiry timer. The host and wire are unchanged.
 
+## Cover depth tiles
+
+`coverTiles` defaults to `true`. Use `coverTiles: false` at creation or
+`client.setCoverTiles(false)` at runtime in scenes where depth tiles save little fill.
+Enable them again with `client.setCoverTiles(true)`. The setting survives reconnects
+and protocol rebuilds; it changes only work skipped under later opaque draws, so pixels
+stay the same. Runtime changes wake the client and settle before the next draw.
+The setter is optional on `RenderStreamClient` for existing test doubles.
+
 ## Static shaders
 
 `staticShaders: true` pins every material shader's `TIME` to the first carried shader time applied

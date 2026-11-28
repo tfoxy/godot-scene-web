@@ -198,6 +198,8 @@ export interface RenderStreamClientOptions {
   drawBatching?: boolean | number;
   /** Retain unchanged canvas frames. Defaults to false. */
   damageRedraw?: boolean;
+  /** Use the cover walk's depth tiles. Defaults to true; switch per scene with `setCoverTiles`. */
+  coverTiles?: boolean;
   /** How much motion per transaction still counts as ambient under `frameCap` (each field
    * optional, defaults: scene content `IDLE_MOTION_MAX_PX` 1 px and `IDLE_COLOR_STEP_MAX` 8/255,
    * animation content `IDLE_ANIMATION_MAX_PX` 128 px and `IDLE_ANIMATION_COLOR_STEP_MAX`
@@ -277,6 +279,8 @@ export interface RenderStreamClient {
   setStaticShaders?(on: boolean): void;
   setDrawBatching?(value: boolean | number): void;
   setDamageRedraw?(on: boolean): void;
+  /** Switch depth tiles per scene without changing pixels. */
+  setCoverTiles?(on: boolean): void;
 }
 
 /** The events that count as input for the frame cap, listened to on the canvas's document. */
@@ -402,6 +406,8 @@ export function createRenderStreamClient(
     throw new TypeError(
       "render-stream client: staticParticles must be a boolean",
     );
+  if (typeof (options.coverTiles ?? true) !== "boolean")
+    throw new TypeError("render-stream client: coverTiles must be a boolean");
   checkFrameCap(options.frameCap ?? "off");
   frameCapLimits(options.frameCapBounds);
   // Absent the option there is no recorder (and no per-message copy); present, one ring.
@@ -454,6 +460,7 @@ class Client implements RenderStreamClient {
   private drawBatching: number | undefined;
   private staticShaders: boolean;
   private damageRedraw: boolean;
+  private coverTiles: boolean;
   /** Its bounds (the loop's, once there is one). */
   private frameCapBounds: RenderStreamFrameCapBounds | undefined;
   /** The document the wake listeners are on (null: none, the cap is off). */
@@ -498,6 +505,7 @@ class Client implements RenderStreamClient {
         : drawBatchingMask(o.drawBatching);
     this.staticShaders = o.staticShaders ?? false;
     this.damageRedraw = o.damageRedraw ?? false;
+    this.coverTiles = o.coverTiles ?? true;
     this.frameCapBounds = o.frameCapBounds;
     this.listenInput();
     this.listenVisibility();
@@ -544,6 +552,15 @@ class Client implements RenderStreamClient {
     if (this.disposed || this.staticShaders === on) return;
     this.staticShaders = on;
     this.core?.setStaticShaders(on);
+    this.loop?.wake();
+  }
+
+  setCoverTiles(on: boolean): void {
+    if (typeof on !== "boolean")
+      throw new TypeError("render-stream client: coverTiles must be a boolean");
+    if (this.disposed || this.coverTiles === on) return;
+    this.coverTiles = on;
+    this.core?.setCoverTiles(on);
     this.loop?.wake();
   }
 
@@ -769,6 +786,7 @@ class Client implements RenderStreamClient {
             this.o.transparentClear ?? false,
             this.damageRedraw,
             this.o.clientTweens,
+            this.coverTiles,
           ),
         );
       } catch (e) {
@@ -801,6 +819,7 @@ class Client implements RenderStreamClient {
     if (this.drawBatching !== undefined)
       this.core.setDrawBatching(this.drawBatching);
     this.core.setDamageRedraw(this.damageRedraw);
+    this.core.setCoverTiles(this.coverTiles);
     this.ext?.bind(this.core);
     // This can precede the session's executor: create its context with the same attributes.
     const gl = canvas.getContext("webgl2", CONTEXT_ATTRIBUTES);

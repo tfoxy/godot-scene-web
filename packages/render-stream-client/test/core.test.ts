@@ -35,6 +35,7 @@ function harness(
     readonly set_log_removed = vi.fn();
     readonly set_async_programs = vi.fn();
     readonly set_damage_redraw = vi.fn();
+    set_cover_tiles: ((on: boolean) => void) | undefined = vi.fn();
     /** What `poll_programs` answers next (J1). */
     settled = 0;
     readonly poll_programs = vi.fn(() => this.settled);
@@ -519,6 +520,22 @@ describe("WasmStreamCore program links (J1)", () => {
     // No emitter is settling: no reapply (the fake core has none either way).
     expect(core.settleParticles(1)).toBe(false);
     expect(libRs).toContain("pub fn reapply(");
+  });
+});
+
+describe("WasmStreamCore cover tiles", () => {
+  it("forwards toggles and preserves them across instance recreation", () => {
+    const { core, instances } = harness();
+    expect(instances[0].options).not.toHaveProperty("coverTiles");
+    core.setCoverTiles(false);
+    expect(instances[0].set_cover_tiles).toHaveBeenLastCalledWith(false);
+    core.beginConnection(14);
+    expect(instances[1].set_cover_tiles).toHaveBeenLastCalledWith(false);
+    core.setCoverTiles(true);
+    expect(instances[1].set_cover_tiles).toHaveBeenLastCalledWith(true);
+    instances[1].set_cover_tiles = undefined;
+    expect(() => core.setCoverTiles(false)).not.toThrow();
+    core.dispose();
   });
 });
 

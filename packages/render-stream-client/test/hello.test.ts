@@ -203,6 +203,18 @@ describe("coreStartOptions (PH2)", () => {
     expect(coreStartOptions(12)).toContain('"digest":"none"');
   });
 
+  it("omits default coverTiles and emits false only when disabled", () => {
+    const original =
+      '{"digest":"none","sabotage":[],"format":"rgb10a2","texture_encodings":"block,decoded","live_protocol":13,"log":"summary"}';
+    expect(coreStartOptions(13)).toBe(original);
+    expect(coreStartOptions(13, true, false, false, false, true)).toBe(
+      original,
+    );
+    expect(coreStartOptions(13, true, false, false, false, false)).toBe(
+      `${original.slice(0, -1)},"coverTiles":false}`,
+    );
+  });
+
   it("adds viewports:false only when asked (render-stream/16 D3)", () => {
     expect(coreStartOptions(16, true)).toBe(coreStartOptions(16));
     expect(JSON.parse(coreStartOptions(16, false))).toEqual({

@@ -200,6 +200,7 @@ export interface StreamCore {
   setStaticShaders?(on: boolean): void;
   setDrawBatching?(mask: number): void;
   setDamageRedraw?(on: boolean): void;
+  setCoverTiles?(on: boolean): void;
   tweensActive?(): boolean;
   tweenTick?(nowMs: number, picture: boolean): boolean;
   tweenDiagnostics?(): Record<string, number>;
@@ -351,6 +352,7 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
   private staticShaders = false;
   private staticShadersDirty = false;
   private damageRedraw = false;
+  private coverTiles = true;
   private particleUploadReady = false;
   private particleIdlePaused = false;
   private programsHeld = false;
@@ -461,6 +463,7 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
         if (this.logRemoved) next.set_log_removed(true);
         if (this.motionOn) next.set_motion?.(true);
         next.set_damage_redraw?.(this.damageRedraw);
+        next.set_cover_tiles?.(this.coverTiles);
         next.set_async_programs?.(true);
         next.set_static_shaders?.(this.staticShaders);
         if (this.drawBatching !== undefined)
@@ -878,6 +881,12 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
     if (this.staticShaders !== on) this.staticShadersDirty = true;
     this.staticShaders = on;
     this.instance?.set_static_shaders?.(on);
+  }
+
+  setCoverTiles(on: boolean): void {
+    this.coverTiles = on;
+    // draw() settles pending cover work, so this needs no reapply/dirty flag.
+    this.instance?.set_cover_tiles?.(on);
   }
 
   setDamageRedraw(on: boolean): void {

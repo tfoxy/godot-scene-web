@@ -92,6 +92,7 @@ export function coreStartOptions(
   transparentClear = false,
   damageRedraw = false,
   clientTweens = false,
+  coverTiles = true,
 ): string {
   return JSON.stringify({
     digest: "none",
@@ -106,6 +107,7 @@ export function coreStartOptions(
     ...(transparentClear ? { transparent_clear: true } : {}),
     ...(damageRedraw ? { damage_redraw: true } : {}),
     ...(clientTweens ? { client_tweens: true } : {}),
+    ...(coverTiles ? {} : { coverTiles: false }),
   });
 }
 

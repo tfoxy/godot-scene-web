@@ -462,6 +462,7 @@ describe("endpoint protocol changes", () => {
     staticShaders?: boolean,
     damageRedraw?: boolean,
     drawBatching?: boolean | number,
+    coverTiles?: boolean,
   ) {
     vi.useFakeTimers();
     const memory = new WebAssembly.Memory({ initial: 1 });
@@ -474,9 +475,11 @@ describe("endpoint protocol changes", () => {
         live_protocol: number;
         viewports?: boolean;
         transparent_clear?: boolean;
+        coverTiles?: boolean;
       };
       readonly free = vi.fn();
       readonly set_window = vi.fn();
+      readonly set_cover_tiles = vi.fn();
       set_static_shaders: ((on: boolean) => void) | undefined = vi.fn();
       set_draw_batching: ((mask: number) => void) | undefined = vi.fn();
       readonly reapply = vi.fn(() => 1);
@@ -562,6 +565,7 @@ describe("endpoint protocol changes", () => {
       ...(staticShaders !== undefined ? { staticShaders } : {}),
       ...(damageRedraw !== undefined ? { damageRedraw } : {}),
       ...(drawBatching !== undefined ? { drawBatching } : {}),
+      ...(coverTiles !== undefined ? { coverTiles } : {}),
       ...(viewports !== undefined ? { viewports } : {}),
       ...(transparentClear !== undefined ? { transparentClear } : {}),
       onStatus: (st) => statuses.push(st),
@@ -911,6 +915,71 @@ describe("endpoint protocol changes", () => {
     expect(settle.call(c, 1)).toBe(false);
     h.c.dispose();
     set.mockRestore();
+  });
+
+  it("coverTiles validates, dedupes, wakes and persists before creation and rebuilds", async () => {
+    const set = vi.spyOn(WasmStreamCore.prototype, "setCoverTiles");
+    try {
+      for (const initial of [undefined, false, true]) {
+        const h = mount(
+          13,
+          [],
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          initial,
+        );
+        // Change before the core exists: creation must receive the stored value.
+        h.c.setCoverTiles?.(false);
+        h.c.connect();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(h.instances[0].options.coverTiles).toBe(false);
+        expect(h.instances[0].set_cover_tiles).toHaveBeenLastCalledWith(false);
+        const calls = set.mock.calls.length;
+        h.c.setCoverTiles?.(false);
+        expect(set).toHaveBeenCalledTimes(calls);
+        const loop = (h.c as unknown as { loop: { wake(): void } }).loop;
+        const wake = vi.spyOn(loop, "wake");
+        h.c.setCoverTiles?.(true);
+        expect(set).toHaveBeenLastCalledWith(true);
+        expect(h.instances[0].set_cover_tiles).toHaveBeenLastCalledWith(true);
+        expect(wake).toHaveBeenCalledTimes(1);
+        h.c.setCoverTiles?.(true);
+        expect(wake).toHaveBeenCalledTimes(1);
+        expect(() => h.c.setCoverTiles?.("yes" as never)).toThrow(TypeError);
+        h.c.setCoverTiles?.(false);
+        h.c.setEndpoint({ ...endpoint, protocol: 14 });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(h.instances.at(-1)?.options.coverTiles).toBe(false);
+        expect(h.instances.at(-1)?.set_cover_tiles).toHaveBeenLastCalledWith(
+          false,
+        );
+        h.c.dispose();
+        const disposedCalls = set.mock.calls.length;
+        h.c.setCoverTiles?.(true);
+        expect(set).toHaveBeenCalledTimes(disposedCalls);
+      }
+      expect(() =>
+        mount(
+          13,
+          [],
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          "no" as never,
+        ),
+      ).toThrow(/coverTiles must be a boolean/);
+    } finally {
+      set.mockRestore();
+    }
   });
 
   it("damageRedraw validates and reaches creation, runtime and protocol rebuilds", async () => {

@@ -45,6 +45,17 @@ describe("@godot-scene-web/render-stream-client export surface", () => {
   });
 });
 
+describe("cover tiles public types", () => {
+  it("keeps the setter optional for existing consumers", () => {
+    const options: Pick<client.RenderStreamClientOptions, "coverTiles"> = {
+      coverTiles: false,
+    };
+    const fake: Pick<client.RenderStreamClient, "setCoverTiles"> = {};
+    expect(options.coverTiles).toBe(false);
+    expect(fake.setCoverTiles).toBeUndefined();
+  });
+});
+
 describe("RenderStreamStats", () => {
   it("pins saver pacing and its optional stats on the existing public types", () => {
     const pacing: client.RenderStreamPacing = "saver";
