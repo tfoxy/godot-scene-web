@@ -1,6 +1,7 @@
 #include "calib_live.h"
 
 #include <cstdio>
+#include <chrono>
 #include <cstring>
 #include <algorithm>
 
@@ -22,6 +23,23 @@
 #include "pe_image.h"
 
 namespace grc {
+namespace {
+class PhaseTimer {
+ public:
+  explicit PhaseTimer(uint64_t *ns) { next(ns); }
+  ~PhaseTimer() { next(nullptr); }
+  void next(uint64_t *ns) {
+    if (ns_) *ns_ += std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now() - start_).count();
+    ns_ = ns;
+    if (ns_) start_ = std::chrono::steady_clock::now();
+  }
+ private:
+  uint64_t *ns_ = nullptr;
+  std::chrono::steady_clock::time_point start_;
+};
+}  // namespace
+
 CalibLiveReader::CalibLiveReader(const ProcessFingerprint &fp) : bias_(fp.load_bias) {
 #if defined(__APPLE__)
   const auto *h = reinterpret_cast<const mach_header_64 *>(_dyld_get_image_header(0));
@@ -189,10 +207,9 @@ bool CalibLiveReader::is_exec(uint64_t address) const {
   for (auto [lo, hi] : executable_) if (address >= lo && address < hi) return true;
   return false;
 }
-bool derive_live_calibration(const AbiTable &table, const ProcessFingerprint &fp,
-                             Calibration *out, std::vector<CheckResult> *checks,
-                             std::string *error, bool require_exe_sha256) {
-  *out = {};
+namespace {
+bool validate_live_identity(const ProcessFingerprint &fp, bool require_exe_sha256,
+                            std::vector<CheckResult> *checks, std::string *error) {
   checks->push_back({"derive_census", true, "not-run"});
   const auto fail = [&](const std::string &detail) {
     checks->push_back({"derive_typeinfo", false, detail});
@@ -212,14 +229,18 @@ bool derive_live_calibration(const AbiTable &table, const ProcessFingerprint &fp
     return fail("incomplete live engine identity");
   if (pe && require_exe_sha256 && fp.exe_sha256.empty())
     return fail("whole-file PE digest unavailable after identity worker");
-  CalibLiveReader reader(fp);
-  if (!reader.error().empty()) return fail("live reader: " + reader.error());
-  if (reader.readonly_ranges().empty()) return fail("no read-only main-image mappings");
-  void *singleton = singleton_object("RenderingServer");
-  if (!singleton) return fail("RenderingServer singleton unavailable");
-  uint64_t vptr = 0;
-  std::memcpy(&vptr, singleton, sizeof(vptr));
+  return true;
+}
+bool fill_live_identity(const ProcessFingerprint &fp, Calibration *out,
+                        std::vector<CheckResult> *checks, std::string *error) {
   Calibration identity;
+  const bool pe = fp.platform == "windows-x86_64";
+  const bool macho = fp.platform == "macos-arm64" || fp.platform == "macos-x86_64";
+  const auto fail = [&](const std::string &detail) {
+    checks->push_back({"derive_typeinfo", false, detail});
+    *error = detail;
+    return false;
+  };
   identity.version_string = fp.version_string;
   identity.sha256 = fp.exe_sha256;
   if (macho) {
@@ -246,8 +267,70 @@ bool derive_live_calibration(const AbiTable &table, const ProcessFingerprint &fp
   identity.pie = fp.pie;
   const auto name = fp.exe_path.substr(fp.exe_path.find_last_of("/\\") + 1);
   identity.flavor = name.find("debug") != std::string::npos ? "template_debug" : "template_release";
-  if (!derive_calibration(reader, vptr, table, &identity, checks, error)) return false;
   *out = std::move(identity);
+  return true;
+}
+}  // namespace
+
+bool derive_live_identity(const ProcessFingerprint &fp, bool require_exe_sha256,
+                          Calibration *identity, std::vector<CheckResult> *checks,
+                          std::string *error) {
+  *identity = {};
+  return validate_live_identity(fp, require_exe_sha256, checks, error) &&
+         fill_live_identity(fp, identity, checks, error);
+}
+
+void derive_live_scan(const CalibMemoryReader &reader, uint64_t vptr, const AbiTable &table,
+                      Calibration identity, LiveDeriveScan *out) {
+  *out = {};
+  out->attempted = true;
+  out->ok = derive_calibration(reader, vptr, table, &identity, &out->checks, &out->error,
+                                &out->times);
+  if (out->ok) out->calib = std::move(identity);
+}
+
+bool derive_live_calibration(const AbiTable &table, const ProcessFingerprint &fp,
+                             Calibration *out, std::vector<CheckResult> *checks,
+                             std::string *error, bool require_exe_sha256, DerivePhaseTimes *times) {
+  if (times) *times = {};
+  PhaseTimer timer(times ? &times->identity_ns : nullptr);
+  *out = {};
+  if (!validate_live_identity(fp, require_exe_sha256, checks, error)) return false;
+  const auto fail = [&](const std::string &detail) {
+    checks->push_back({"derive_typeinfo", false, detail});
+    *error = detail;
+    return false;
+  };
+  timer.next(times ? &times->reader_ns : nullptr);
+  CalibLiveReader reader(fp);
+  if (times) {
+    const auto ranges = reader.readonly_ranges();
+    times->readonly_range_count = ranges.size();
+    for (auto [lo, hi] : ranges) times->readonly_bytes += hi - lo;
+    times->readable_range_count = reader.readable_range_count();
+  }
+  if (!reader.error().empty()) return fail("live reader: " + reader.error());
+  if (reader.readonly_ranges().empty()) return fail("no read-only main-image mappings");
+  timer.next(times ? &times->singleton_ns : nullptr);
+  void *singleton = singleton_object("RenderingServer");
+  if (!singleton) return fail("RenderingServer singleton unavailable");
+  uint64_t vptr = 0;
+  std::memcpy(&vptr, singleton, sizeof(vptr));
+  timer.next(times ? &times->identity_ns : nullptr);
+  Calibration identity;
+  if (!fill_live_identity(fp, &identity, checks, error)) return false;
+  timer.next(nullptr);
+  LiveDeriveScan scan;
+  derive_live_scan(reader, vptr, table, std::move(identity), &scan);
+  checks->insert(checks->end(), scan.checks.begin(), scan.checks.end());
+  if (times) {
+    times->typeinfo_ns = scan.times.typeinfo_ns;
+    times->abstract_ns = scan.times.abstract_ns;
+    times->slots_ns = scan.times.slots_ns;
+    times->anchors_ns = scan.times.anchors_ns;
+  }
+  if (!scan.ok) { *error = scan.error; return false; }
+  *out = std::move(scan.calib);
   return true;
 }
 }  // namespace grc

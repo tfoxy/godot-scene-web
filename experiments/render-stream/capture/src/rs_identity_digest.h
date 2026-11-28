@@ -1,6 +1,7 @@
 #pragma once
 
 #include <chrono>
+#include <atomic>
 #include <cstdint>
 #include <exception>
 #include <functional>
@@ -10,6 +11,7 @@
 #include <thread>
 
 #include "calib_fingerprint.h"
+#include "calib_live.h"
 
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
@@ -31,6 +33,11 @@ struct ImageDigestResult {
   bool ok = false;
   std::string hex, whole_file_hex, error;
   uint64_t bytes = 0, image_base = 0, ns = 0;
+  LiveDeriveScan scan;
+  AbiTable derive_table;
+  std::string derive_abi_error;
+  bool derive_table_ok = false, derive_singleton_present = false;
+  uint64_t derive_vptr = 0, scan_ns = 0;
 };
 
 // Derived records retain the whole-file identity. Request it alongside the image digest
@@ -66,7 +73,7 @@ inline bool resolve_windows_image_digest(ProcessFingerprint *fp, const ImageDige
 }
 
 // Started only by the first identity attempt. Completion is an event, never a frame poll.
-// The provider owns only file data; post must enqueue a main-thread callback, not execute it.
+// The provider owns file data and a read-only image view; post enqueues a main-thread callback.
 class IdentityDigest {
  public:
   using Provider = std::function<ImageDigestResult()>;
@@ -85,7 +92,7 @@ class IdentityDigest {
       catch (const std::exception &e) { result.error = e.what(); }
       catch (...) { result.error = "image digest provider failed"; }
       result.ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
-          std::chrono::steady_clock::now() - start).count();
+          std::chrono::steady_clock::now() - start).count() - result.scan_ns;
       std::lock_guard<std::mutex> lock(mutex_);
       result_ = std::move(result);
       finished_ = true;
@@ -100,12 +107,17 @@ class IdentityDigest {
     *out = result_;
     return true;
   }
-  bool stopped() {
-    std::lock_guard<std::mutex> lock(mutex_);
-    return stopped_;
-  }
+  bool stopped() const { return stopped_.load(std::memory_order_relaxed); }
+  const std::atomic<bool> &stop_flag() const { return stopped_; }
+#if defined(GRC_IDENTITY_TEST)
+  // Let tests release an in-flight read only after shutdown has stored the latch.
+  std::function<void()> after_stop_for_test;
+#endif
   void shutdown() {
     { std::lock_guard<std::mutex> lock(mutex_); stopped_ = true; }
+#if defined(GRC_IDENTITY_TEST)
+    if (after_stop_for_test) after_stop_for_test();
+#endif
     // Completion never joins on main. Only shutdown owns the joinable thread.
     if (thread_.joinable()) thread_.join();
   }
@@ -113,6 +125,7 @@ class IdentityDigest {
   std::thread thread_;
   std::mutex mutex_;
   ImageDigestResult result_;
-  bool started_ = false, stopped_ = false, finished_ = false;
+  std::atomic<bool> stopped_{false};
+  bool started_ = false, finished_ = false;
 };
 }  // namespace grc

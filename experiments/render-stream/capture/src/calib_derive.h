@@ -36,6 +36,16 @@ class CalibMemoryReader {
   virtual bool is_pure_bind(uint64_t /*address*/) const { return false; }
   // PE slot words must carry DIR64 relocations. Other readers need no extra check.
   virtual bool is_pointer_word(uint64_t /*address*/, uint64_t /*bits*/) const { return true; }
+  // A worker reader may stop a scan during shutdown. Ordinary readers never stop.
+  virtual bool stopped() const { return false; }
+};
+
+// Optional diagnostics only; never included in calibration records or checks.
+// Phases that are not reached remain zero. Live derivation also fills the image counts.
+struct DerivePhaseTimes {
+  uint64_t identity_ns = 0, reader_ns = 0, singleton_ns = 0;
+  uint64_t typeinfo_ns = 0, abstract_ns = 0, slots_ns = 0, anchors_ns = 0;
+  uint64_t readonly_range_count = 0, readonly_bytes = 0, readable_range_count = 0;
 };
 
 // Concrete address point comes from the singleton (or file bootstrap in tests).
@@ -43,7 +53,8 @@ class CalibMemoryReader {
 // clears the output, and never writes through the reader. Check names are also used live.
 bool derive_calibration(const CalibMemoryReader &memory, uint64_t concrete_vptr,
                         const AbiTable &table, Calibration *out,
-                        std::vector<CheckResult> *checks, std::string *error);
+                        std::vector<CheckResult> *checks, std::string *error,
+                        DerivePhaseTimes *times = nullptr);
 
 // File-backed addresses are preferred virtual addresses; no file is executed.
 class CalibFileReader final : public CalibMemoryReader {

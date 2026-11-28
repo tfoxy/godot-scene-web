@@ -1156,8 +1156,10 @@ else()
 endif()
 
 add_executable(rs_identity_test test/rs_identity_test.cpp src/rs_capture_api.cpp src/calib.cpp
-  ${GRC_FINGERPRINT_SOURCES} src/iface.cpp src/rs_sha256.cpp src/vtable.cpp)
+  ${GRC_FINGERPRINT_SOURCES} src/iface.cpp src/rs_sha256.cpp src/vtable.cpp
+  src/calib_live.cpp src/calib_derive.cpp src/macho_image.cpp src/pe_image.cpp)
 target_include_directories(rs_identity_test PRIVATE src vendor)
+target_compile_definitions(rs_identity_test PRIVATE GRC_IDENTITY_TEST)
 target_link_libraries(rs_identity_test PRIVATE grc_warnings grc_platform Threads::Threads)
 grc_add_test(NAME rs_identity COMMAND rs_identity_test)
 

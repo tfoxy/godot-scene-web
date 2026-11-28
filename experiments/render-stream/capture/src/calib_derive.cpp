@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <charconv>
+#include <chrono>
 #include <cstring>
 #include "rs_file.h"
 #include <set>
@@ -14,6 +15,22 @@
 namespace grc {
 namespace {
 using J = rs::json_lite::JValue;
+
+// A scope exit records the active phase even when a check refuses derivation.
+class PhaseTimer {
+ public:
+  explicit PhaseTimer(uint64_t *ns) { next(ns); }
+  ~PhaseTimer() { next(nullptr); }
+  void next(uint64_t *ns) {
+    if (ns_) *ns_ += std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now() - start_).count();
+    ns_ = ns;
+    if (ns_) start_ = std::chrono::steady_clock::now();
+  }
+ private:
+  uint64_t *ns_ = nullptr;
+  std::chrono::steady_clock::time_point start_;
+};
 
 bool fail(std::string *error, const std::string &message) { *error = message; return false; }
 bool range(uint64_t off, uint64_t size, uint64_t end) { return off <= end && size <= end - off; }
@@ -65,6 +82,7 @@ std::vector<uint64_t> primary_tables(const CalibMemoryReader &m, uint64_t ti) {
   for (auto [lo, hi] : m.readonly_ranges()) {
     if (lo > UINT64_MAX - 7) continue;
     for (uint64_t addr = (lo + 7) & ~uint64_t(7); range(addr, 8, hi); addr += 8) {
+      if (m.stopped()) return {};
       uint64_t v = 0, top = 1;
       if (addr >= 8 && word(m, addr, &v) && v == ti && word(m, addr - 8, &top) && !top)
         found.insert(addr + 8);
@@ -193,7 +211,10 @@ bool load_abi_table(const std::string &path, AbiTable *out, std::string *error) 
 }
 
 bool derive_calibration(const CalibMemoryReader &m, uint64_t cv, const AbiTable &table,
-                        Calibration *out, std::vector<CheckResult> *checks, std::string *error) {
+                        Calibration *out, std::vector<CheckResult> *checks, std::string *error,
+                        DerivePhaseTimes *times) {
+  if (times) times->typeinfo_ns = times->abstract_ns = times->slots_ns = times->anchors_ns = 0;
+  PhaseTimer timer(times ? &times->typeinfo_ns : nullptr);
   Calibration result = *out;
   *out = {};
   auto check = [&](const char *name, bool ok, const std::string &detail) {
@@ -206,10 +227,12 @@ bool derive_calibration(const CalibMemoryReader &m, uint64_t cv, const AbiTable 
              word(m, cv - 8, &cti) && name_is(m, cti, "RenderingServerDefault") &&
              word(m, cti + 16, &ati) && name_is(m, ati, "RenderingServer"),
              "Itanium RenderingServerDefault -> RenderingServer typeinfo")) return false;
+  timer.next(times ? &times->abstract_ns : nullptr);
   auto abstract = primary_tables(m, ati);
   if (!check("derive_abstract_vtable_unique", abstract.size() == 1,
              "primary abstract vtables: " + std::to_string(abstract.size()))) return false;
   const uint64_t av = abstract[0];
+  timer.next(times ? &times->slots_ns : nullptr);
   std::vector<CalibWord> a, c;
   if (!walk(m, av, &a, error) || !walk(m, cv, &c, error)) {
     check("derive_slot_pattern", false, *error); return false;
@@ -273,6 +296,7 @@ bool derive_calibration(const CalibMemoryReader &m, uint64_t cv, const AbiTable 
   result.pure_placeholder_symbol = kind == "bind" ? "___cxa_pure_virtual" : "";
   if (placeholder && placeholder < m.load_bias()) return refuse("placeholder precedes load bias");
   result.pure_placeholder = placeholder ? placeholder - m.load_bias() : 0;
+  timer.next(times ? &times->anchors_ns : nullptr);
   result.slots.clear(); result.anchors.clear();
   result.dropped_families.clear(); result.devirtualized_slots.clear();
   for (const auto &[key, index] : table.wanted_slots) {

@@ -1,5 +1,6 @@
 #include "fake_godot_iface.h"
 #include "calib.h"
+#include "calib_live.h"
 #include "rs_identity_event.h"
 #include "vtable.h"
 #include "rs_capture_api.h"
@@ -7,6 +8,7 @@
 #include <condition_variable>
 #include <deque>
 #include <future>
+#include <map>
 
 namespace {
 int checks = 0, failures = 0;
@@ -198,6 +200,166 @@ void test_digest(const std::string &hex, bool ok, const char *expected, bool req
   digest.shutdown(); event.clear();
   if (shadow.built()) { bool was_shadow = false, restored = false; shadow.disarm(&was_shadow, &restored); }
 }
+class Memory final : public grc::CalibMemoryReader {
+ public:
+  std::map<uint64_t, uint64_t> words;
+  uint64_t bias = 0;
+  Memory() {
+    // Distinct RTTI, names, two primary tables, four slots plus sentinels.
+    text(0x1100, "15RenderingServer"); text(0x1140, "22RenderingServerDefault");
+    words[0x1200] = 0x9000; words[0x1208] = 0x1100;
+    words[0x1240] = 0x9000; words[0x1248] = 0x1140; words[0x1250] = 0x1200;
+    words[0x1300] = 0; words[0x1308] = 0x1200;
+    words[0x1400] = 0; words[0x1408] = 0x1240;
+    for (size_t i = 0; i < 4; ++i) {
+      words[0x1310 + i * 8] = i == 2 ? 0 : 0x9000 + i * 16;
+      words[0x1410 + i * 8] = 0x9000 + i * 16;
+    }
+    words[0x1330] = words[0x1430] = 0xdeadbeef;
+  }
+  void text(uint64_t addr, const std::string &s) {
+    for (size_t i = 0; i <= s.size(); ++i) {
+      auto &w = words[(addr + i) & ~uint64_t(7)];
+      const unsigned shift = 8 * ((addr + i) & 7);
+      w = (w & ~(uint64_t(255) << shift)) | (uint64_t(i == s.size() ? 0 : s[i]) << shift);
+    }
+  }
+  grc::CalibWord read_u64(uint64_t address) const override {
+    auto it = words.find(address);
+    if (it == words.end()) return {};
+    return {grc::CalibWord::value, it->second};
+  }
+  bool is_exec(uint64_t address) const override { return address >= 0x9000 && address < 0xa000; }
+  std::vector<std::pair<uint64_t, uint64_t>> readonly_ranges() const override { return {{0x1000, 0x1500}}; }
+  uint64_t load_bias() const override { return bias; }
+};
+grc::AbiTable table() {
+  grc::AbiTable t;
+  t.new_virtuals = {{"anchor_a", false}, {"hook", true}, {"anchor_b", false}};
+  t.wanted_slots = {{"hook", 1}};
+  return t;
+}
+bool same_checks(const std::vector<grc::CheckResult> &a, const std::vector<grc::CheckResult> &b) {
+  if (a.size() != b.size()) return false;
+  for (size_t i = 0; i < a.size(); ++i)
+    if (a[i].name != b[i].name || a[i].ok != b[i].ok || a[i].detail != b[i].detail) return false;
+  return true;
+}
+void test_worker_scan(int failure_phase) {
+  install();
+  Memory memory;
+  auto abi = table();
+  if (failure_phase == 1) memory.words[0x1408] = 0;
+  if (failure_phase == 2) { memory.words[0x1480] = 0; memory.words[0x1488] = 0x1200; }
+  if (failure_phase == 3) memory.words[0x1420] = 0;
+  if (failure_phase == 4) abi.wanted_slots = {{"hook", 0}};
+  grc::ProcessFingerprint fp;
+  fp.platform = "linux-x86_64"; fp.version_string = "fixture release";
+  fp.exe_sha256 = std::string(64, 'a'); fp.exe_path = "/fixture/godot";
+  grc::Calibration identity;
+  std::vector<grc::CheckResult> identity_checks;
+  std::string error;
+  check(grc::derive_live_identity(fp, true, &identity, &identity_checks, &error),
+        "identity construction is engine-call free");
+  auto expected = identity;
+  auto expected_checks = identity_checks;
+  std::string expected_error;
+  const bool expected_ok = grc::derive_calibration(memory, 0x1410, abi, &expected,
+                                                  &expected_checks, &expected_error);
+  grc::IdentityDigest digest;
+  grc::IdentityEvent event;
+  std::promise<void> entered, release;
+  auto started = entered.get_future(); auto ready = release.get_future();
+  bool decided = false;
+  std::string reason;
+  const auto main = std::this_thread::get_id();
+  check(event.prepare(digest, [&] {
+    grc::ImageDigestResult result;
+    if (!digest.result(&result)) return;
+    decided = true;
+    const auto &scan = result.scan;
+    reason = scan.ok ? "" : "derive-failed";
+    check(std::this_thread::get_id() == main && scan.attempted && scan.ok == expected_ok,
+          "main consumes completed worker scan result");
+    check(same_checks(scan.checks, expected_checks) && scan.error == expected_error,
+          "worker and synchronous scan have identical checks, order and refusal detail");
+    check(grc::serialize_derived_calibration(scan.calib, abi) ==
+          grc::serialize_derived_calibration(expected, abi),
+          "worker and synchronous scan serialize byte-identical records");
+    check(scan.times.typeinfo_ns > 0 && (scan.times.abstract_ns > 0) == (failure_phase != 1),
+          "worker scan retains reached phase timings");
+  }), "scan completion event prepared");
+  check(digest.start("windows-x86_64", "detached", [&] {
+    const bool off_main = std::this_thread::get_id() != main;
+    if (!off_main) throw std::runtime_error("image scan ran on main");
+    entered.set_value(); ready.wait();
+    grc::ImageDigestResult result;
+    grc::StoppableCalibReader reader(memory, digest.stop_flag());
+    grc::derive_live_scan(reader, 0x1410, abi, identity, &result.scan);
+    result.scan.checks.insert(result.scan.checks.begin(), identity_checks.begin(), identity_checks.end());
+    return result;
+  }, [&] { event.post(); }), "scan starts on identity worker");
+  started.wait();
+  grc::ImageDigestResult pending;
+  check(!digest.result(&pending) && !decided, "pending scan makes no decision");
+  release.set_value(); flush();
+  check(decided && reason == (failure_phase == 0 ? "" : "derive-failed"),
+        "worker failure refuses derive-failed without fallback");
+  digest.shutdown(); event.clear();
+}
+
+class BlockingScanReader final : public grc::CalibMemoryReader {
+ public:
+  mutable std::promise<void> entered;
+  std::shared_future<void> release;
+  mutable size_t reads = 0;
+  Memory memory;
+  grc::CalibWord read_u64(uint64_t addr) const override {
+    if (addr == 0x1000) { entered.set_value(); release.wait(); }
+    ++reads;
+    return memory.read_u64(addr);
+  }
+  bool is_exec(uint64_t addr) const override { return memory.is_exec(addr); }
+  std::vector<std::pair<uint64_t, uint64_t>> readonly_ranges() const override {
+    // An unbounded-looking range proves cancellation ends the loop, rather than
+    // continuing to read unmapped words to its end after the latch.
+    return {{0x1000, UINT64_MAX - 7}};
+  }
+  uint64_t load_bias() const override { return 0; }
+};
+void test_shutdown_scan() {
+  grc::IdentityDigest digest;
+  BlockingScanReader memory;
+  std::promise<void> release;
+  memory.release = release.get_future().share();
+  auto entered = memory.entered.get_future();
+  int posts = 0;
+  grc::LiveDeriveScan completed;
+  check(digest.start("windows-x86_64", "detached", [&] {
+    grc::ImageDigestResult result;
+    grc::StoppableCalibReader reader(memory, digest.stop_flag());
+    grc::derive_live_scan(reader, 0x1410, table(), {}, &result.scan);
+    completed = result.scan;
+    return result;
+  }, [&] { ++posts; }), "shutdown scan starts");
+  check(entered.wait_for(std::chrono::seconds(10)) == std::future_status::ready,
+        "shutdown scan reaches abstract range traversal");
+  // The test-only callback releases the blocked read after the real shutdown store.
+  // Main still joins the provider through shutdown, with no polling or atomic wait.
+  digest.after_stop_for_test = [&] {
+    check(digest.stopped(), "shutdown latches cancellation before releasing the scan read");
+    release.set_value();
+  };
+  digest.shutdown();
+  digest.after_stop_for_test = {};
+  grc::ImageDigestResult result;
+  check(completed.attempted && !completed.ok && posts == 0 && !digest.result(&result),
+        "shutdown joins active scan, discards result and posts nothing");
+  check(memory.reads < 100 && digest.stopped(), "shutdown interrupts scan without traversing remaining ranges");
+  grc::StoppableCalibReader stopped(memory, digest.stop_flag());
+  check(stopped.read_u64(0x1410).kind == grc::CalibWord::unmapped,
+        "stopped reader returns unmapped without a memory read");
+}
 void test_shutdown() {
   install();
   grc::IdentityDigest digest;
@@ -277,6 +439,8 @@ int main() {
   test_digest("matched", true, "fingerprint-unavailable", true, 0x150000000, 0x7ff600000000);
   test_digest("matched", true, "", true, 0x140000000, 0x140000000, true);
   test_digest("matched", true, "", false, 0x7ff600000000, 0x7ff600000000, true);
+  for (int phase = 0; phase < 5; ++phase) test_worker_scan(phase);
+  test_shutdown_scan();
   test_shutdown(); test_deinit_queued(); test_sync();
   std::printf("rs_identity_test: %d checks, %d failures\n", checks, failures);
   return failures ? 1 : 0;

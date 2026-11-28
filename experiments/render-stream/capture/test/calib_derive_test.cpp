@@ -106,6 +106,39 @@ void synthetic() {
   run(repeats, ambiguous, false, "prefix is ambiguous");
 }
 
+void phase_times() {
+  // Compare successful derivation and refusals in each phase, including their check order.
+  for (int phase = 0; phase < 5; ++phase) {
+    Memory memory;
+    auto abi = table();
+    if (phase == 1) memory.words[0x1408] = 0;
+    if (phase == 2) { memory.words[0x1480] = 0; memory.words[0x1488] = 0x1200; }
+    if (phase == 3) memory.words[0x1420] = 0;
+    if (phase == 4) abi.wanted_slots = {{"hook", 0}};
+    grc::Calibration plain, timed;
+    plain.version_string = timed.version_string = "supplied identity";
+    std::vector<grc::CheckResult> plain_checks, timed_checks;
+    std::string plain_error, timed_error;
+    grc::DerivePhaseTimes times;
+    const bool plain_ok = grc::derive_calibration(memory, 0x1410, abi, &plain, &plain_checks, &plain_error);
+    const bool timed_ok = grc::derive_calibration(memory, 0x1410, abi, &timed, &timed_checks, &timed_error, &times);
+    expect(plain_ok == (phase == 0) && timed_ok == plain_ok && timed_error == plain_error,
+           "timing preserves derivation result and error");
+    bool same_checks = plain_checks.size() == timed_checks.size();
+    for (size_t i = 0; same_checks && i < plain_checks.size(); ++i)
+      same_checks = plain_checks[i].name == timed_checks[i].name &&
+                    plain_checks[i].ok == timed_checks[i].ok &&
+                    plain_checks[i].detail == timed_checks[i].detail;
+    expect(same_checks, "timing preserves check names, details and order");
+    expect(grc::serialize_derived_calibration(plain, abi) == grc::serialize_derived_calibration(timed, abi),
+           "timing preserves serialized record bytes");
+    expect(times.typeinfo_ns > 0 && (times.abstract_ns > 0) == (phase != 1) &&
+           (times.slots_ns > 0) == (phase == 0 || phase >= 3) &&
+           (times.anchors_ns > 0) == (phase == 0 || phase == 4),
+           "timing records reached phases on success and refusal");
+  }
+}
+
 bool file_record(const std::string &abi, const std::string &binary, const std::string &brand,
                  const std::string &flavor, std::string *record, std::string *error, uint32_t cpu = 0) {
   grc::AbiTable t;
@@ -177,6 +210,7 @@ int main(int argc, char **argv) {
     std::fwrite(record.data(), 1, record.size(), stdout); return 0;
   }
   synthetic();
+  phase_times();
   if (argc == 2) parity(argv[1]);
   std::printf("calib_derive: %d passed, %d failed\n", passed, failed);
   return failed ? 1 : 0;

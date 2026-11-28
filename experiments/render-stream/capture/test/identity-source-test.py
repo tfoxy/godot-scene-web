@@ -18,18 +18,37 @@ class IdentitySource(unittest.TestCase):
 
     def test_derived_waits_for_identity_and_consumes_worker_digest(self):
         attempt = ENTRY.split("bool attempt(const char *phase) {", 1)[1]
+        consumer = attempt.index("const auto &scan = result.scan;")
+        self.assertLess(attempt.index("if (g_state.identity_pending) return false;"), consumer)
+        self.assertLess(consumer, attempt.index("check_slot_mask("))
+        worker = attempt.split("auto result = compute_windows_image_digest(path, derived);", 1)[1]
+        worker = worker.split("return result;", 1)[0]
+        for forbidden in ("singleton_object", "check_behaviour", "check_slot_mask"):
+            self.assertNotIn(forbidden, worker)
+        self.assertIn("derive_live_identity(", worker)
+        self.assertIn("CalibLiveReader reader(copy)", worker)
+        self.assertIn("derive_live_scan(", worker)
+        self.assertIn("g_identity_digest.stop_flag()", worker)
         self.assertLess(attempt.index("if (g_state.identity_pending) return false;"),
                         attempt.index("derive_live_calibration("))
         self.assertLess(attempt.index('return false;\n        } catch'),
                         attempt.index("derive_live_calibration("))
         self.assertIn("compute_windows_image_digest(path, derived)", attempt)
-        self.assertIn("[path, derived]", attempt)
-        self.assertIn("&error, g_state.fingerprint_async)", attempt)
-        derive = attempt.split("if (!derive_live_calibration(", 1)[1].split("g_state.derived_record", 1)[0]
+        self.assertIn("&error, g_state.fingerprint_async, &derive_times)", attempt)
+        derive = attempt.split("if (!derive_ok)", 1)[1].split("g_state.derived_record", 1)[0]
         self.assertIn('refuse("derive-failed");', derive)
 
+    def test_async_scan_has_no_synchronous_fallback_and_checks_vptr(self):
+        attempt = ENTRY.split("bool attempt(const char *phase) {", 1)[1]
+        consumer = attempt.split("const auto &scan = result.scan;", 1)[1]
+        consumer = consumer.split("} else if (!load_abi_table(", 1)[0]
+        self.assertNotIn("derive_live_calibration(", consumer)
+        self.assertIn("vptr != result.derive_vptr", consumer)
+        self.assertIn('fail("derive_vptr", "RenderingServer vptr changed during identity worker scan")', consumer)
+        self.assertLess(consumer.index("vptr != result.derive_vptr"), consumer.index("g_state.calib = scan.calib"))
+
     def test_async_pe_derivation_never_falls_back_to_file_hash(self):
-        live = (ROOT / "calib_live.cpp").read_text().split("bool derive_live_calibration(", 1)[1]
+        live = (ROOT / "calib_live.cpp").read_text()
         guard = 'if (pe && require_exe_sha256 && fp.exe_sha256.empty())'
         self.assertIn(guard, live)
         self.assertLess(live.index(guard), live.index("CalibLiveReader reader(fp)"))
@@ -57,6 +76,10 @@ class IdentitySource(unittest.TestCase):
             self.assertLess(shutdown.index("g_identity_digest.shutdown();"), shutdown.index("audio::shutdown();"))
         deinit = ENTRY.split("void deinitialize(", 1)[1]
         self.assertLess(deinit.index("g_identity_event.clear();"), deinit.index("cap::gd_capture_unregister();"))
+
+    def test_shutdown_latch_avoids_macos_11_atomic_wait_apis(self):
+        digest = (ROOT / "rs_identity_digest.h").read_text()
+        self.assertNotRegex(digest, r"stopped_\.(?:notify_all|notify_one|wait)\s*\(")
 
     def test_linux_collector_keeps_synchronous_path(self):
         collector = (ROOT / "calib.cpp").read_text().split("bool defer_windows_digest) {", 1)[1]

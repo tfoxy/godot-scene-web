@@ -5728,6 +5728,23 @@ bool attempt(const char *phase) {
   }
   if (!g_state.identity_checked) {
   const bool derived = g_state.calibration_source == "derived";
+  DerivePhaseTimes derive_times;
+  uint64_t slot_mask_ns = 0, behaviour_ns = 0, worker_scan_ns = 0;
+  const auto log_derive_times = [&] {
+    if (!derived) return;
+    std::printf("[grc] derive: identity %.3f reader %.3f singleton %.3f typeinfo %.3f "
+                "abstract %.3f slots %.3f anchors %.3f slot_mask %.3f behaviour %.3f worker_scan %.3f ms; "
+                "readonly %llu ranges %llu bytes; readable %llu ranges\n",
+                derive_times.identity_ns / 1e6, derive_times.reader_ns / 1e6,
+                derive_times.singleton_ns / 1e6, derive_times.typeinfo_ns / 1e6,
+                derive_times.abstract_ns / 1e6, derive_times.slots_ns / 1e6,
+                derive_times.anchors_ns / 1e6, slot_mask_ns / 1e6, behaviour_ns / 1e6,
+                worker_scan_ns / 1e6,
+                static_cast<unsigned long long>(derive_times.readonly_range_count),
+                static_cast<unsigned long long>(derive_times.readonly_bytes),
+                static_cast<unsigned long long>(derive_times.readable_range_count));
+    std::fflush(stdout);
+  };
   if (g_state.calibration_path.empty() && !derived) {
     refuse("no-calibration");
     return true;
@@ -5764,13 +5781,75 @@ bool attempt(const char *phase) {
         g_api->wait_for_identity(g_state.mode == "detached");
         try {
           const auto path = g_state.fp.exe_path;
-          g_identity_digest.start(g_state.fp.platform, g_state.mode, [path, derived] {
+          const auto fp = g_state.fp;
+          AbiTable table;
+          std::string table_error;
+          const bool table_ok = !derived || load_abi_table(g_state.abi_table_path, &table, &table_error);
+          uint64_t vptr = 0, singleton_ns = 0;
+          bool singleton_present = false;
+          if (derived) {
+            const auto singleton_start = rs::warm_now_ns();
+            void *singleton = singleton_object("RenderingServer");
+            singleton_present = singleton != nullptr;
+            if (singleton) std::memcpy(&vptr, singleton, sizeof(vptr));
+            singleton_ns = rs::warm_now_ns() - singleton_start;
+          }
+          g_identity_digest.start(g_state.fp.platform, g_state.mode,
+                                  [path, derived, fp, table, table_ok, table_error,
+                                   vptr, singleton_present, singleton_ns] {
             const auto start = rs::warm_now_ns();
             auto result = compute_windows_image_digest(path, derived);
             std::printf("[grc] fingerprint: image hash %.3f ms over %llu bytes (worker)\n",
                         (rs::warm_now_ns() - start) / 1e6,
                         static_cast<unsigned long long>(result.bytes));
             std::fflush(stdout);
+            if (derived) {
+              const auto scan_start = rs::warm_now_ns();
+              result.derive_table = table;
+              result.derive_table_ok = table_ok;
+              result.derive_abi_error = table_error;
+              result.derive_vptr = vptr;
+              result.derive_singleton_present = singleton_present;
+              DerivePhaseTimes times;
+              times.singleton_ns = singleton_ns;
+              if (result.ok && table_ok && vptr && !g_identity_digest.stopped()) {
+                auto copy = fp;
+                std::string error;
+                if (resolve_windows_image_digest(&copy, result, &error)) {
+                  Calibration identity;
+                  std::vector<CheckResult> checks;
+                  auto phase_start = rs::warm_now_ns();
+                  const bool identity_ok = derive_live_identity(copy, true, &identity, &checks, &error);
+                  times.identity_ns = rs::warm_now_ns() - phase_start;
+                  auto &scan = result.scan;
+                  scan.attempted = true;
+                  if (identity_ok && !g_identity_digest.stopped()) {
+                    phase_start = rs::warm_now_ns();
+                    CalibLiveReader reader(copy);
+                    const auto ranges = reader.readonly_ranges();
+                    times.readonly_range_count = ranges.size();
+                    for (auto [lo, hi] : ranges) times.readonly_bytes += hi - lo;
+                    times.readable_range_count = reader.readable_range_count();
+                    times.reader_ns = rs::warm_now_ns() - phase_start;
+                    if (!reader.error().empty()) error = "live reader: " + reader.error();
+                    else if (ranges.empty()) error = "no read-only main-image mappings";
+                    else {
+                      StoppableCalibReader memory(reader, g_identity_digest.stop_flag());
+                      derive_live_scan(memory, vptr, table, std::move(identity), &scan);
+                    }
+                    if (!error.empty()) checks.push_back({"derive_typeinfo", false, error});
+                  }
+                  scan.checks.insert(scan.checks.begin(), checks.begin(), checks.end());
+                  if (!error.empty()) scan.error = error;
+                  times.typeinfo_ns = scan.times.typeinfo_ns;
+                  times.abstract_ns = scan.times.abstract_ns;
+                  times.slots_ns = scan.times.slots_ns;
+                  times.anchors_ns = scan.times.anchors_ns;
+                }
+              }
+              result.scan.times = times;
+              result.scan_ns = rs::warm_now_ns() - scan_start;
+            }
             return result;
           }, [] { g_identity_event.post(); });
           return false;
@@ -5791,6 +5870,7 @@ bool attempt(const char *phase) {
       g_state.derive_error = error;
       g_state.checks.push_back({"derive_census", true, "not-run"});
       g_state.checks.push_back({"derive_identity", false, error});
+      log_derive_times();
     }
     refuse(derived ? "derive-failed" : "fingerprint-unavailable");
     return true;
@@ -5801,7 +5881,7 @@ bool attempt(const char *phase) {
     refuse("fingerprint-mismatch");
     return true;
   }
-  if (singleton_object("RenderingServer") == nullptr) {
+  if (!(derived && g_state.fingerprint_async) && singleton_object("RenderingServer") == nullptr) {
     // Startup-loaded extensions reach SCENE initialisation before the engine
     // singletons are registered. Not a failure yet: retry from the startup and
     // frame callbacks.
@@ -5811,29 +5891,72 @@ bool attempt(const char *phase) {
   }
   if (derived) {
     AbiTable table;
-    if (!load_abi_table(g_state.abi_table_path, &table, &error)) {
+    bool derive_ok = false;
+    if (g_state.fingerprint_async) {
+      ImageDigestResult result;
+      if (!g_identity_digest.result(&result)) return false;
+      const auto &scan = result.scan;
+      derive_times = scan.times;
+      worker_scan_ns = result.scan_ns;
+      table = result.derive_table;
+      const auto fail = [&](const char *name, const std::string &detail) {
+        g_state.checks.push_back({"derive_census", true, "not-run"});
+        g_state.checks.push_back({name, false, detail});
+        error = detail;
+      };
+      if (!result.derive_table_ok) {
+        fail("derive_abi_table", result.derive_abi_error);
+      } else if (!result.derive_singleton_present || !result.derive_vptr) {
+        fail("derive_typeinfo", "RenderingServer singleton unavailable");
+      } else {
+        const auto singleton_start = rs::warm_now_ns();
+        void *singleton = singleton_object("RenderingServer");
+        uint64_t vptr = 0;
+        if (singleton) std::memcpy(&vptr, singleton, sizeof(vptr));
+        derive_times.singleton_ns += rs::warm_now_ns() - singleton_start;
+        if (!singleton) {
+          fail("derive_typeinfo", "RenderingServer singleton unavailable");
+        } else if (vptr != result.derive_vptr) {
+          fail("derive_vptr", "RenderingServer vptr changed during identity worker scan");
+        } else if (!scan.attempted) {
+          fail("derive_typeinfo", "identity worker scan unavailable");
+        } else {
+          g_state.checks.insert(g_state.checks.end(), scan.checks.begin(), scan.checks.end());
+          derive_ok = scan.ok;
+          error = scan.error;
+          if (derive_ok) g_state.calib = scan.calib;
+        }
+      }
+    } else if (!load_abi_table(g_state.abi_table_path, &table, &error)) {
       g_state.checks.push_back({"derive_census", true, "not-run"});
       g_state.checks.push_back({"derive_abi_table", false, error});
-      g_state.derive_error = error;
-      log_line("derive: " + error);
-      refuse("derive-failed");
-      return true;
+    } else {
+      derive_ok = derive_live_calibration(table, g_state.fp, &g_state.calib, &g_state.checks,
+                                          &error, g_state.fingerprint_async, &derive_times);
     }
-    if (!derive_live_calibration(table, g_state.fp, &g_state.calib, &g_state.checks,
-                                 &error, g_state.fingerprint_async)) {
+    if (!derive_ok) {
       g_state.derive_error = error;
+      log_derive_times();
       log_line("derive: " + error);
       refuse("derive-failed");
       return true;
     }
     g_state.derived_record = serialize_derived_calibration(g_state.calib, table);
   }
-  if (!check_slot_mask(g_state.calib, g_state.fp, &g_state.facts, &g_state.checks,
-                       &g_state.shadow)) {
+  const auto slot_mask_start = derived ? rs::warm_now_ns() : 0;
+  const bool slot_mask_ok = check_slot_mask(g_state.calib, g_state.fp, &g_state.facts, &g_state.checks,
+                                           &g_state.shadow);
+  if (derived) slot_mask_ns = rs::warm_now_ns() - slot_mask_start;
+  if (!slot_mask_ok) {
+    log_derive_times();
     refuse("slot-mask-mismatch");
     return true;
   }
-  if (!check_behaviour(g_state.calib, g_state.facts, &g_state.checks)) {
+  const auto behaviour_start = derived ? rs::warm_now_ns() : 0;
+  const bool behaviour_ok = check_behaviour(g_state.calib, g_state.facts, &g_state.checks);
+  if (derived) behaviour_ns = rs::warm_now_ns() - behaviour_start;
+  log_derive_times();
+  if (!behaviour_ok) {
     refuse("behaviour-mismatch");
     return true;
   }

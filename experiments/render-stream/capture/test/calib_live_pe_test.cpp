@@ -197,11 +197,28 @@ void main_module() {
         c.codeview_id == fp.codeview_id && c.codeview_id_present == !fp.codeview_id.empty() &&
         c.dynamic_base == fp.dynamic_base, "all Windows derived record identities");
   const auto sync_record = serialize_derived_calibration(c, table());
+  const auto sync_checks = checks;
   const auto digest = compute_windows_image_digest(fp.exe_path, true);
   check(digest.ok && digest.whole_file_hex == c.sha256,
         "shared PE pass produces the identical whole-file derived identity");
   check(resolve_windows_image_digest(&fp, digest, &error) && fp.exe_sha256 == c.sha256,
         "worker whole-file digest lands in fingerprint before derivation");
+  Calibration identity;
+  std::vector<CheckResult> split_checks;
+  check(derive_live_identity(fp, true, &identity, &split_checks, &error),
+        "split Windows identity consumes the supplied worker digests");
+  CalibLiveReader reader(fp);
+  LiveDeriveScan scan;
+  derive_live_scan(reader, reinterpret_cast<uint64_t>(vptr), table(), identity, &scan);
+  split_checks.insert(split_checks.end(), scan.checks.begin(), scan.checks.end());
+  bool identical = split_checks.size() == sync_checks.size();
+  for (size_t i = 0; identical && i < sync_checks.size(); ++i)
+    identical = split_checks[i].name == sync_checks[i].name &&
+                split_checks[i].ok == sync_checks[i].ok &&
+                split_checks[i].detail == sync_checks[i].detail;
+  check(scan.attempted && scan.ok && identical &&
+        serialize_derived_calibration(scan.calib, table()) == sync_record,
+        "split and synchronous Windows live paths have byte-identical records and checks");
   // Preserve the executable name (and therefore flavor) while making any file hash fail.
   const auto slash = fp.exe_path.find_last_of("/\\");
   fp.exe_path = "Z:\\missing-derived-test\\" + fp.exe_path.substr(slash + 1);
