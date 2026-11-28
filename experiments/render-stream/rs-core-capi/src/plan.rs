@@ -182,6 +182,15 @@ pub struct Payloads<'a> {
     pub version: u8,
 }
 
+/// Fallible reads finish before any planner state changes. Payload bytes stay borrowed and each
+/// upload is decoded once; empty maps allocate nothing on an apply without uploads.
+#[derive(Default)]
+struct Prepared<'a> {
+    textures: BTreeMap<Id, TexturePayload<'a>>,
+    meshes: BTreeMap<(Id, usize), MeshPayload<'a>>,
+    shaders: BTreeMap<Id, &'a str>,
+}
+
 impl Payloads<'_> {
     fn texture(&self, h: &Hash) -> Result<TexturePayload<'_>, String> {
         let bytes = self.provided.get(h).ok_or_else(|| missing(h))?;
@@ -1484,6 +1493,74 @@ impl Planner {
 
     // ------------------------------------------------------------------------- apply
 
+    fn prepare<'a>(
+        &self,
+        st: &ResolvedState,
+        payloads: &'a Payloads,
+        textures: &[Id],
+        meshes: &[Id],
+        shaders: &BTreeSet<Id>,
+    ) -> Result<Prepared<'a>, String> {
+        let mut out = Prepared::default();
+        for id in textures {
+            let Some(e) = st.textures.get(id) else {
+                continue;
+            };
+            if e.status != EntryStatus::Ok || e.kind != TextureKind::Image {
+                continue;
+            }
+            let Some(chosen) = self.delivery.select(e) else {
+                continue;
+            };
+            let resident = self.textures.get(id);
+            let kept = resident.is_some_and(|t| {
+                t.kind == TexKind::Image
+                    && (t.hash == Some(chosen.hash)
+                        || t.hash.is_some_and(|r| self.delivery.keeps(e, r, t.version)))
+            }) && !self.sab.reupload;
+            let stale = self.sab.stale_texture
+                && resident.is_some_and(|t| t.kind == TexKind::Image && &*t.format == "RGBA8");
+            if kept || stale {
+                continue;
+            }
+            let decoded = if chosen.encoding == "uastc" {
+                payloads.ktx2(&chosen.hash, e)?
+            } else {
+                payloads.texture(&chosen.hash)?
+            };
+            out.textures.insert(*id, decoded);
+        }
+        for id in meshes {
+            let Some(e) = st.meshes.get(id) else {
+                continue;
+            };
+            if e.status != EntryStatus::Ok || e.is_dynamic() {
+                continue;
+            }
+            for (k, h) in e.surfaces.iter().filter_map(|s| s.hash).enumerate() {
+                let kept = self
+                    .meshes
+                    .get(id)
+                    .filter(|m| m.hashes.get(k) == Some(&h))
+                    .is_some_and(|m| m.surfaces.get(k).is_some());
+                if !kept {
+                    out.meshes.insert((*id, k), payloads.mesh(&h)?);
+                }
+            }
+        }
+        for id in shaders {
+            let e = &st.shaders[id];
+            let current = self.shaders.get(id).is_some_and(|s| s.hash == e.hash);
+            if !current && e.source == Some(ShaderSource::Payload) {
+                let h = e
+                    .hash
+                    .ok_or_else(|| format!("resource-invalid: shader {id} names no payload"))?;
+                out.shaders.insert(*id, payloads.shader(&h)?);
+            }
+        }
+        Ok(out)
+    }
+
     fn texture_rid(&self, st: &ResolvedState, id: Id) -> (RidRef, u64) {
         match (st.textures.get(&id), self.textures.get(&id)) {
             (Some(e), Some(t)) if e.status == EntryStatus::Ok => {
@@ -1585,6 +1662,9 @@ impl Planner {
         let mattex_now = self.indirect_textures(st, &s, &mats_now, &shaders_now);
         let mm_meshes_now = self.mm_meshes_now(st, &s);
         let (tex_cands, mesh_cands) = self.candidates(st, &s, &mattex_now, &mm_meshes_now);
+        // A failed plan is never executed. Leave both RID ownership and dirty tracking intact
+        // on error, including frees/creates that would otherwise precede a later payload read.
+        let mut prepared = self.prepare(st, payloads, &tex_cands, &mesh_cands, &shaders_now)?;
         // PM2: every multimesh to look at: touched, newly (un)named, or resident (a handful; a
         // resident one's mesh RID may have changed with no multimesh entry moving).
         let mut mm_cands: BTreeSet<Id> = s.mm.keys().copied().collect();
@@ -1615,6 +1695,7 @@ impl Planner {
         let mut extra_items: BTreeSet<Id> = s.items.iter().map(|(id, _)| *id).collect();
         self.commit(s, mattex_now, mm_meshes_now);
         let mut tex_rid_changed = false;
+        let mut texture_kind_changed = BTreeSet::new();
         let mut canvas_bind: BTreeSet<Id> = BTreeSet::new();
 
         // Textures: free what left the table or became a tombstone, then the named ones.
@@ -1633,8 +1714,22 @@ impl Planner {
                 .textures
                 .get(&id)
                 .is_none_or(|e| e.status == EntryStatus::Freed);
-            if !gone {
+            // CanvasTextures and 2D textures have different RID owners. texture_replace
+            // accepts only 2D RIDs; crossing that boundary needs a free and a fresh RID.
+            let cross_kind = st.textures.get(&id).is_some_and(|e| {
+                e.status == EntryStatus::Ok
+                    && matches!(
+                        e.kind,
+                        TextureKind::Canvas | TextureKind::Image | TextureKind::Placeholder
+                    )
+                    && (e.kind == TextureKind::Canvas)
+                        != (self.textures[&id].kind == TexKind::Canvas)
+            });
+            if !gone && !cross_kind {
                 continue;
+            }
+            if cross_kind {
+                texture_kind_changed.insert(id);
             }
             self.clear_channel_caches(id, ops);
             let t = self.textures.remove(&id).unwrap();
@@ -1776,11 +1871,7 @@ impl Planner {
                     {
                         continue;
                     }
-                    let p = if chosen.encoding == "uastc" {
-                        payloads.ktx2(&hash, e)?
-                    } else {
-                        payloads.texture(&hash)?
-                    };
+                    let p = prepared.textures.remove(&id).expect("prepared texture");
                     let image = |ops: &mut OpBuf| {
                         ops.u(image_format(&p.format) as u32);
                         ops.i64(p.width);
@@ -1925,12 +2016,13 @@ impl Planner {
         self.apply_meshes(
             st,
             payloads,
+            &mut prepared,
             ops,
             &mut c,
             &mut mesh_uploads,
             &touched,
             &mesh_cands,
-        )?;
+        );
         // PM2: multimeshes, once their meshes are resident.
         let mm_rid_changed = self.apply_multimeshes(st, payloads, ops, &mut c, &mm_cands);
         // PM6a: emitters that stop being resident are freed before their materials may be.
@@ -1944,12 +2036,13 @@ impl Planner {
         self.apply_shaders(
             st,
             payloads,
+            &prepared,
             ops,
             &mut c,
             &mut skipped_shaders,
             &touched,
             &shaders_now,
-        )?;
+        );
         let mut shaders_moved: BTreeSet<Id> = touched.shaders.clone();
         for (id, h) in &handles_before {
             if self.shaders.get(id).map(|s| s.handle) != Some(*h) {
@@ -2255,6 +2348,19 @@ impl Planner {
         // changed with it).
         // PM6a: likewise an item naming an emitter made or freed here.
         let mut rid_items: BTreeSet<Id> = BTreeSet::new();
+        // A cross-kind recreation changes the RID captured by existing draw commands even
+        // when their content_version stayed the same. Visit dependents only on this rare path.
+        if !texture_kind_changed.is_empty() {
+            for (&item, named) in &self.named {
+                if named
+                    .textures
+                    .iter()
+                    .any(|id| texture_kind_changed.contains(id))
+                {
+                    rid_items.insert(item);
+                }
+            }
+        }
         for mm in &mm_rid_changed {
             rid_items.extend(self.mm_items.get(mm).into_iter().flatten().copied());
         }
@@ -2361,12 +2467,13 @@ impl Planner {
         &mut self,
         st: &ResolvedState,
         payloads: &Payloads,
+        prepared: &mut Prepared,
         ops: &mut OpBuf,
         c: &mut Counters,
         uploads: &mut MeshUploadRows,
         touched: &Touched,
         cands: &[Id],
-    ) -> Result<(), String> {
+    ) {
         let free: Vec<Id> = if self.full_scan {
             self.meshes.keys().copied().collect()
         } else {
@@ -2422,7 +2529,9 @@ impl Planner {
                     .cloned();
                 match kept {
                     Some(s) => decoded.push(s),
-                    None => decoded.push(SurfaceBytes::of(&payloads.mesh(h)?)),
+                    None => decoded.push(SurfaceBytes::of(
+                        &prepared.meshes.remove(&(id, k)).expect("prepared mesh"),
+                    )),
                 }
             }
             let layouts: Vec<Layout> = decoded.iter().map(|s| s.layout.clone()).collect();
@@ -2574,7 +2683,6 @@ impl Planner {
                 });
             }
         }
-        Ok(())
     }
 
     /// W11d (render-stream-11.md "Receivers", W11c's residency rule): one named `ok` dynamic mesh,
@@ -3212,12 +3320,13 @@ impl Planner {
         &mut self,
         st: &ResolvedState,
         payloads: &Payloads,
+        prepared: &Prepared,
         ops: &mut OpBuf,
         c: &mut Counters,
         skipped: &mut Vec<SkippedShader>,
         touched: &Touched,
         named: &BTreeSet<Id>,
-    ) -> Result<(), String> {
+    ) {
         let free: Vec<Id> = if self.full_scan {
             self.shaders.keys().copied().collect()
         } else {
@@ -3243,9 +3352,7 @@ impl Planner {
             let current = self.shaders.get(&id).is_some_and(|s| s.hash == hash);
             let mut code: &str = "";
             if !current && e.source == Some(ShaderSource::Payload) {
-                let h =
-                    hash.ok_or_else(|| format!("resource-invalid: shader {id} names no payload"))?;
-                code = payloads.shader(&h)?;
+                code = prepared.shaders[&id];
             } else if !current && e.source == Some(ShaderSource::Withheld) {
                 let key = hash.map(|h| h.to_hex()).unwrap_or_default();
                 match payloads.library.get(&key) {
@@ -3369,7 +3476,6 @@ impl Planner {
                 c.default_texture_sets += 1;
             }
         }
-        Ok(())
     }
 
     /// MRA: the named materials `apply_materials` visits: all of them under `full_scan` (the walk

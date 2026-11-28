@@ -18,14 +18,17 @@
 #include <array>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <map>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "gdextension_interface.h"
 #include "rs_core_capi.h"
+#include "ct_ledger.h"
 
 #ifdef __EMSCRIPTEN__
 #include <emscripten/em_js.h>
@@ -667,6 +670,7 @@ EM_JS(void, index_region_guard_end, (), {
 
 struct Instance {
   RsCore *core = nullptr;
+  std::unique_ptr<CtLedger> ct_ledger;
   uint64_t viewport = 0;
   uint64_t root_canvas = 0;
   std::vector<uint64_t> rids[6];
@@ -704,6 +708,11 @@ struct Instance {
     std::vector<uint64_t> &t = rids[kind];
     if (handle >= t.size()) t.resize(static_cast<size_t>(handle) + 1, 0);
     return t[handle];
+  }
+  void texture_slot(uint32_t handle, uint64_t rid, bool canvas = false) {
+    auto &previous = slot(rsc::KIND_TEXTURE, handle);
+    if (ct_ledger) ct_ledger->write(previous, rid, handle, canvas);
+    previous = rid;
   }
   uint64_t rid(uint32_t word) {
     uint32_t kind = word >> 29;
@@ -1218,6 +1227,7 @@ int64_t execute(Instance *inst) {
         uint32_t word = r.u();
         uint64_t rid = inst->rid(word);
         rs_call(RS_FREE_RID, {&rid});
+        if (inst->ct_ledger) inst->ct_ledger->free(rid);
         uint32_t kind = word >> 29;
         if (kind < 6) inst->slot(kind, word & ((1u << 29) - 1)) = 0;
         break;
@@ -1226,13 +1236,14 @@ int64_t execute(Instance *inst) {
         uint32_t h = r.u();
         uint64_t rid = 0;
         rs_call(RS_TEXTURE_2D_PLACEHOLDER_CREATE, {}, &rid);
-        inst->slot(rsc::KIND_TEXTURE, h) = rid;
+        inst->texture_slot(h, rid);
         break;
       }
       case rsc::TextureReplaceWithPlaceholder: {
         uint64_t tex = r.rid();
         uint64_t placeholder = 0;
         rs_call(RS_TEXTURE_2D_PLACEHOLDER_CREATE, {}, &placeholder);
+        if (inst->ct_ledger) inst->ct_ledger->replace(tex);
         rs_call(RS_TEXTURE_REPLACE, {&tex, &placeholder});
         break;
       }
@@ -1240,7 +1251,7 @@ int64_t execute(Instance *inst) {
         uint32_t h = r.u();
         uint64_t rid = 0;
         rs_call(RS_CANVAS_TEXTURE_CREATE, {}, &rid);
-        inst->slot(rsc::KIND_TEXTURE, h) = rid;
+        inst->texture_slot(h, rid, true);
         break;
       }
       case rsc::CanvasTextureSetChannel: {
@@ -1268,7 +1279,7 @@ int64_t execute(Instance *inst) {
         uint64_t rid = 0;
         rs_call(RS_TEXTURE_2D_CREATE, {&image}, &rid);
         release_image(image);
-        inst->slot(rsc::KIND_TEXTURE, h) = rid;
+        inst->texture_slot(h, rid);
         break;
       }
       case rsc::Texture2dUpdate: {
@@ -1285,6 +1296,7 @@ int64_t execute(Instance *inst) {
         uint64_t replacement = 0;
         rs_call(RS_TEXTURE_2D_CREATE, {&image}, &replacement);
         release_image(image);
+        if (inst->ct_ledger) inst->ct_ledger->replace(tex);
         rs_call(RS_TEXTURE_REPLACE, {&tex, &replacement});
         break;
       }
@@ -2199,6 +2211,7 @@ void method_call(void *userdata, GDExtensionClassInstancePtr instance, const GDE
       auto us = [](clock::time_point a, clock::time_point b) {
         return static_cast<int64_t>(std::chrono::duration_cast<std::chrono::microseconds>(b - a).count());
       };
+      if (inst->ct_ledger) ++inst->ct_ledger->apply;
       clock::time_point t0 = clock::now();
       if (rsc_apply(inst->core) == 1) {
         clock::time_point t1 = clock::now();
@@ -2281,6 +2294,7 @@ void method_call(void *userdata, GDExtensionClassInstancePtr instance, const GDE
     case M_DISPOSE: {
       int64_t n = rsc_dispose(inst->core);
       execute(inst);
+      if (inst->ct_ledger) std::printf("%s\n", inst->ct_ledger->summary().c_str());
       ret_int(ret, n);
       return;
     }
@@ -2501,6 +2515,10 @@ GDExtensionObjectPtr create_instance(void *, GDExtensionBool) {
   StringName cls(CLASS_NAME);
   GDExtensionObjectPtr object = gd.construct_object(parent.ptr());
   auto *inst = new Instance();
+  const char *ledger = std::getenv("RS_RECEIVER_RID_LEDGER");
+  if (ledger != nullptr && std::strcmp(ledger, "1") == 0) {
+    inst->ct_ledger = std::make_unique<CtLedger>();
+  }
   inst->core = rsc_new();
   rsc_set_gl_compatibility(inst->core, rendering_is_gl_compatibility() ? 1 : 0);  // PFB
   gd.object_set_instance(object, cls.ptr(), inst);

@@ -22,6 +22,9 @@ CALIBRATION=""
 FIXTURE_DIR="$RECEIVER_DIR"
 source "$SCRIPT_DIR/lib/gamescope.sh"
 source "$SCRIPT_DIR/lib/legs.sh"
+if [ "${RS_RECEIVER_RID_LEDGER:-}" = 1 ]; then
+	LEG_ENV+=(RS_RECEIVER_RID_LEDGER=1)
+fi
 trap 'gs_teardown "$OUT/gamescope"' EXIT
 
 gs_start 640 360 "$OUT/gamescope"
@@ -36,6 +39,12 @@ for method in mobile gl_compatibility; do
 		rg -q 'ERROR:|RID allocations.*leaked|RIDs of type.*leaked' "$OUT/$method/stdout.log"; then
 		failed=$((failed + 1))
 		echo "$method: FAIL (see $OUT/$method/stdout.log)"
+	elif [ "${RS_RECEIVER_RID_LEDGER:-}" = 1 ] && {
+		! rg -q 'ct-ledger: created=[1-9][0-9]* freed=[1-9][0-9]* live=0 overwritten=0 replaced=0 \[\]' "$OUT/$method/stdout.log" ||
+		rg -q 'ct-ledger:.*(live=[1-9]|overwritten=[1-9]|replaced=[1-9])' "$OUT/$method/stdout.log";
+	}; then
+		failed=$((failed + 1))
+		echo "$method: FAIL (CanvasTexture ledger; see $OUT/$method/stdout.log)"
 	else
 		echo "$method: PASS"
 	fi

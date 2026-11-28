@@ -92,12 +92,22 @@ func _canvas_transaction(data: PackedByteArray, record: Dictionary, seq: int = 1
 			elif placeholder:
 				texture.merge({"kind": "placeholder", "hash": null, "format": null, "width": 0, "height": 0, "payload_bytes": 0}, true)
 	for id: int in [8, 9]:
-		textures.append({
+		var canvas_texture: Dictionary = {
 			"id": id, "origin": "created", "kind": "canvas", "status": "ok", "reason": null,
-			"version": 1, "hash": null, "format": null, "width": 0, "height": 0,
+			"version": seq, "hash": null, "format": null, "width": 0, "height": 0,
 			"mipmaps": false, "payload_bytes": 0,
 			"canvas": {"diffuse": 1, "filter": "default", "repeat": "default"},
-		})
+		}
+		if seq == 5:
+			if id == 8:
+				canvas_texture["kind"] = "placeholder"
+				canvas_texture["canvas"] = null
+			else:
+				# Cross the RID-owner boundary in both directions while keeping commands.
+				var image_texture: Dictionary = textures[0]
+				canvas_texture = image_texture.duplicate(true)
+				canvas_texture["id"] = id
+		textures.append(canvas_texture)
 	meta["textures"] = textures
 	var shader: PackedByteArray = _shader_payload()
 	meta["shaders"] = [{
@@ -204,6 +214,18 @@ func _run() -> void:
 			stats = applied["stats"]
 			var texture_resources: Dictionary = stats["resources"]
 			_check(mode + " changes one texture %d" % seq, texture_resources["freed" if seq == 4 else "replaced"] == 1)
+		for seq: int in [5, 6]:
+			await process_frame
+			if DisplayServer.get_name() != "headless":
+				await RenderingServer.frame_post_draw
+			accepted = applier.accept(_canvas_transaction(data, transaction_record, seq), 0)
+			errors = accepted["errors"]
+			_check(mode + " accepts kind flip %d" % seq, errors.is_empty())
+			applied = view._fetch_and_apply(seq, 1)
+			_check(mode + " applies kind flip %d" % seq, applied["ok"])
+			stats = applied["stats"]
+			var changed: Dictionary = stats["resources"]
+			_check(mode + " recreates both RID kinds %d" % seq, changed["freed"] == 2 and changed["created"] >= 2)
 		if mode == "reconnect":
 			var before: int = applier.owned_rids()
 			view.set("_reconnect_record", {})

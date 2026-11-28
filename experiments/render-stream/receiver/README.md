@@ -165,6 +165,17 @@ mise exec -- godot --headless --path experiments/render-stream/receiver --script
 mise exec -- godot --headless --path experiments/render-stream/receiver --script res://tests/live_quit_selftest.gd
 ```
 
+Set `RS_RECEIVER_RID_LEDGER=1` before creating a receiver to track executor CanvasTexture RIDs.
+After dispose frees its RIDs, `ct-ledger` reports creation/free counts, live RIDs (up to 32, with
+handle and apply count), texture slot overwrites, and replace calls targeting a CanvasTexture.
+The setting is read once per instance; disabled instances keep no ledger and print no line.
+Run `bash experiments/render-stream/receiver/tests/run-ct-ledger-test.sh` for the Godot-free
+missing-free/overwrite/replace diagnostic test. To check actual teardown with the ledger enabled:
+
+```bash
+RS_RECEIVER_RID_LEDGER=1 bash experiments/render-stream/receiver/tests/run-teardown-selftest.sh "$PWD/.local/teardown-ct"
+```
+
 ## `applied.json`
 
 Schema `render-stream-receiver-applied/<n>`. Top level: `status`, `mode`, `recording`, `streams[]`
