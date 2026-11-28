@@ -612,6 +612,75 @@ fn an_opaque_cover_leaves_what_it_hides_out_of_the_list() {
     assert!(!a.list.dirty.draws);
 }
 
+/// Switching tiles refreshes only depth tables, including without another transaction.
+#[test]
+fn cover_tiles_switch_matches_fresh_replay() {
+    use sha2::{Digest, Sha256};
+    fn make() -> Applier {
+        let mut vp = viewport();
+        vp.width = 256;
+        vp.height = 256;
+        let mut a = Applier::new(vp);
+        a.set_cover_min_area(0);
+        a.set_cover_tiles_min_hidden(1);
+        a
+    }
+    let mut states = Vec::new();
+    let mut s = state_with(vec![
+        item(1, ON_ROOT, rect_cmds([0.0, 0.0, 256.0, 256.0], [1.0, 0.0, 0.0, 0.5])),
+        item(2, ON_ROOT, rect_cmds([0.0, 0.0, 160.0, 256.0], [0.0, 1.0, 0.0, 1.0])),
+        // Exercise the whole-draw compaction/shown memo beside the depth tables.
+        item(3, ON_ROOT, rect_cmds([8.0, 8.0, 4.0, 4.0], [1.0, 0.0, 0.0, 0.5])),
+        item(4, ON_ROOT, rect_cmds([0.0, 0.0, 160.0, 256.0], [0.0, 0.0, 1.0, 1.0])),
+    ]);
+    let store = PayloadStore::default();
+    let mut a = make();
+    for (step, on) in [true, false, false, true].into_iter().enumerate() {
+        a.list.consumed();
+        a.set_cover_tiles(on);
+        if step == 1 || step == 3 {
+            assert!(a.list.dirty.draws, "a switch must reach the executor");
+            assert!(a.settle_cover(), "a switch must settle without an apply");
+        }
+        let dirt = a.list.dirty.draws;
+        a.set_cover_tiles(on);
+        assert_eq!(a.list.dirty.draws, dirt, "same setting is a no-op");
+        assert!(!a.cover_due());
+        // Move an owner while off, then restore it on re-enable.
+        s.items.get_mut(&4).unwrap().xform[4] = if step == 2 { 32.0 } else { 0.0 };
+        let delta = if step == 0 { full_delta(&s) } else {
+            TxDelta { items_upserted: vec![4], ..TxDelta::default() }
+        };
+        states.push((s.clone(), delta.clone()));
+        a.apply(&s, &delta, &store);
+        a.settle_cover();
+        let mut fresh = make();
+        fresh.set_cover_tiles(on);
+        for (state, delta) in &states {
+            fresh.list.consumed();
+            fresh.apply(state, delta, &store);
+            fresh.settle_cover();
+        }
+        assert_eq!(a.list.depth_tiles, fresh.list.depth_tiles, "step {step}");
+        assert_eq!(a.list.depth_draws, fresh.list.depth_draws, "step {step}");
+        if step == 0 {
+            assert!(!a.list.depth_tiles.is_empty());
+            assert!(!a.list.depth_draws.is_empty());
+        }
+        if !on {
+            assert!(a.list.depth_tiles.is_empty());
+            assert!(a.list.depth_draws.is_empty());
+        }
+        assert!(a.cover_recheck());
+        // Compare all executor fields after consumption: toggles deliberately add dirt that
+        // a replay with a fixed setting does not have.
+        a.list.consumed();
+        fresh.list.consumed();
+        assert_eq!(Sha256::digest(format!("{:?}", a.list)),
+            Sha256::digest(format!("{:?}", fresh.list)), "step {step}");
+    }
+}
+
 /// A textured cover counts only when every texel its draw samples is opaque: an atlas region
 /// inside a transparent frame covers, one translucent texel in it does not.
 #[test]

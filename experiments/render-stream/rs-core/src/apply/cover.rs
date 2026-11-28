@@ -391,10 +391,21 @@ impl Applier {
         self.cover.groups_off = !on;
     }
 
-    /// Whether the cover walk's tile half writes depth tables into the root list (on by default;
-    /// off for A/B measurements). It changes no pixel.
+    /// Per-scene switch for the cover walk's depth tiles (on by default). It changes no pixel.
     pub fn set_cover_tiles(&mut self, on: bool) {
+        if self.cover.tiles_off == !on {
+            return;
+        }
         self.cover.tiles_off = !on;
+        self.list.dirty.draws = true;
+        self.cover.due = true;
+        if on {
+            if let Some(tiles) = self.cover.tiles.as_mut() {
+                tiles.forget();
+            }
+        }
+        // The whole-draw walk runs even with tiles off; neither its replay/classification
+        // memos nor `shown` reads depth tables or the tile setting. None needs forgetting.
     }
 
     /// The smallest hidden area, in target pixels, worth a depth test
