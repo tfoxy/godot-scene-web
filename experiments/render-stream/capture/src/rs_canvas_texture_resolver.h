@@ -79,7 +79,9 @@ class CanvasTextureResolver {
 
 // Call attach only after capture calibration, slot-mask and behaviour checks pass.
 // Main-thread attachment and materialize seams. Feature-off never binds or calls the engine.
-void canvas_texture_resolver_attach(const Calibration &, const ProcessFingerprint &);
+// Attach is idempotent per attachment: it returns true only on the call that attached, so callers
+// on a per-frame path (a deferred arm retries attempt() every frame) emit its evidence once.
+bool canvas_texture_resolver_attach(const Calibration &, const ProcessFingerprint &);
 void canvas_texture_resolver_detach();
 // Shared with the resolver's live type reader. Cached once per attachment, never per RID.
 // Call only on a rendered host; the dummy also has no RenderingDevice.

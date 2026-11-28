@@ -6318,8 +6318,10 @@ bool attempt(const char *phase) {
                   : std::string()) +
              ")");
   }
-  if (g_state.mode != "detached" && !g_state.preserve_lean) {
-    rs::canvas_texture_resolver_attach(g_state.calib, g_state.fp);
+  // A deferred arm re-enters here every frame until its defer frame: the evidence is written
+  // only by the call that attached, never once a frame.
+  if (g_state.mode != "detached" && !g_state.preserve_lean &&
+      rs::canvas_texture_resolver_attach(g_state.calib, g_state.fp)) {
     emit("canvas-texture-resolver.json", rs::canvas_texture_resolver_json());
   }
   if (g_state.mode == "standby" || g_state.mode == "detached") {
@@ -7315,8 +7317,9 @@ bool attachment_attach() {
     return false;
   }
   hooks_attachment_open();
-  rs::canvas_texture_resolver_attach(g_state.calib, g_state.fp);
-  emit("canvas-texture-resolver.json", rs::canvas_texture_resolver_json());
+  if (rs::canvas_texture_resolver_attach(g_state.calib, g_state.fp)) {
+    emit("canvas-texture-resolver.json", rs::canvas_texture_resolver_json());
+  }
   attachment_callbacks(true);
   return true;
 }

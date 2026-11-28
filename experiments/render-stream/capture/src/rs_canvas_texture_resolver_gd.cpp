@@ -204,9 +204,8 @@ class DeriveReader final : public CanvasTextureDeriveReader {
 };
 }  // namespace
 
-void canvas_texture_resolver_attach(const Calibration &calib, const ProcessFingerprint &fp) {
-  if (attachment_initialized) return;
-  attachment_initialized = true;
+// The attachment's one-time setup; every return leaves the resolver attached (possibly disabled).
+static void attach_once(const Calibration &calib, const ProcessFingerprint &fp) {
   const char *flag = rs::env("GRC_CANVAS_TEXTURE_RESOLVE");
   if (!flag || std::strcmp(flag, "1") != 0) { resolver.attach(false, nullptr, "flag-off"); return; }
   if (!resolver.permanent_failure().empty()) {
@@ -314,6 +313,13 @@ void canvas_texture_resolver_attach(const Calibration &calib, const ProcessFinge
   for (auto rid : canvases) if (rid) { const GDExtensionConstTypePtr args[] = {&rid}; call(free, args, nullptr); }
   for (auto rid : textures) if (rid) { const GDExtensionConstTypePtr args[] = {&rid}; call(free, args, nullptr); }
   call(sync_call, nullptr, nullptr);
+}
+
+bool canvas_texture_resolver_attach(const Calibration &calib, const ProcessFingerprint &fp) {
+  if (attachment_initialized) return false;
+  attachment_initialized = true;
+  attach_once(calib, fp);
+  return true;
 }
 
 bool canvas_texture_readback_requires_2d() {
