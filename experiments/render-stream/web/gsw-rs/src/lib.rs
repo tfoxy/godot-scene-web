@@ -403,6 +403,7 @@ fn parse_options(json: &str) -> Result<Opts, String> {
     }
     o.summary_log = json.contains("\"log\":\"summary\"");
     o.client_tweens = json.contains("\"client_tweens\":true");
+    o.no_cover_tiles = json.contains("\"coverTiles\":false");
     o.live_protocol = if json.contains("\"live_protocol\":19") {
         19
     } else if json.contains("\"live_protocol\":18") {
@@ -1180,6 +1181,14 @@ impl GswRs {
             let mut options = x.options();
             options.damage = on;
             x.set_options(options);
+        }
+    }
+
+    /// Per-scene depth tiles, retained across starts and live rebuilds (default on).
+    pub fn set_cover_tiles(&mut self, on: bool) {
+        self.opts.no_cover_tiles = !on;
+        if let Some(a) = self.applier.as_mut() {
+            a.set_cover_tiles(on);
         }
     }
 

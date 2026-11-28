@@ -205,6 +205,8 @@ pub fn regression_resync_recaptures_frozen_tween_from_host() {
 #[test]
 #[wasm_bindgen]
 pub fn regression_v18_live_options_keep_tweens() {
+    // The Node runner invokes exported regressions rather than libtest's WASM entry point.
+    cover_tiles_option_defaults_on_and_either_disable_wins();
     std::panic::set_hook(Box::new(|p| {
         web_sys::console::error_1(&p.to_string().into())
     }));
@@ -375,4 +377,18 @@ pub fn regression_material_rebuild_completion_and_transcode() {
         down,
         include_bytes!("../../../protocol/golden-19/mixed.to18.rs18")
     );
+}
+
+#[test]
+#[wasm_bindgen]
+pub fn cover_tiles_option_defaults_on_and_either_disable_wins() {
+    for (json, off) in [
+        ("{}", false),
+        (r#"{"coverTiles":true}"#, false),
+        (r#"{"coverTiles":false}"#, true),
+        (r#"{"sabotage":["no-cover-tiles"]}"#, true),
+        (r#"{"coverTiles":true,"sabotage":["no-cover-tiles"]}"#, true),
+    ] {
+        assert_eq!(parse_options(json).unwrap().no_cover_tiles, off, "{json}");
+    }
 }
