@@ -91,6 +91,8 @@ struct ReplayOptions<'a> {
     overrides: bool,
     digest: &'a str,
     recheck_every: usize,
+    tiles_off: bool,
+    tiles_schedule: usize,
 }
 
 /// Select game-visible drawn items so neither cover nor a previous override changes the driver.
@@ -144,6 +146,8 @@ fn replay(
         format: gsw_canvas_draw_list::Format::Rgb10A2,
     });
     a.set_deferred_cover(options.deferred_cover);
+    let mut tiles_on = !options.tiles_off;
+    a.set_cover_tiles(tiles_on);
     a.ov_sabotage.settle_skips_refresh = options.settle_skips_refresh;
     a.set_group_scissor(group_scissor);
     a.set_group_merge(group_merge != "off");
@@ -165,6 +169,11 @@ fn replay(
      -> Result<String, Error> {
         if synthetic {
             fill_cmd::register_synthetic_programs(a, v.state(), payloads, &mut programs, None)?;
+        }
+        // The first N applies use the initial setting; the next apply sees the first flip.
+        if options.tiles_schedule > 0 && applies > 0 && applies % options.tiles_schedule == 0 {
+            tiles_on = !tiles_on;
+            a.set_cover_tiles(tiles_on);
         }
         a.apply(v.state(), delta, payloads);
         applies += 1;
@@ -277,6 +286,15 @@ pub(super) fn cmd(args: &Args) -> ExitCode {
         Ok(n) => n,
         _ => return usage(),
     };
+    let tiles_off = match args.get("tiles").unwrap_or("on") {
+        "on" => false,
+        "off" => true,
+        _ => return usage(),
+    };
+    let tiles_schedule = match args.get("tiles-schedule").unwrap_or("0").parse::<usize>() {
+        Ok(n) => n,
+        _ => return usage(),
+    };
     let run = || -> Result<(), Error> {
         let data = std::fs::read(path).map_err(|e| Error::new("io", e.to_string()))?;
         let mut read = |h: &render_stream_core::state::Hash| {
@@ -287,7 +305,7 @@ pub(super) fn cmd(args: &Args) -> ExitCode {
         };
         let mut out = std::io::BufWriter::new(std::io::stdout().lock());
         let rows = replay(
-            &data, every, synthetic, args.get("group-scissor") != Some("off"), group_merge, args.get("group-cells") == Some("omit"), ReplayOptions { deferred_cover, settle_skips_refresh, overrides, digest, recheck_every }, &mut read,
+            &data, every, synthetic, args.get("group-scissor") != Some("off"), group_merge, args.get("group-cells") == Some("omit"), ReplayOptions { deferred_cover, settle_skips_refresh, overrides, digest, recheck_every, tiles_off, tiles_schedule }, &mut read,
         )?;
         if group_merge == "verify" {
             eprintln!(
