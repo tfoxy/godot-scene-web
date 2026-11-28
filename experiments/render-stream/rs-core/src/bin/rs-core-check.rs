@@ -8,10 +8,10 @@
 //!   rs-core-check bench (<recording> | --inputs <inputs.json>) [--repeats N] [--digest inline|deferred|none]
 //!   rs-core-check validate <recording>... [--version 2..17] [--recover]
 //!                          [--item-meta-asked <request json>|none] [--item-meta-dump <path>]
-//!   rs-core-check apply-bench <recording> --store <dir> [--repeats N] [--cover off] [--noop off] [--tiles off] [--programs synthetic] [--max-texture-side N]
+//!   rs-core-check apply-bench <recording> --store <dir> [--missing fail|skip] [--repeats N] [--cover off] [--noop off] [--tiles off] [--programs synthetic] [--max-texture-side N]
 //!   rs-core-check pick-bench <recording> --store <dir> [--seq N] [--repeats N]
 //!   rs-core-check profile <recording> --store <dir> [--repeats N] [--digest inline|deferred] [--clock time|allocs] [--apply-every N] [--programs synthetic]
-//!   rs-core-check apply-digests <recording> --store <dir> [--apply-every N] [--programs synthetic|unregistered] [--group-cells omit] [--overrides off|synthetic] [--digest full|loose|off] [--recheck-every N] [--cover eager|deferred] [--sabotage settle_skips_refresh]
+//!   rs-core-check apply-digests <recording> --store <dir> [--missing fail|skip] [--apply-every N] [--programs synthetic|unregistered] [--group-cells omit] [--overrides off|synthetic] [--digest full|loose|off] [--recheck-every N] [--cover eager|deferred] [--sabotage settle_skips_refresh]
 //!                              [--group-merge on|off|undo|verify] (undo hashes the unpermuted list)
 //!   rs-core-check walk-diff <recording>... [--store <dir>] [--digests <file>] [--cover 1 [--cover-every N]] [--cover-lists <file>] [--max-texture-side N]
 //!   rs-core-check material-diff <recording>... [--store <dir>] [--sabotage mra-skip-changed|mra-skip-binding] [--baseline]
@@ -103,7 +103,7 @@ fn usage() -> ExitCode {
          rs-core-check transcode --roundtrip <recording.rs12>...\n  \
          rs-core-check diff --inputs <inputs.json> [--out <dir>] [--dump <input>:<seq>]\n  \
          rs-core-check bench (<recording> | --inputs <inputs.json>) [--repeats N] [--digest inline|deferred|none]\n  \
-         rs-core-check apply-digests <recording> --store <dir> [--apply-every N] [--programs synthetic|unregistered] [--group-cells omit] [--overrides off|synthetic] [--digest full|loose|off] [--recheck-every N] [--cover eager|deferred] [--sabotage settle_skips_refresh]\n  \
+         rs-core-check apply-digests <recording> --store <dir> [--missing fail|skip] [--apply-every N] [--programs synthetic|unregistered] [--group-cells omit] [--overrides off|synthetic] [--digest full|loose|off] [--recheck-every N] [--cover eager|deferred] [--sabotage settle_skips_refresh]\n  \
          rs-core-check validate <recording>... [--version 2..17] [--item-meta-asked <json>|none] [--item-meta-dump <path>]\n  \
          rs-core-check material-diff <recording>... [--store <dir>] [--sabotage mra-skip-changed|mra-skip-binding] [--baseline]\n  \
          rs-core-check client-diff <recording>... [--store <dir>] [--sabotage ph2-skip-body-digest|ph2-skip-dep-texture|ph2-park-stale|ph2-skip-material-textures]\n  \
@@ -1065,6 +1065,11 @@ fn cmd_apply_bench(args: &Args) -> ExitCode {
         return usage();
     };
     let store = args.get("store").map(PathBuf::from);
+    let missing_skip = match args.get("missing").unwrap_or("fail") {
+        "fail" => false,
+        "skip" => true,
+        _ => return usage(),
+    };
     let repeats = args
         .get("repeats")
         .and_then(|r| r.parse::<usize>().ok())
@@ -1142,8 +1147,14 @@ fn cmd_apply_bench(args: &Args) -> ExitCode {
                                 break;
                             }
                         }
-                        let b = bytes
-                            .ok_or_else(|| wire::Error::new("resource-unavailable", h.to_hex()))?;
+                        // `--missing skip`: an absent payload stays unprovided, as for a client
+                        // whose fetch missed; base and candidate must use the same mode.
+                        let Some(b) = bytes else {
+                            if missing_skip {
+                                continue;
+                            }
+                            return Err(wire::Error::new("resource-unavailable", h.to_hex()));
+                        };
                         payloads.provide(&b, h, version, true)?;
                     }
                     if synthetic {

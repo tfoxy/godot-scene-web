@@ -91,6 +91,9 @@ struct ReplayOptions<'a> {
     overrides: bool,
     digest: &'a str,
     recheck_every: usize,
+    /// `--missing skip`: a payload absent from the store stays unprovided (as a client whose fetch
+    /// missed) instead of failing the replay. Both sides of a digest comparison must use the same mode.
+    missing_skip: bool,
 }
 
 /// Select game-visible drawn items so neither cover nor a previous override changes the driver.
@@ -151,6 +154,7 @@ fn replay(
     let mut payloads = PayloadStore::default();
     let mut retention = Retention::default();
     let mut need = Vec::new();
+    let mut missing = std::collections::HashSet::new();
     let mut rows = Vec::new();
     let mut programs = 1;
     let mut held = None;
@@ -205,8 +209,15 @@ fn replay(
                 a.prepare(v.state(), v.delta());
                 a.needed(v.state(), v.delta(), &payloads, &mut need);
                 for hash in &need {
-                    let bytes = read(hash)
-                        .ok_or_else(|| Error::new("resource-unavailable", hash.to_hex()))?;
+                    let Some(bytes) = read(hash) else {
+                        if options.missing_skip {
+                            if missing.insert(*hash) {
+                                eprintln!("missing payload skipped: {}", hash.to_hex());
+                            }
+                            continue;
+                        }
+                        return Err(Error::new("resource-unavailable", hash.to_hex()));
+                    };
                     payloads.provide(&bytes, hash, version, true)?;
                 }
                 held = if (rows.len() + 1) % every != 0 {
@@ -277,6 +288,11 @@ pub(super) fn cmd(args: &Args) -> ExitCode {
         Ok(n) => n,
         _ => return usage(),
     };
+    let missing_skip = match args.get("missing").unwrap_or("fail") {
+        "fail" => false,
+        "skip" => true,
+        _ => return usage(),
+    };
     let run = || -> Result<(), Error> {
         let data = std::fs::read(path).map_err(|e| Error::new("io", e.to_string()))?;
         let mut read = |h: &render_stream_core::state::Hash| {
@@ -287,7 +303,7 @@ pub(super) fn cmd(args: &Args) -> ExitCode {
         };
         let mut out = std::io::BufWriter::new(std::io::stdout().lock());
         let rows = replay(
-            &data, every, synthetic, args.get("group-scissor") != Some("off"), group_merge, args.get("group-cells") == Some("omit"), ReplayOptions { deferred_cover, settle_skips_refresh, overrides, digest, recheck_every }, &mut read,
+            &data, every, synthetic, args.get("group-scissor") != Some("off"), group_merge, args.get("group-cells") == Some("omit"), ReplayOptions { deferred_cover, settle_skips_refresh, overrides, digest, recheck_every, missing_skip }, &mut read,
         )?;
         if group_merge == "verify" {
             eprintln!(
