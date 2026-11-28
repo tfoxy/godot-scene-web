@@ -26,7 +26,7 @@ fi
 mkdir -p "$OUT"
 OUT="$(realpath "$OUT")"
 export GSW_QUIET_DIR="$OUT/lockdir"
-unset GSW_QUIET_LOCK RS_QUIET_LOCK_DIR RS_TIMING_CPUSET RS_BACKGROUND_CPUSET GSW_QUIET_MARKER_MAX_S
+unset GSW_QUIET_LOCK RS_QUIET_LOCK_DIR RS_TIMING_CPUSET RS_BACKGROUND_CPUSET GSW_QUIET_MARKER_MAX_S GSW_QUIET_WAIT_BUDGET_S GSW_QUIET_WAIT_LEDGER
 rm -rf "$GSW_QUIET_DIR"
 LOG="$OUT/self-test.jsonl"
 : >"$LOG"
@@ -280,6 +280,10 @@ done
 e="$(timed bash "$Q" exclusive --label bash-after-ts --log "$OUT/twin.jsonl" -- true)"
 wait "$tpid"
 check "TS twin: its hold excludes a bash exclusive (waited ${e}s >= 1.0)" fge "$e" 1.0
+
+# --- 9. bounded waits -------------------------
+source "$SCRIPT_DIR/test/quiet-fixtures/budget.sh"
+source "$SCRIPT_DIR/test/quiet-fixtures/validate-budget.sh"
 
 echo "self-test-quiet: $PASSES passed, $FAILS failed (evidence: $OUT)"
 [ "$FAILS" = 0 ]

@@ -66,6 +66,11 @@
 # Logging: every acquire, release and nested event is one JSON line, to the run's log (--log, or
 # QUIET_LOG for the bash library) and to the machine-wide <lock>.events.log.
 #
+# Wait budget: GSW_QUIET_WAIT_BUDGET_S bounds cumulative lock wait in seconds (unset/0:
+# unlimited). GSW_QUIET_WAIT_LEDGER sums successful acquisition waits across child runners;
+# without it the budget is per acquisition. Exhaustion logs wait-budget and exits 75 without
+# running the command. Nested holds do not spend or check this budget.
+#
 # Command use:
 #   quiet.sh shared    [--label L] [--log F] -- <command...>   the command under a shared hold
 #   quiet.sh exclusive [--label L] [--log F] -- <command...>   the command under an exclusive hold
@@ -216,13 +221,19 @@ quiet__last_excl_release() {
 
 # quiet__secs_us <decimal seconds>: as integer microseconds (up to 6 decimals).
 quiet__secs_us() {
+	quiet__parse_secs_us "$1"
+	printf '%s' "$QUIET__US"
+}
+
+# Builtin-only conversion for appended ledger rows; sets QUIET__US without a subshell.
+quiet__parse_secs_us() {
 	local s="$1" i f
 	i="${s%%.*}"
 	f=""
 	[ "$i" = "$s" ] || f="${s#*.}"
 	f="${f}000000"
 	f="${f:0:6}"
-	printf '%s' "$((10#${i:-0} * 1000000 + 10#$f))"
+	QUIET__US=$((10#${i:-0} * 1000000 + 10#$f))
 }
 
 # quiet__share_window_open: true while the share window after the last exclusive release is open;
@@ -340,6 +351,7 @@ quiet__defer() {
 	QUIET__CLEAN+=("$f")
 	now="$start"
 	while quiet__share_window_open; do
+		quiet__check_budget
 		quiet__alive "$owner" "$oticks" || {
 			rm -f "$f"
 			exit 0
@@ -469,10 +481,18 @@ quiet__hold() {
 		return 0
 	fi
 
+	local budget_s="${GSW_QUIET_WAIT_BUDGET_S:-0}" ledger="${GSW_QUIET_WAIT_LEDGER:-}"
+	local budget_us start_us
+	local ledger_fd="" ledger_spent_us=0
+	budget_us="$(quiet__secs_us "$budget_s")"
+	# Normalize JSON numbers (the env may contain leading zeroes or a fractional value).
+	budget_s="$(quiet__secs 0 "$budget_us")"
+	start_us="${t0/[.,]/}"
 	local fd marker="" swaiter="" sched="\"sched\":\"$QUIET_SCHED\""
 	exec {fd}>>"$QUIET_LOCK"
 	QUIET__CLEAN=()
 	trap 'rm -f "${QUIET__CLEAN[@]}"; exit 0' TERM INT HUP
+	quiet__check_budget
 	if [ "$mode" = "exclusive" ]; then
 		QUIET__DEFER_US=0
 		[ "$QUIET_SCHED" = v1 ] || quiet__defer "$owner" "$owner_ticks" "$label" "$me" "$my_ticks"
@@ -496,6 +516,7 @@ quiet__hold() {
 		fi
 		local noticed=0 polls=0
 		while quiet__live_waiter; do
+			quiet__check_budget
 			quiet__alive "$owner" "$owner_ticks" || {
 				rm -f "$swaiter"
 				exit 0
@@ -521,6 +542,7 @@ quiet__hold() {
 	local flag=-s rc noticed=0
 	[ "$mode" = "exclusive" ] && flag=-x
 	while :; do
+		quiet__check_budget
 		rc=0
 		flock -w 1 -E 75 "$flag" "$fd" || rc=$?
 		[ "$rc" = 0 ] && break
@@ -541,6 +563,8 @@ quiet__hold() {
 		# A marker refreshed while it waits, so a long but live wait never looks stale.
 		[ -z "$marker" ] || printf '%s %s %s %s %s\n' "$me" "$my_ticks" "$EPOCHSECONDS" "$owner" "$label" >"$marker"
 	done
+	quiet__check_budget
+	[ -z "$ledger_fd" ] || exec {ledger_fd}<&-
 	rm -f "$marker"
 	local t1="$EPOCHREALTIME" since="$EPOCHSECONDS"
 	local holder_file="$QUIET_HOLDERS/$me"
@@ -561,6 +585,7 @@ quiet__hold() {
 
 	local wait_s
 	wait_s="$(quiet__secs "$t0" "$t1")"
+	[ -z "$ledger" ] || printf '%s\n' "$wait_s" >>"$ledger"
 	quiet__log "$log" "\"event\":\"acquire\",$common,\"wait_s\":$wait_s,$sched,\"cpuset\":$([ -n "$cpuset" ] && quiet__json_str "$cpuset" || echo null),\"pinned\":${#QUIET__PINNED[@]}"
 	echo "acquired $wait_s"
 
@@ -597,6 +622,43 @@ quiet__holders_brief() {
 	printf '%s' "${out:-no recorded holder}"
 }
 
+# Called only inside quiet__hold (including its deferral); its locals describe this acquisition.
+quiet__check_budget() {
+	[ "$budget_us" -gt 0 ] || return 0
+	local spent_us value exhausted=0 exhausted_us=0 now_us
+	if [ -n "$ledger" ]; then
+		# Keep the cursor at EOF between polls: only new successful waits need parsing.
+		# The ledger is append-only for this invocation, including other holders' writes.
+		if [ -z "${ledger_fd:-}" ] && [ -f "$ledger" ]; then
+			exec {ledger_fd}<"$ledger"
+		fi
+		if [ -n "${ledger_fd:-}" ]; then
+			while read -r -u "$ledger_fd" value; do
+				quiet__parse_secs_us "$value"
+				ledger_spent_us=$((${ledger_spent_us:-0} + QUIET__US))
+			done
+		fi
+		if [ -f "$ledger.exhausted" ]; then
+			exhausted=1
+			while read -r value; do
+				quiet__parse_secs_us "$value"
+				[ "$QUIET__US" -le "$exhausted_us" ] || exhausted_us="$QUIET__US"
+			done <"$ledger.exhausted"
+		fi
+	fi
+	now_us="${EPOCHREALTIME/[.,]/}"
+	spent_us=$((${ledger_spent_us:-0} + 10#$now_us - start_us))
+	[ "$exhausted_us" -le "$spent_us" ] || spent_us="$exhausted_us"
+	[ "$exhausted" = 1 ] || [ "$spent_us" -gt "$budget_us" ] || return 0
+	local spent_s holders
+	spent_s="$(quiet__secs 0 "$spent_us")"
+	holders="$(quiet__holders_brief)"
+	rm -f "${QUIET__CLEAN[@]}"
+	quiet__log "$log" "\"event\":\"wait-budget\",$common,\"spent_s\":$spent_s,\"budget_s\":$budget_s,\"holders\":$(quiet__json_str "$holders")"
+	echo "budget $spent_s $budget_s $holders"
+	exit 0
+}
+
 # --- the bash library (sourced by lib/legs.sh and the runners) --------------------------------
 
 QUIET_LOG="${QUIET_LOG:-}"
@@ -613,6 +675,13 @@ quiet__spawn() {
 	read -r -u "$QUIET__RFD" line || true
 	exec {QUIET__RFD}<&-
 	case "$line" in
+	budget\ *)
+		local event spent budget holders
+		read -r event spent budget holders <<<"$line"
+		echo "quiet.sh: $label gave up: this run's lock-wait budget is spent ($spent s of $budget s; holders: $holders). Check quiet.sh status, then rerun." >&2
+		[ -z "${GSW_QUIET_WAIT_LEDGER:-}" ] || printf '%s\n' "$spent" >>"$GSW_QUIET_WAIT_LEDGER.exhausted"
+		exit 75
+		;;
 	acquired*)
 		QUIET__MODE="$mode"
 		;;

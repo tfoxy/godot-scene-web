@@ -26,7 +26,8 @@ mise exec -- pnpm exec tsx --conditions=development experiments/render-stream/sc
   root, which is ignored; an explicit `--out` must be empty or absent. Nothing a run writes is
   committed.
 - **Exit codes.** `0` when every check passes, `1` when a check fails, `2` for a usage error or a
-  refused precondition (nothing run).
+  refused precondition (nothing run). `75` means a quiet-lock wait budget was exhausted:
+  verdicts are incomplete; inspect `quiet.sh status` and rerun.
 
 ## Measurement isolation: the quiet lock
 
@@ -58,6 +59,13 @@ bash experiments/render-stream/scripts/lib/quiet.sh light -- <command...>
 # Current holders, waiters and share window:
 bash experiments/render-stream/scripts/lib/quiet.sh status
 ```
+
+Direct lock users can set `GSW_QUIET_WAIT_BUDGET_S` to bound waiting in seconds (unset or `0`
+means unlimited). Set `GSW_QUIET_WAIT_LEDGER` to a writable file to share one cumulative budget
+across acquisitions and child runners; without it each acquisition gets its own budget. A spent
+budget creates `<ledger>.exhausted`, logs a `wait-budget` event, and exits **75** without running
+the command (the TS twin also exits 75). Nested holds remain no-ops. Start a fresh ledger and
+remove its `.exhausted` sentinel before a new direct run.
 
 Tuning knobs (rarely needed): `GSW_QUIET_MARKER_MAX_S` (stale-marker age, default 3600),
 `GSW_QUIET_SHARE_PCT` / `GSW_QUIET_SHARE_MAX_S` / `GSW_QUIET_SHARE_LINGER_S` (the share window after
@@ -189,12 +197,18 @@ bash experiments/render-stream/scripts/validate-increment.sh [--base main] [--ou
 - Sabotage legs run only when a checker, runner, sabotage or mutation file is in the diff;
   otherwise the runners get `RS_SABOTAGE_TIER=skip` and those checks are reported
   skipped-by-tier.
+- `--max-lock-wait S` bounds cumulative lock waiting for the entire invocation, including all
+  child runners. Default **10800 s (3 h)**, or `RS_VALIDATE_MAX_LOCK_WAIT_S`; `0` disables it.
+  An explicitly set `GSW_QUIET_WAIT_BUDGET_S` takes precedence over both. The invocation exports
+  one `GSW_QUIET_WAIT_LEDGER=<out>/quiet-wait-ledger` and starts with a queue-status line.
 - `--fast-frames on` (default) runs allowlisted live correctness legs faster than real time; timing
   legs always run in real time.
 
 It writes `<out>/plan.json`, one directory per run (with `command.txt`: the env and argv it
 launched) and `<out>/validate-summary.json`, prints one line per run and exits non-zero when any
-run fails. `python3 lib/smoke-plan.py --self-test --map smoke-map.json` tests the map.
+run fails. The summary always includes `lock_wait_budget` (`budget_s`, `spent_s`, `exhausted`).
+An exhausted budget prints **INCOMPLETE, not code failures** and exits **75**; check
+`quiet.sh status`, then rerun. `python3 lib/smoke-plan.py --self-test --map smoke-map.json` tests the map.
 
 Run just the canvas-items pixel suites, including their wasm build:
 

@@ -14,7 +14,8 @@
 //   const hold = await quietAcquire("exclusive", "g7-bench/gsw-ts-desktop", { log });
 //   try { ...the timed work... } finally { await hold.release(); }
 
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { appendFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -76,6 +77,18 @@ export function quietAcquire(
       child.stdout.removeAllListeners("data");
       child.stdout.resume();
       const waitS = (Date.now() - started) / 1000;
+      if (line.startsWith("budget ")) {
+        const [, spent, budget, holders] =
+          line.match(/^budget (\S+) (\S+) (.*)$/) ?? [];
+        const message = `quiet.sh: ${label} gave up: this run's lock-wait budget is spent (${spent} s of ${budget} s; holders: ${holders}). Check quiet.sh status, then rerun.`;
+        console.error(message);
+        const ledger = process.env.GSW_QUIET_WAIT_LEDGER;
+        if (ledger) appendFileSync(`${ledger}.exhausted`, `${spent}\n`);
+        // Callers may already own probes or per-leg owners before attempting acquisition.
+        // Signal them before exiting, since process.exit skips the callers' finally blocks.
+        spawnSync("pkill", ["-TERM", "-P", String(process.pid)]);
+        process.exit(75);
+      }
       if (line.startsWith("acquired")) {
         resolveHold({
           mode,

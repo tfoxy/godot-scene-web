@@ -21,6 +21,10 @@
 #                tier, --milestone included (GRT4a). Every timing leg and every denylisted leg stays
 #                real time either way (lib/legs.sh RS_FAST_ALLOW_LEGS / RS_FAST_DENY_LEGS; the
 #                g7-6/g7-lc/g7-r/g7-k live runs and g7x never get the fast env).
+#   --max-lock-wait S
+#                cumulative lock-wait budget in seconds (RS_VALIDATE_MAX_LOCK_WAIT_S, default
+#                10800; 0 disables). Explicit GSW_QUIET_WAIT_BUDGET_S takes precedence. Exit 75
+#                means incomplete verdicts from an exhausted budget; check quiet.sh status/rerun.
 #   --fast-fps N the fast-frame rate (default 240)
 #   --base REF   the diff is `git diff --name-only REF...HEAD` plus uncommitted and untracked
 #                files (default main; lib/smoke-plan.py --print-paths); --paths replaces it with an
@@ -78,9 +82,10 @@ JOBS=1
 PATHS=""
 FAST_FRAMES=""
 FAST_FPS=240
+MAX_LOCK_WAIT="${RS_VALIDATE_MAX_LOCK_WAIT_S:-10800}"
 while [ $# -gt 0 ]; do
 	case "$1" in
-	--help|-h) sed -n '2,38p' "$0"; exit 0 ;;
+	--help|-h) sed -n '2,42p' "$0"; exit 0 ;;
 	--base) BASE="$2" && BASE_SET=1 && shift 2 ;;
 	--timing-jobs) TIMING_JOBS="$2" && shift 2 ;;
 	--out) OUT="$2" && shift 2 ;;
@@ -92,9 +97,17 @@ while [ $# -gt 0 ]; do
 	--paths) PATHS="$2" && shift 2 ;;
 	--fast-frames) FAST_FRAMES="$2" && shift 2 ;;
 	--fast-fps) FAST_FPS="$2" && shift 2 ;;
+	--max-lock-wait) MAX_LOCK_WAIT="$2" && shift 2 ;;
 	*) echo "validate-increment: unknown argument $1" >&2 && exit 2 ;;
 	esac
 done
+if ! [[ "$MAX_LOCK_WAIT" =~ ^[0-9]+(\.[0-9]{1,6})?$ ]] ||
+	! [[ "${GSW_QUIET_WAIT_BUDGET_S:-$MAX_LOCK_WAIT}" =~ ^[0-9]+(\.[0-9]{1,6})?$ ]]; then
+	echo "validate-increment: --max-lock-wait and GSW_QUIET_WAIT_BUDGET_S must be non-negative seconds" >&2
+	exit 2
+fi
+# An explicitly supplied lock budget (including 0) wins over the validation default and flag.
+export GSW_QUIET_WAIT_BUDGET_S="${GSW_QUIET_WAIT_BUDGET_S-$MAX_LOCK_WAIT}"
 # GRT3/GRT4a: fast frames on for every tier, milestone sweeps included: they apply to the
 # allowlisted correctness legs only, and every timing leg keeps real time (lib/legs.sh).
 [ -n "$FAST_FRAMES" ] || FAST_FRAMES=on
@@ -105,6 +118,16 @@ esac
 [ -n "$OUT" ] || OUT="$REPO_ROOT/artifacts/render-stream/validate/$(date -u +%Y%m%dT%H%M%SZ)"
 mkdir -p "$OUT"
 OUT="$(realpath "$OUT")"
+
+# One line at startup records the queue joined, including for --plan (status takes no lock).
+queue=""
+while IFS= read -r line; do
+	case "$line" in
+	"holders: no recorded holder" | "exclusive waiters: none" | "shared waiters (v2): 0") ;;
+	holders:* | exclusive* | shared\ waiters*) queue+="${queue:+; }$line" ;;
+	esac
+done < <(bash "$SCRIPT_DIR/lib/quiet.sh" status)
+echo "validate-increment: quiet lock ${queue:-idle}"
 
 if [ -n "$PATHS" ]; then
 	tr ',' '\n' <<<"$PATHS" >"$OUT/changed-paths.txt"
@@ -186,6 +209,10 @@ if [ "$PLAN_ONLY" = 1 ]; then
 	cost_block
 	exit 0
 fi
+# Fresh accounting for this invocation, shared by every child runner and acquisition.
+export GSW_QUIET_WAIT_LEDGER="$OUT/quiet-wait-ledger"
+: >"$GSW_QUIET_WAIT_LEDGER"
+rm -f "$GSW_QUIET_WAIT_LEDGER.exhausted"
 printf 'fast_frames=%s\nfast_fps=%s\n' "$FAST_FRAMES" "$FAST_FPS" >"$OUT/fast-frames.txt"
 FAST_ENV=()
 [ "$FAST_FRAMES" = on ] && FAST_ENV=(RS_FAST_FRAMES=all RS_FAST_FRAMES_MAX_FPS="$FAST_FPS")
@@ -448,13 +475,27 @@ python3 "$SCRIPT_DIR/lib/validate-summary.py" "$OUT" "$t_all" "$EPOCHREALTIME" |
 # Host deferrals are local dispatcher decisions, not changes to the shared/remote plan. Keep
 # them out of the executed-run pass count and preserve any genuine runner failure above.
 python3 - "$OUT" <<'PY' || exit 2
-import json, pathlib, sys
+import json, os, pathlib, sys
 out = pathlib.Path(sys.argv[1])
 deferred = json.loads((out / "deferred.json").read_text())
 summary_path = out / "validate-summary.json"
 summary = json.loads(summary_path.read_text())
 summary["deferred"] = deferred
+ledger = out / "quiet-wait-ledger"
+exhausted = pathlib.Path(str(ledger) + ".exhausted")
+spent = sum(float(line) for line in ledger.read_text().splitlines())
+# The failed acquisition is not a successful acquire in the ledger. Its sentinel records the
+# cumulative spent value from the holder, so the summary includes the wait that exhausted it.
+if exhausted.exists():
+    spent = max([spent] + [float(line) for line in exhausted.read_text().splitlines()])
+budget = float(os.environ.get("GSW_QUIET_WAIT_BUDGET_S") or 0)
+summary["lock_wait_budget"] = {"budget_s": budget, "spent_s": round(spent, 3),
+                               "exhausted": exhausted.exists()}
 summary_path.write_text(json.dumps(summary, indent=2) + "\n")
 print(f"validate-increment: {len(deferred)} runs deferred (see reasons above)")
+if exhausted.exists():
+    print(f"validate-increment: lock-wait budget exhausted (spent {spent:.3f} s of {budget:g} s): "
+          "the verdicts above are INCOMPLETE, not code failures. Check quiet.sh status and rerun.")
 PY
+[ ! -f "$GSW_QUIET_WAIT_LEDGER.exhausted" ] || exit 75
 exit "$summary_rc"
