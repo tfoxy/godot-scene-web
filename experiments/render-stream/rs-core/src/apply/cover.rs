@@ -392,13 +392,16 @@ impl Applier {
     }
 
     /// Per-scene switch for the cover walk's depth tiles (on by default). It changes no pixel.
+    /// Deferred appliers pick it up at the next settle/draw; eager appliers at the next apply.
     pub fn set_cover_tiles(&mut self, on: bool) {
         if self.cover.tiles_off == !on {
             return;
         }
         self.cover.tiles_off = !on;
         self.list.dirty.draws = true;
-        self.cover.due = true;
+        if self.cover.deferred {
+            self.cover.due = true;
+        }
         if on {
             if let Some(tiles) = self.cover.tiles.as_mut() {
                 tiles.forget();

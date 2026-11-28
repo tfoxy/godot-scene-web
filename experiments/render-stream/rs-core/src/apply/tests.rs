@@ -612,7 +612,7 @@ fn an_opaque_cover_leaves_what_it_hides_out_of_the_list() {
     assert!(!a.list.dirty.draws);
 }
 
-/// Switching tiles refreshes only depth tables, including without another transaction.
+/// Deferred tile switches refresh depth tables even without another transaction.
 #[test]
 fn cover_tiles_switch_matches_fresh_replay() {
     use sha2::{Digest, Sha256};
@@ -621,6 +621,7 @@ fn cover_tiles_switch_matches_fresh_replay() {
         vp.width = 256;
         vp.height = 256;
         let mut a = Applier::new(vp);
+        a.set_deferred_cover(true);
         a.set_cover_min_area(0);
         a.set_cover_tiles_min_hidden(1);
         a
@@ -674,6 +675,58 @@ fn cover_tiles_switch_matches_fresh_replay() {
         assert!(a.cover_recheck());
         // Compare all executor fields after consumption: toggles deliberately add dirt that
         // a replay with a fixed setting does not have.
+        a.list.consumed();
+        fresh.list.consumed();
+        assert_eq!(Sha256::digest(format!("{:?}", a.list)),
+            Sha256::digest(format!("{:?}", fresh.list)), "step {step}");
+    }
+}
+
+/// Eager switches must not leave deferred work that restores the unculled surface table.
+#[test]
+fn cover_tiles_eager_switch_keeps_surface_root_culled() {
+    use sha2::{Digest, Sha256};
+    fn make() -> Applier {
+        let mut a = Applier::new(viewport());
+        a.set_cover_min_area(0);
+        a
+    }
+    let mut s = super::surface_tests::scene();
+    s.canvases.get_mut(&1).unwrap().items.extend([11, 12]);
+    s.items.insert(11, item(11, ON_ROOT,
+        rect_cmds([0.0, 0.0, 64.0, 32.0], [1.0, 0.0, 0.0, 0.5])));
+    s.items.insert(12, item(12, ON_ROOT,
+        rect_cmds([0.0, 0.0, 64.0, 32.0], [0.0, 1.0, 0.0, 1.0])));
+    let store = PayloadStore::default();
+    let mut a = make();
+    let mut deltas = Vec::new();
+    for (step, on) in [false, true, false].into_iter().enumerate() {
+        a.list.consumed();
+        a.set_cover_tiles(on);
+        assert!(!a.cover_due(), "eager switches must not queue deferred cover work");
+        let mut delta = if step == 0 { full_delta(&s) } else {
+            TxDelta { items_upserted: vec![12], ..TxDelta::default() }
+        };
+        if step == 0 {
+            delta.textures_upserted = s.textures.keys().copied().collect();
+        }
+        deltas.push(delta.clone());
+        // Deliberately never settle: eager callers execute the list produced by apply.
+        a.apply(&s, &delta, &store);
+        assert!(!a.cover_due());
+        assert_eq!(a.list.draws.len(), 1, "the opaque root hides the viewport draw");
+        let mut fresh = make();
+        fresh.set_cover_tiles(on);
+        for delta in &deltas {
+            fresh.list.consumed();
+            fresh.apply(&s, delta, &store);
+        }
+        assert_eq!(a.list.depth_tiles, fresh.list.depth_tiles);
+        assert_eq!(a.list.depth_draws, fresh.list.depth_draws);
+        if !on {
+            assert!(a.list.depth_tiles.is_empty());
+            assert!(a.list.depth_draws.is_empty());
+        }
         a.list.consumed();
         fresh.list.consumed();
         assert_eq!(Sha256::digest(format!("{:?}", a.list)),
