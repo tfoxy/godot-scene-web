@@ -81,6 +81,9 @@ class CanvasTextureResolver {
 // Main-thread attachment and materialize seams. Feature-off never binds or calls the engine.
 void canvas_texture_resolver_attach(const Calibration &, const ProcessFingerprint &);
 void canvas_texture_resolver_detach();
+// Shared with the resolver's live type reader. Cached once per attachment, never per RID.
+// Call only on a rendered host; the dummy also has no RenderingDevice.
+bool canvas_texture_readback_requires_2d();
 void canvas_texture_resolver_arm_begin();
 void canvas_texture_resolver_forget(std::uint64_t rid);
 bool canvas_texture_resolve(std::uint64_t rid, CanvasTextureChannels *out);

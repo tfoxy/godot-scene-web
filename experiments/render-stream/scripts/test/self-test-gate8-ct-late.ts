@@ -467,6 +467,45 @@ expect(
     ).length > 0,
     "residual: no unknown-texture draw for the refused ones fails",
   );
+  // GL: the RID-only runtime wrappers are refused before the getter, typed not-2d-unproven.
+  const GL_LATE = {
+    canvas_residual: 1,
+    refused_no_image: 0,
+    refused_not_2d_unproven: 3,
+  };
+  const glRes = { ...res, refused_no_image: 0, refused_not_2d_unproven: 3 };
+  expect(
+    residualProblems(glRes, { rec: late }, GL_LATE).length === 0,
+    "residual (GL): runtime refused typed not-2d-unproven passes",
+  );
+  expect(
+    residualProblems(
+      { ...glRes, refused_not_2d_unproven: 2 },
+      { rec: late },
+      GL_LATE,
+    ).length > 0,
+    "residual (GL): an untyped refusal fails",
+  );
+  expect(
+    residualProblems(glRes, { rec: late }, LATE).length > 0,
+    "residual (GL): not-2d-unproven where no-image is expected fails",
+  );
+  expect(
+    residualProblems(res, { rec: late }, GL_LATE).length > 0,
+    "residual (GL): no-image where not-2d-unproven is expected fails",
+  );
+  expect(
+    residualProblems(
+      glRes,
+      {
+        rec: recording([
+          { frame: 13, textures: [image(4), canvas(13, 4)], unknown: 0 },
+        ]),
+      },
+      GL_LATE,
+    ).length > 0,
+    "residual (GL): no unknown-texture draw for the refused ones fails",
+  );
   expect(
     residualProblems(res, { rec: late }, undefined).length > 0,
     "residual: no expected.late fails",

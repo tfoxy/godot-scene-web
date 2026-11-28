@@ -22,6 +22,7 @@ namespace {
 CanvasTextureResolver resolver;
 bool attachment_initialized = false;
 void *server = nullptr, *device = nullptr;
+bool device_initialized = false;
 GDExtensionMethodBindPtr render_call = nullptr, sync_call = nullptr;
 GDExtensionMethodBindPtr format_call = nullptr, native_call = nullptr;
 GDExtensionMethodBindPtr rd_texture_call = nullptr, rd_valid_call = nullptr;
@@ -271,8 +272,7 @@ void canvas_texture_resolver_attach(const Calibration &calib, const ProcessFinge
   }
   // Optional type-query bindings: unavailability must refuse only resolved channels with
   // type-unknown, while the independent owner-layout sentinel check still runs.
-  auto device_call = method_bind("RenderingServer", "get_rendering_device", 1405107940LL);
-  call_object_getter(device_call, server, &device);
+  canvas_texture_readback_requires_2d();
   rd_texture_call = method_bind("RenderingServer", "texture_get_rd_texture", 2790148051LL);
   rd_valid_call = method_bind("RenderingDevice", "texture_is_valid", 3521089500LL);
   rd_format_call = method_bind("RenderingDevice", "texture_get_format", 1374471690LL);
@@ -316,8 +316,19 @@ void canvas_texture_resolver_attach(const Calibration &calib, const ProcessFinge
   call(sync_call, nullptr, nullptr);
 }
 
+bool canvas_texture_readback_requires_2d() {
+  if (!device_initialized) {
+    auto device_call = method_bind("RenderingServer", "get_rendering_device", 1405107940LL);
+    void *render_server = singleton_object("RenderingServer");
+    call_object_getter(device_call, render_server, &device);
+    device_initialized = true;
+  }
+  return device == nullptr;
+}
+
 void canvas_texture_resolver_detach() {
   resolver.detach(); server = device = nullptr; attachment_initialized = false;
+  device_initialized = false;
   rd_texture_call = rd_valid_call = rd_format_call = rd_type_call = nullptr;
   type_checks = 0;
   live_counts = {};

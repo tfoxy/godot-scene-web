@@ -20,8 +20,9 @@ namespace {
 
 constexpr std::uint8_t kUpdated = 1, kReleased = 2, kEdited = 4, kFacts = 8,
                        kMipmaps = 16, kHasPath = 32, kHeld = 64, kPending = 128;
-// Entry::extra: the texture has a size override in State::overrides.
-constexpr std::uint8_t kHasOverride = 1;
+// Entry::extra: the texture has a size override in State::overrides; its storage was replaced by
+// a source that was never recorded as a 2D creation, so its recorded kind no longer proves 2D.
+constexpr std::uint8_t kHasOverride = 1, kStorageUnproven = 2;
 struct Entry {
   RegistryKind kind = RegistryKind::Texture2d;
   std::uint8_t flags = 0;
@@ -948,6 +949,8 @@ HoldSkip registry_note_replace(std::uint64_t texture, std::uint64_t by_texture,
   }
   HoldSkip skip = HoldSkip::Unregistered;
   if (it == s.map.end()) {
+    if (into != s.map.end() && registry_family(into->second.kind) == RegistryFamily::Texture)
+      into->second.extra |= kStorageUnproven;
     if (into != s.map.end()) {
       pending_drop_locked(s, texture, into->second, PendingDrop::Replaced, &dropped);
     }
@@ -1033,6 +1036,13 @@ HoldSkip registry_note_replace(std::uint64_t texture, std::uint64_t by_texture,
   remove_entry_locked(s, family);
   changed_locked(s);
   return hold ? skip : HoldSkip::None;
+}
+
+bool registry_texture_storage_unproven(std::uint64_t rid) {
+  State &s = state();
+  std::lock_guard<std::mutex> lock(s.mutex);
+  const auto it = s.map.find(rid);
+  return it != s.map.end() && (it->second.extra & kStorageUnproven) != 0;
 }
 
 bool registry_lookup(std::uint64_t rid, RegistryKind *kind, bool *updated) {

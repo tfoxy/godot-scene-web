@@ -250,7 +250,9 @@ Before any resolved channel enters readback, RenderingDevice backends require a 
 with `texture_type == TEXTURE_TYPE_2D`. Other dimensions refuse `not-2d`; an unavailable or
 failed type query refuses `type-unknown`. GLES3 has no public type getter, so `gl_compatibility`
 refuses `gles-untyped` without reading channel images. These checks apply to resolver-discovered
-channels; the general adoption path is unchanged.
+channels of a class-proven or census CanvasTexture; the general adoption path is unchanged. On GL an
+unregistered pre-load wrapper (the fixture's raw `canvas_texture_create` RIDs) is refused
+`not-2d-unproven` before the resolver runs, whatever the resolver flag or self-check says.
 
 Windows and macOS currently refuse `platform-unrecorded` without speculative memory reads,
 even with the switch enabled. They need independently validated instruction profiles and heap
@@ -263,10 +265,14 @@ flock --close /tmp/gsw-rendered-probe.lock bash experiments/render-stream/script
   --derived --renderer forward_plus --correctness-only --out .local/canvas-textures-vulkan
 ```
 
-Use `--renderer gl_compatibility` to prove the GLES3 refusal, `--negative-control` for the disabled path, or
+Use `--renderer gl_compatibility` to prove the GLES3 strict-guard refusal (`not-2d-unproven`, zero no-image
+refusals), `--negative-control` for the disabled path, or
 `--bad-derivation-control` to mutate a local instruction copy and assert refusal before any
 storage/owner read. `--calibration FILE` selects exact-record validation instead of `--derived`;
 `--bad-record-control` expects a sentinel mismatch from an intentionally incorrect layout.
+On `gl_compatibility` each control keeps its resolver-row assertions but expects the strict-guard refusals
+(zero no-image, every wrapper `not-2d-unproven`) and an empty `canvas_textures_unresolved`; the Forward+
+controls expect the three no-image refusals and the per-RID resolver reason counts.
 Omit `--correctness-only` only for a real-time timing run after checking load and quiet-lock
 status; raw resolve counters in a correctness run are not timing evidence.
 

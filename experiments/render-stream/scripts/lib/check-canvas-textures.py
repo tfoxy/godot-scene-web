@@ -19,6 +19,20 @@ def judge(root, renderer, negative=False, mismatch=False, derived=False, bad_der
     def load(name):
         return json.loads((root / name).read_text())
 
+    gl = renderer == "gl_compatibility"
+
+    def require_gl_refusals(directory):
+        # On GL the fixture's wrappers are unregistered pre-load RIDs. The strict guard refuses them
+        # as not-2d-unproven before the resolver runs, so no arm records a no-image refusal.
+        refusals = json.loads((directory / "refusals.json").read_text())
+        require(refusals["counts"]["refused_no_image"] == 0,
+                directory.name + ": untyped GLES3 wrappers are not no-image refusals")
+        reasons = {record["rid"]: record["reason"] for record in refusals["records"]}
+        require(all(reasons.get(int(rid)) == "not-2d-unproven" for rid in load("source.json")["canvases"]),
+                directory.name + ": every unregistered GLES3 wrapper is refused as not-2d-unproven")
+        require(set(reasons.values()) == {"not-2d-unproven"},
+                directory.name + ": every GLES3 refusal is the strict unproven outcome")
+
     require((root / "finished.json").exists() and not (root / "failure.json").exists(), "fixture completed")
     log = (root / "host/stdout.log").read_text()
     require("SCRIPT ERROR" not in log and "Parse Error" not in log, "no script failures")
@@ -41,10 +55,17 @@ def judge(root, renderer, negative=False, mismatch=False, derived=False, bad_der
             require(row["resolver_selfcheck"] == {"runs": 0, "samples": 0, "passed": False},
                     name + ": no sentinel reads after failed decode")
             if name in ["resolved.json", "rearmed.json", "final.json"]:
-                require(row["canvas_textures_unresolved"] == {
-                            "canvas-texture-unresolved:derive-create-pattern": 6 if name == "rearmed.json" else 3},
-                        name + ": counted derivation refusal per RID per arm")
+                if gl:
+                    require(row["canvas_textures_unresolved"] == {},
+                            name + ": unproven GLES3 wrappers never reach the failed derivation")
+                else:
+                    require(row["canvas_textures_unresolved"] == {
+                                "canvas-texture-unresolved:derive-create-pattern": 6 if name == "rearmed.json" else 3},
+                            name + ": counted derivation refusal per RID per arm")
         for directory in [root / "evidence", root / "evidence/arm-2", root / "evidence/arm-3"]:
+            if gl:
+                require_gl_refusals(directory)
+                continue
             refusals = json.loads((directory / "refusals.json").read_text())
             require(refusals["counts"]["refused_no_image"] == 3,
                     directory.name + ": three no-image refusals after bad derivation")
@@ -65,9 +86,13 @@ def judge(root, renderer, negative=False, mismatch=False, derived=False, bad_der
                         name + ": mismatch latches across attachments")
                 require(row["canvas_textures_resolved"] == 0, name + ": mismatched record resolves nothing")
                 if name in ["resolved.json", "rearmed.json", "final.json"]:
-                    require(row["canvas_textures_unresolved"] == {
-                                "canvas-texture-unresolved:selfcheck-mismatch": 6 if name == "rearmed.json" else 3},
-                            name + ": unresolved reason counted once per RID per arm")
+                    if gl:
+                        require(row["canvas_textures_unresolved"] == {},
+                                name + ": unproven GLES3 wrappers never reach the mismatched resolver")
+                    else:
+                        require(row["canvas_textures_unresolved"] == {
+                                    "canvas-texture-unresolved:selfcheck-mismatch": 6 if name == "rearmed.json" else 3},
+                                name + ": unresolved reason counted once per RID per arm")
             else:
                 require(not row["enabled"] and not row["ready"] and row["reason"] == "flag-off",
                         name + ": resolver default-off path")
@@ -80,11 +105,14 @@ def judge(root, renderer, negative=False, mismatch=False, derived=False, bad_der
                 require(row["derivation_image_reads"] == row["derivation_storage_reads"] == row["owner_reads"] == 0,
                         name + ": feature-off performs zero memory reads")
         for directory in [root / "evidence", root / "evidence/arm-2", root / "evidence/arm-3"]:
+            if gl:
+                require_gl_refusals(directory)
+                continue
             refusals = json.loads((directory / "refusals.json").read_text())
             require(refusals["counts"]["refused_no_image"] == 3,
                     directory.name + ": three pre-load no-image refusals without resolver")
         return checks
-    if renderer == "gl_compatibility":
+    if gl:
         for name in ["attached.json", "reattached.json"]:
             row = load(name)
             require(row["ready"] and row["resolver_selfcheck"] == {"runs": 1, "samples": 2, "passed": True},
@@ -93,22 +121,18 @@ def judge(root, renderer, negative=False, mismatch=False, derived=False, bad_der
                     name + ": no eager resolution")
         for name in ["resolved.json", "rearmed.json", "final.json"]:
             row = load(name)
-            count = 6 if name == "rearmed.json" else 3
-            require(row["canvas_textures_resolved"] == 0 and row["cache_entries"] == 3,
-                    name + ": untyped GLES3 resolves nothing")
-            require(row["canvas_textures_unresolved"] == {"canvas-texture-unresolved:gles-untyped": count},
-                    name + ": counted GLES3 type refusal per RID per arm")
+            require(row["canvas_textures_resolved"] == 0 and row["cache_entries"] == 0,
+                    name + ": untyped GLES3 resolves nothing and caches nothing")
+            require(row["canvas_textures_unresolved"] == {},
+                    name + ": unproven wrappers never reach the resolver")
             attached = load("reattached.json" if name == "final.json" else "attached.json")
-            require(row["owner_reads"] == attached["owner_reads"] + 2 * count
-                    and row["channel_type_checks"] == 0,
-                    name + ": refusal reads backend only, never channel owner or type")
+            require(row["owner_reads"] == attached["owner_reads"] and row["channel_type_checks"] == 0,
+                    name + ": GLES3 refusal reads no renderer storage")
             require(row["resolver_selfcheck"] == {"runs": 1, "samples": 2, "passed": True},
-                    name + ": type refusal preserves owner self-check")
+                    name + ": refusal preserves owner self-check")
         source = load("source.json")
         for arm, directory in enumerate([root / "evidence", root / "evidence/arm-2", root / "evidence/arm-3"], 1):
-            refusals = json.loads((directory / "refusals.json").read_text())
-            require(refusals["counts"]["refused_no_image"] == 3,
-                    directory.name + ": three no-image refusals for untyped GLES3")
+            require_gl_refusals(directory)
             stage = load("arm-" + str(arm) + "-result.json")["stream"]["gate8"]["adopt_stats"]["staged"]
             require(stage["readback_bytes"] == 0, directory.name + ": zero channel image readback bytes")
             rows = [json.loads(line) for line in (directory / "resources.jsonl").read_text().splitlines()]

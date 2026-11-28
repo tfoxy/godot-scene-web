@@ -200,7 +200,8 @@ void evidence() {
   const auto &scanned = field(v, "scanned");
   for (const char *name : {"registered_2d", "mirror_known", "refused"}) EXPECT(field(scanned, name).text == "0");
   const auto &skipped = field(v, "skipped_by");
-  for (const char *name : {"not_texture2d", "released", "updated", "evicted", "no_image"}) EXPECT(field(skipped, name).text == "0");
+  for (const char *name : {"not_texture2d", "released", "updated", "evicted", "no_image", "unproven"})
+    EXPECT(field(skipped, name).text == "0");
   const auto &lazy = field(v, "lazy_at_reference");
   EXPECT(field(lazy, "updated").text == "0" && field(lazy, "unregistered").text == "0");
   EXPECT(field(v, "decode_at_reference_rids").items.empty());
@@ -245,7 +246,7 @@ void evidence() {
   std::uint64_t n = 1;
   for (const auto &entry : counts) s.*entry.second = n++;
   s.scanned = {31, 32, 33, 41};
-  s.skipped_by = {34, 35, 36, 37, 38};
+  s.skipped_by = {34, 35, 36, 37, 38, 42};
   s.lazy_at_reference = {39, 40};
   s.textures = {51, 52, 53, 54, 55, 56};
   v = json(s);
@@ -258,6 +259,7 @@ void evidence() {
   n = 34;
   for (const char *key : {"not_texture2d", "released", "updated", "evicted", "no_image"})
     EXPECT(field(field(v, "skipped_by"), key).text == std::to_string(n++));
+  EXPECT(field(field(v, "skipped_by"), "unproven").text == "42");
   EXPECT(field(field(v, "lazy_at_reference"), "updated").text == "39");
   EXPECT(field(field(v, "lazy_at_reference"), "unregistered").text == "40");
   n = 51;

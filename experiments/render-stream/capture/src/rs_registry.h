@@ -201,6 +201,9 @@ void registry_note_replace(std::uint64_t texture, std::uint64_t by_texture);
 // LAR1+: the recorded kind of a live RID (false: not registered). LAR6: `updated` (optional) is
 // the texture family's "content changed since creation" bit (always false for other families).
 bool registry_lookup(std::uint64_t rid, RegistryKind *kind, bool *updated = nullptr);
+// True when a texture_replace gave the RID storage from a source that was never recorded as a 2D
+// creation: the recorded kind is then stale and must not count as 2D proof.
+bool registry_texture_storage_unproven(std::uint64_t rid);
 // The texture_2d_update hook sets a registered texture's `updated` and `edited` bits.
 // texture_replace(a, b) sets updated and inherits edited from b; a re-create clears both.
 void registry_note_texture_update(std::uint64_t rid);

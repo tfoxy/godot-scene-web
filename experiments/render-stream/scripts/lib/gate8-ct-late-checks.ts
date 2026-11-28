@@ -15,7 +15,7 @@
 //                           in the transaction that first carries it (deferred and late)
 //   ct-late-residual        LAR1 (F1): the late capture adopts the cached `.tres` from the resource
 //                           cache and refuses the runtime CanvasTextures, every refusal typed
-//                           no-image, their draws unknown-texture
+//                           (not-2d-unproven on the fixture's GL host), their draws unknown-texture
 //   ct-late-fault           under GRC_ADOPT_FAULT=no-resources nothing is adopted and the draws
 //                           through a CanvasTexture stay unknown-texture (late, unchanged)
 //   sabotage-registry-off   LAR1: the deferred capture under GRC_ADOPT_FAULT=registry-off fails
@@ -64,13 +64,16 @@ export interface G8ctlExpected {
   free_frame?: number;
   freed_canvas_count?: number;
   /** LAR1 (F1): the late leg's residual path -- canvas textures adopted from the resource cache,
-   * and the typed no-image refusals (the runtime-built cells, whose draws stay unknown-texture) */
+   * and the typed refusals of the runtime-built cells, whose draws stay unknown-texture */
   late?: LateResidualExpectation;
 }
 
 export interface LateResidualExpectation {
   canvas_residual: number;
   refused_no_image: number;
+  /** GL hosts: a RID-only wrapper is refused before the getter (no Resource class, no recorded
+   * 2D creation proves it 2D). Absent means 0 (RD hosts, older expectations). */
+  refused_not_2d_unproven?: number;
   unknown_cells?: string[];
 }
 
@@ -329,9 +332,9 @@ export function adoptNamedProblems(
 
 /** ct-late-residual (LAR1, F1): the late capture -- loaded after every CanvasTexture exists, so the
  * registry holds none -- adopts exactly `late.canvas_residual` canvas textures, all through the
- * residual path (the resource cache), and refuses `late.refused_no_image`, every refusal typed
- * (no-image, canvas-empty or viewport); the refused draws stay unknown-texture, and the last state
- * holds the adopted ones. */
+ * residual path (the resource cache), and refuses `late.refused_no_image` plus
+ * `late.refused_not_2d_unproven`, every refusal typed (no-image, not-2d-unproven, canvas-empty or
+ * viewport); the refused draws stay unknown-texture, and the last state holds the adopted ones. */
 export function residualProblems(
   res: Record<string, number> | undefined,
   rec: { rec?: ResolvedRecording; error?: string },
@@ -355,11 +358,17 @@ export function residualProblems(
       problems.push(
         `${res.refused_no_image} no-image refusals, ${late.refused_no_image} expected`,
       );
+    const unproven = late.refused_not_2d_unproven ?? 0;
+    if ((res.refused_not_2d_unproven ?? 0) !== unproven)
+      problems.push(
+        `${res.refused_not_2d_unproven ?? 0} not-2d-unproven refusals, ${unproven} expected`,
+      );
     // VS2: refuse_viewport_texture (a viewport's render-target texture drawn directly) counts in
     // textures_refused too, typed `viewport`. Hooks are planned by capability, so it can fire at
     // any version; evidence older than VS2 has no refused_viewport (0).
     const typed =
       (res.refused_no_image ?? 0) +
+      (res.refused_not_2d_unproven ?? 0) +
       (res.refused_canvas_empty ?? 0) +
       (res.refused_viewport ?? 0);
     if ((res.textures_refused ?? 0) !== typed)
@@ -380,7 +389,10 @@ export function residualProblems(
       problems.push(
         `${canvases} adopted ok canvas textures in the last state, ${late.canvas_residual} expected`,
       );
-    if (late.refused_no_image > 0 && unknownTextureCount(rec.rec) === 0)
+    if (
+      late.refused_no_image + (late.refused_not_2d_unproven ?? 0) > 0 &&
+      unknownTextureCount(rec.rec) === 0
+    )
       problems.push(
         "no unknown-texture command for the refused CanvasTextures",
       );
@@ -742,13 +754,13 @@ export async function runG8ctl(
       );
       problems.push(...(await validateSinkProblems(dir(leg))));
       if (res)
-        detail = `${res.canvas_residual} residual (PM9), ${res.refused_no_image} refused no-image of ${res.textures_refused}`;
+        detail = `${res.canvas_residual} residual (PM9), ${res.refused_no_image} refused no-image and ${res.refused_not_2d_unproven ?? 0} not-2d-unproven of ${res.textures_refused}`;
     }
     if (problems === null) problems = [`${leg} did not run`];
     checks.push(
       check(
         "ct-late-residual",
-        "LAR1 (F1): the late capture (loaded after every CanvasTexture exists) adopts the cached .tres through the resource cache (PM9) and refuses the runtime-built CanvasTextures, every refusal typed no-image, their draws unknown-texture",
+        "LAR1 (F1): the late capture (loaded after every CanvasTexture exists) adopts the cached .tres through the resource cache (PM9) and refuses the runtime-built CanvasTextures, every refusal typed (not-2d-unproven on the GL host), their draws unknown-texture",
         problems,
         detail,
       ),

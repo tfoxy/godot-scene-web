@@ -39,7 +39,8 @@
 //   - a CompressedTexture2D (found in the resource cache, where every one lives: it is loaded by
 //     path, and the engine never updates one in place): texture_2d_get's copy is its content,
 //     `current`, source `cache`;
-//   - any other texture: the dummy's creation-time copy (texture_2d_get), `creation`, source
+//   - any other texture (on GL, only a Texture2D class or recorded 2D creation): the
+//     dummy's creation-time copy (texture_2d_get), `creation`, source
 //     `dummy` -- exact unless the engine updated it in place before arm (an ImageTexture.update,
 //     an oversampled atlas page D7 cannot address);
 //   - a texture whose first reference is a texture_2d_update: that update's own image, `current`,
@@ -401,6 +402,10 @@ struct AdoptResourceStats {
   std::uint32_t textures_refused = 0;  // RIDs nothing could read: unknown-texture stays; typed:
   std::uint32_t refused_no_image = 0;  //   unregistered, no image, no cached `.tres` (F1)
   std::uint32_t refused_canvas_empty = 0;  // a registered CanvasTexture with no diffuse set
+  std::uint32_t refused_not_2d_unproven = 0;  // GL: no Resource class or recorded 2D creation
+                                              //   proves the RID 2D, so the getter is not called
+  std::uint32_t node_proven = 0;       // GL: proven 2D by the drawing node's `texture` property
+                                       //   (that Resource's class, its RID equal to the drawn one)
   std::uint32_t refused_viewport = 0;  // VS2: a viewport/render-target RID drawn directly (never
                                        //   read back: texture_2d_get on it is not a texture's image)
   std::uint32_t proxies = 0;           // VS2: registered TextureProxy RIDs handed to adopt_proxy:
@@ -489,6 +494,8 @@ bool adopt_resources_active();
 AdoptResourceStats adopt_resource_stats();
 
 // what a hooked call's argument names, for materialize().
+enum class TextureProof : std::uint8_t { Unknown, Proven, Disproven };
+
 enum class RefKind : std::uint8_t {
   Texture,          // a texture or CanvasTexture (a draw, a channel, a parameter, a replace)
   Mesh,             // a mesh (add_mesh, a multimesh's mesh, a draw pass)
@@ -510,7 +517,12 @@ enum class RefKind : std::uint8_t {
 // queued, deduplicated, and materialized by adopt_frame_drain(); registry-only kinds (shader,
 // material, process material) materialize on the calling thread. True when the mirror knows `rid`
 // afterwards (false when queued).
-bool materialize(std::uint64_t rid, RefKind ref);
+// Texture proof is carried only for cold references, through off-main/staging queues.
+// Only a Resource class or recorded 2D creation proves dimensionality; declarations do not.
+// `item` (a draw's canvas item, 0 for none) lets the GL guard read the drawing node's `texture`
+// property, the Resource Object itself, before refusing an otherwise unproven RID.
+bool materialize(std::uint64_t rid, RefKind ref, TextureProof proof = TextureProof::Unknown,
+                 std::uint64_t item = 0);
 
 // texture_replace consumes its source inside the engine call, without a free hook.
 // On the main thread, adopt it before forwarding even during staged adoption, and
@@ -561,6 +573,7 @@ struct AdoptSurface {
 struct AdoptParam {
   std::string name;
   const void *variant = nullptr;
+  TextureProof texture_proof = TextureProof::Unknown;  // Retained across Object -> RID conversion.
 };
 
 // The two material-adoption sabotages (render-stream-8.md "Sabotage kinds").
@@ -666,7 +679,8 @@ AdoptMaterialStats adopt_material_stats();
 // item's material and reads the adopted items' instance parameters.
 void adopt_materials_at_arm();
 // Same materialization contract, with arm-only timing for parameter/default texture references.
-bool materialize_param_texture(std::uint64_t rid, bool shader_default = false);
+bool materialize_param_texture(std::uint64_t rid, bool shader_default = false,
+                               TextureProof proof = TextureProof::Unknown);
 
 // item identity through the node map, which is
 // reference-counted between adoption and TAG. node_map_acquire_tag() connects SceneTree.node_added

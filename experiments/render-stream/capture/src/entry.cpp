@@ -1282,6 +1282,8 @@ std::string result_json() {
       json.field("textures_refused", static_cast<int64_t>(r.textures_refused));
       json.field("refused_no_image", static_cast<int64_t>(r.refused_no_image));
       json.field("refused_canvas_empty", static_cast<int64_t>(r.refused_canvas_empty));
+      json.field("refused_not_2d_unproven", static_cast<int64_t>(r.refused_not_2d_unproven));
+      json.field("node_proven", static_cast<int64_t>(r.node_proven));
       // VS2 (viewport-surfaces-design.md Q3b): proxies and viewport textures by registry kind,
       // and the node route (rs_adopt.h AdoptResourceStats).
       json.field("refused_viewport", static_cast<int64_t>(r.refused_viewport));

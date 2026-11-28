@@ -16,7 +16,9 @@ It has two arm modes:
 - `late` (the default): the loader loads the capture at frame 12, after everything exists
   (load-late, no longer a fidelity target). It judges the residual path: the
   cached `.tres` is adopted through the resource cache (PM9), and the three runtime-built
-  CanvasTextures are refused, typed `refused_no_image`, their draws `unknown-texture`.
+  CanvasTextures are refused, their draws `unknown-texture`. The fixture renders on
+  `gl_compatibility`, where a texture known by RID only is refused before the getter, typed
+  `refused_not_2d_unproven`.
 
 ## Files
 
@@ -71,7 +73,7 @@ private 640x360 gamescope.
 - `ct-adopt-named` (`deferred` and `late`): every adopted canvas texture is named by
   a command in the transaction that first carries it.
 - `ct-late-residual` (`late`): CACHED adopted through the resource cache
-  (`canvas_residual` 1), the three runtime ones refused, all typed `refused_no_image`, their draws
+  (`canvas_residual` 1), the three runtime ones refused, all typed `refused_not_2d_unproven`, their draws
   unknown-texture.
 - `ct-late-fault` (`late`): under `GRC_ADOPT_FAULT=no-resources` nothing is adopted and the draws
   through a CanvasTexture stay unknown-texture.

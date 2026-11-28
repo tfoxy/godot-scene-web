@@ -54,6 +54,7 @@ std::map<uint64_t, double> g_material_adopt_values;
 std::map<uint64_t, uint64_t> g_material_adopt_shaders;
 std::map<uint64_t, std::string> g_shader_adopt_codes;
 bool g_texture_readback_adopt = false;
+bool g_gl_readback = false;
 bool g_stage_test_adopt = false;
 grc::rs::CanvasTextureResolver *g_canvas_resolver = nullptr;
 grc::rs::CanvasTextureReader *g_canvas_reader = nullptr;
@@ -427,6 +428,7 @@ std::vector<std::pair<uint64_t, grc::rs::Mirror::ParticlesAdopt>> g_particles_ho
 // rs_adopt.cpp calls the hooks' copy path through these; the engine side never runs here.
 namespace grc {
 namespace rs {
+bool adopt_test_readback_requires_2d() { return g_gl_readback; }
 bool adopt_test_canvas_texture_resolve(std::uint64_t rid, CanvasTextureChannels *out) {
   if (!g_canvas_resolver) return canvas_texture_resolve(rid, out);
   g_stage_test_ns += 1000000;
@@ -498,8 +500,10 @@ bool hooks_adopt_shader(uint64_t rid, const std::string &code) {
   return true;
 }
 bool hooks_adopt_shader_refused(uint64_t, rs2::ShaderReason) { return false; }
-void hooks_adopt_default_texture(uint64_t, const std::string &, uint64_t texture, int32_t) {
-  rs::materialize_param_texture(texture, true);
+void hooks_adopt_default_texture(uint64_t shader, const std::string &name, uint64_t texture, int32_t,
+                                 rs::TextureProof proof) {
+  rs::materialize_param_texture(texture, true, proof);
+  (void)shader; (void)name;
 }
 bool hooks_adopt_material(uint64_t rid, uint64_t shader, const std::vector<rs::AdoptParam> &params) {
   g_material_adopt_shaders[rid] = shader;
@@ -509,7 +513,7 @@ bool hooks_adopt_material(uint64_t rid, uint64_t shader, const std::vector<rs::A
     uint64_t texture = 0;
     g_iface.get_variant_to_type_constructor(GDEXTENSION_VARIANT_TYPE_RID)(
         &texture, const_cast<void *>(p.variant));
-    rs::materialize_param_texture(texture);
+    rs::materialize_param_texture(texture, false, p.texture_proof);
   }
   for (const auto &p : params) if (p.name == "gain") {
     double value = 0;
@@ -1160,6 +1164,84 @@ void fake_rendering_server(std::vector<uint64_t> *reads) {
   };
 }
 
+// The fake getter records calls without touching a real layered texture.
+void test_gl_unproven_readback() {
+  using namespace grc::rs;
+  fake::World &w = fake::world();
+  for (const bool gl : {false, true}) {
+    w.reset_calls();
+    std::vector<uint64_t> reads;
+    fake_rendering_server(&reads);
+    registry_configure(true, RegistryFault::None);
+    stream_begin();
+    g_gl_readback = gl;
+    materialize_param_texture(0xabc001);
+    materialize_param_texture(0xabc001);
+    check(reads.size() == (gl ? 0 : 1), "dimensionality: GL refuses before getter; RD reads once");
+    const auto stats = adopt_resource_stats();
+    check(stats.textures_refused == 1 && stats.refused_no_image == (gl ? 0 : 1) &&
+              stats.refused_not_2d_unproven == (gl ? 1 : 0),
+          "dimensionality: refusal counted once in correct category");
+    const auto json = adopt_refusals_json(1, 1);
+    check(json.find(gl ? "not-2d-unproven" : "no-image") != std::string::npos,
+          "dimensionality: named refusal evidence");
+    registry_note_create(0xabc002, RegistryKind::Texture2d);
+    materialize_param_texture(0xabc002);
+    check(!reads.empty() && reads.back() == 0xabc002,
+          "dimensionality: recorded 2D creation still reaches getter");
+    materialize_param_texture(0xabc003, false, TextureProof::Proven);
+    check(reads.back() == 0xabc003, "dimensionality: caller 2D proof reaches getter");
+    std::thread caller([] { materialize_param_texture(0xabc004, false, TextureProof::Proven); });
+    caller.join();
+    check(reads.back() != 0xabc004, "dimensionality: off-main caller queues without getter");
+    adopt_frame_drain();
+    check(reads.back() == 0xabc004, "dimensionality: queued 2D proof survives drain");
+    auto &mirror = grc::rs::mirror_instance();
+    const uint64_t shader = 0xabc100;
+    mirror.shader_create(shader, 1);
+    const std::string code = "shader_type canvas_item; uniform sampler2D flat : source_color; "
+        "uniform sampler2DArray layered; uniform sampler3D volume; "
+        "uniform samplerCube cube; uniform samplerCubeArray cubes;";
+    mirror.shader_set_code(shader, shader_input(code), 1);
+    const char *names[] = {"flat", "layered", "volume", "cube", "cubes", "unknown"};
+    for (uint64_t i = 0; i < 6; ++i) {
+      const auto before = reads.size();
+      materialize_param_texture(0xabc010 + i);
+      check(reads.size() == before + (gl ? 0 : 1),
+            std::string("dimensionality: declarations never prove a RID ") + names[i]);
+    }
+    const auto before_default = reads.size();
+    materialize_param_texture(0xabc020, true);
+    check(reads.size() == before_default + (gl ? 0 : 1), "dimensionality: default declaration does not prove 2D");
+    registry_note_create(0xabc200, RegistryKind::Material);
+    registry_note_material_shader(0xabc200, shader);
+    const auto before_live = reads.size();
+    materialize_param_texture(0xabc021);
+    check(reads.size() == before_live + (gl ? 0 : 1), "dimensionality: live declaration does not prove 2D");
+    mirror.shader_set_code(shader, shader_input("shader_type canvas_item; uniform sampler2DArray flat;"), 1);
+    adopt_materials_forget(shader);
+    const auto before_change = reads.size();
+    materialize_param_texture(0xabc022);
+    check(reads.size() == before_change + (gl ? 0 : 1),
+          "dimensionality: shader change invalidates cached 2D proof");
+    const auto before_disproven = reads.size();
+    registry_note_create(0xabc030, RegistryKind::Texture2d);
+    materialize_param_texture(0xabc030, false, TextureProof::Disproven);
+    check(reads.size() == before_disproven + (gl ? 0 : 1),
+          "dimensionality: disproven class overrides recorded creation");
+    const auto before_queued = reads.size();
+    std::thread disproven([] { materialize_param_texture(0xabc031, false, TextureProof::Disproven); });
+    disproven.join();
+    adopt_frame_drain();
+    check(reads.size() == before_queued + (gl ? 0 : 1),
+          "dimensionality: disproven class survives off-main drain");
+    g_gl_readback = false;
+    stream_end();
+    adopt_release();
+    registry_configure(false, RegistryFault::None);
+  }
+}
+
 void test_fake_binds() {
   fake::install();
   std::string missing;
@@ -1418,6 +1500,315 @@ void material_parameter_interface() {
     static std::uint64_t entry[3] = {GDEXTENSION_VARIANT_TYPE_DICTIONARY, 0, 0};
     return marker == &material_parameter_marker && index == 0 ? entry : nullptr;
   };
+}
+
+GDExtensionCallableCustomInfo2 g_node_added_info{};
+
+// texture_replace gives the target the source's storage. An unregistered source (layered and 3D
+// creations are not hooked) leaves the target's recorded kind stale, so it must not prove 2D.
+void test_gl_replace_proof() {
+  using namespace grc::rs;
+  for (const bool gl : {false, true}) {
+    for (const bool registered_source : {false, true}) {
+      for (const bool placeholder : {true, false}) {
+        const std::string label = std::string(gl ? "gl" : "rd") + (registered_source ? " 2d" : " layered") +
+            (placeholder ? " placeholder" : " texture");
+        std::vector<uint64_t> reads;
+        fake_rendering_server(&reads);
+        registry_configure(true, RegistryFault::None);
+        const uint64_t target = 0xabc500, source = 0xabc501;
+        registry_note_create(target, placeholder ? RegistryKind::TexturePlaceholder : RegistryKind::Texture2d);
+        if (registered_source) registry_note_create(source, RegistryKind::Texture2d);
+        registry_note_replace(target, source);
+        stream_begin();
+        g_gl_readback = gl;
+        // The arm-time warm reads registry textures through the getter before any lazy reference.
+        const auto warm = adopt_warm_at_arm(warm_now_ns(), "sync");
+        const auto target_reads = [&] {
+          return static_cast<std::size_t>(std::count(reads.begin(), reads.end(), target));
+        };
+        const bool refused = gl && !registered_source;
+        check(warm.skipped.empty(), "replace proof: warm ran for " + label);
+        check(warm.skipped_by.unproven == (refused && !placeholder ? 1U : 0U),
+              "replace proof: warm unproven skip for " + label);
+        // A replace from a registered source marks the target updated, so only an unregistered
+        // source leaves it for the warm getter, and only where the backend does not refuse it.
+        const std::size_t warm_reads = !gl && !registered_source && !placeholder ? 1U : 0U;
+        check(target_reads() == warm_reads, "replace proof: warm getter reads for " + label);
+        materialize_param_texture(target);
+        check(target_reads() == (refused ? 0U : warm_reads + 1U), "replace proof: getter calls for " + label);
+        check((adopt_refusals_json(1, 1).find("not-2d-unproven") != std::string::npos) == refused,
+              "replace proof: strict refusal for " + label);
+        g_gl_readback = false;
+        stream_end();
+        adopt_release();
+        registry_configure(false, RegistryFault::None);
+      }
+    }
+  }
+}
+
+// Resource parameters must use ShaderMaterial's Object getter. RenderingServer's
+// material_get_param already returns a RID, so it cannot supply class evidence.
+void test_gl_material_resource_class() {
+  using namespace grc::rs;
+  for (const bool gl : {false, true}) {
+    for (const char *kind : {"Texture2DArray", "ImageTexture3D", "ImageTexture"}) {
+      fake::install();
+      adopt_materials_attachment_end();
+      material_parameter_interface();
+      const auto from_type = grc::g_iface.get_variant_from_type_constructor;
+      grc::g_iface.get_variant_from_type_constructor = [](GDExtensionVariantType type) {
+        if (type == GDEXTENSION_VARIANT_TYPE_RID)
+          return &fake::detail::from_type<uint64_t, GDEXTENSION_VARIANT_TYPE_RID>;
+        if (type == GDEXTENSION_VARIANT_TYPE_STRING)
+          return &fake::detail::from_type<void *, GDEXTENSION_VARIANT_TYPE_STRING>;
+        return fake::detail::from_type_ctor(type);
+      };
+      auto &w = fake::world();
+      std::vector<uint64_t> reads;
+      fake_rendering_server(&reads);
+      const bool flat = std::string(kind) == "ImageTexture";
+      auto &texture = w.make({"Object", "Resource", "Texture", kind,
+          flat ? "Texture2D" : std::string(kind) == "Texture2DArray" ? "TextureLayered" : "Texture3D"}, 0xabc400);
+      auto &engine = w.make({"Object", "Engine"});
+      auto &tree = w.make({"Object", "SceneTree"});
+      auto &root = w.make({"Object", "Node", "Window", "Viewport"});
+      auto &node = w.make({"Object", "Node", "CanvasItem", "Control"}, 0xabc403);
+      auto &material = w.make({"Object", "Resource", "Material", "ShaderMaterial"}, 0xabc402);
+      auto &shader = w.make({"Object", "Resource", "Shader"}, 0xabc401);
+      w.singletons["Engine"] = &engine;
+      w.overrides["Engine.get_main_loop"] = [&tree](fake::Object *, FakeArgs, void *out) {
+        fake::put_object(out, &tree);
+      };
+      w.overrides["SceneTree.get_root"] = [&root](fake::Object *, FakeArgs, void *out) {
+        fake::put_object(out, &root);
+      };
+      w.overrides["Object.connect"] = [](fake::Object *, FakeArgs, void *out) { fake::put_int(out, 0); };
+      w.overrides["CanvasItem.get_material"] = [&material](fake::Object *, FakeArgs, void *out) {
+        fake::put_object(out, &material);
+      };
+      w.overrides["ShaderMaterial.get_shader"] = [&shader](fake::Object *, FakeArgs, void *out) {
+        fake::put_object(out, &shader);
+      };
+      w.overrides["Shader.get_code"] = [](fake::Object *, FakeArgs, void *out) {
+        const auto *code = &fake::intern("shader_type canvas_item; uniform sampler2D gain;");
+        std::memcpy(out, &code, sizeof(code));
+      };
+      w.overrides["ShaderMaterial.get_shader_parameter"] = [&](fake::Object *, FakeArgs, void *out) {
+        void *object = &texture;
+        fake::detail::from_type<void *, GDEXTENSION_VARIANT_TYPE_OBJECT>(out, &object);
+      };
+      registry_configure(false, RegistryFault::None);
+      stream_begin();
+      g_gl_readback = gl;
+      g_material_adopt_to_mirror = true;
+      adopt_materials_configure(AdoptMaterialSabotage::None);
+      auto &m = mirror_instance();
+      adopt_materials_at_arm();  // connects node_added so the drain can find the holder node
+      m.adopt_item(node.rid, 1);
+      m.set_parent(node.rid, kRootCanvas, 1);
+      {
+        alignas(8) unsigned char variant[24]{};
+        void *object = &node;
+        fake::detail::from_type<void *, GDEXTENSION_VARIANT_TYPE_OBJECT>(variant, &object);
+        const GDExtensionConstVariantPtr args[] = {variant};
+        GDExtensionCallError error{};
+        check(g_node_added_info.call_func != nullptr, "class proof: node-added callback exists");
+        if (g_node_added_info.call_func != nullptr)
+          g_node_added_info.call_func(g_node_added_info.callable_userdata, args, 1, nullptr, &error);
+      }
+      m.set_material(node.rid, material.rid, 1);
+      adopt_materials_at_arm();
+      check(w.count("ShaderMaterial.get_shader_parameter") == 1 && m.knows_material(material.rid),
+            std::string("class proof: Object getter reached for ") + kind);
+      check(reads.size() == (gl && !flat ? 0U : 1U),
+            std::string("class proof: sampler2D Resource ") + kind);
+      check(adopt_refusals_json(1, 1).find(gl && !flat ? "not-2d-unproven" : "no-image") != std::string::npos,
+            std::string("class proof: refusal reason ") + kind);
+      g_gl_readback = false;
+      g_material_adopt_to_mirror = false;
+      stream_end();
+      adopt_release();
+      adopt_materials_attachment_end();
+      grc::g_iface.get_variant_from_type_constructor = from_type;
+    }
+  }
+  fake::install();
+}
+
+// GL: a RID-only texture drawn by a node is proven 2D only by that node's `texture` property: the
+// Resource Object whose RID is the drawn one, of a 2D class. A layered class or another texture
+// in the property proves nothing; RD never reads the property.
+void test_gl_node_texture_proof() {
+  using namespace grc::rs;
+  enum class Held { Flat, Layered, Other, None };
+  for (const bool gl : {false, true}) {
+    for (const Held held : {Held::Flat, Held::Layered, Held::Other, Held::None}) {
+      const std::string label = std::string(gl ? "gl" : "rd") +
+          (held == Held::Flat ? " flat" : held == Held::Layered ? " layered" :
+           held == Held::Other ? " other rid" : " no item");
+      fake::install();
+      adopt_materials_attachment_end();
+      material_parameter_interface();
+      auto &w = fake::world();
+      std::vector<uint64_t> reads;
+      fake_rendering_server(&reads);
+      const uint64_t drawn = 0xabc700, other = 0xabc701;
+      auto &texture = held == Held::Layered
+          ? w.make({"Object", "Resource", "Texture", "TextureLayered", "Texture2DArray"}, drawn)
+          : w.make({"Object", "Resource", "Texture", "Texture2D", "ImageTexture"},
+                   held == Held::Other ? other : drawn);
+      auto &engine = w.make({"Object", "Engine"});
+      auto &tree = w.make({"Object", "SceneTree"});
+      auto &root = w.make({"Object", "Node", "Window", "Viewport"});
+      auto &node = w.make({"Object", "Node", "CanvasItem", "Node2D", "Sprite2D"}, 0xabc702);
+      w.singletons["Engine"] = &engine;
+      w.overrides["Engine.get_main_loop"] = [&tree](fake::Object *, FakeArgs, void *out) {
+        fake::put_object(out, &tree);
+      };
+      w.overrides["SceneTree.get_root"] = [&root](fake::Object *, FakeArgs, void *out) {
+        fake::put_object(out, &root);
+      };
+      w.overrides["Object.connect"] = [](fake::Object *, FakeArgs, void *out) { fake::put_int(out, 0); };
+      w.overrides["Object.get"] = [&texture](fake::Object *, FakeArgs args, void *out) {
+        if (fake::name_of(args[0]) != "texture") return;
+        void *object = &texture;
+        fake::detail::from_type<void *, GDEXTENSION_VARIANT_TYPE_OBJECT>(out, &object);
+      };
+      registry_configure(false, RegistryFault::None);
+      stream_begin();
+      g_gl_readback = gl;
+      g_material_adopt_to_mirror = true;
+      adopt_materials_configure(AdoptMaterialSabotage::None);
+      auto &m = mirror_instance();
+      adopt_materials_at_arm();  // connects node_added, the node map the guard reads
+      m.adopt_item(node.rid, 1);
+      m.set_parent(node.rid, kRootCanvas, 1);
+      {
+        alignas(8) unsigned char variant[24]{};
+        void *object = &node;
+        fake::detail::from_type<void *, GDEXTENSION_VARIANT_TYPE_OBJECT>(variant, &object);
+        const GDExtensionConstVariantPtr args[] = {variant};
+        GDExtensionCallError error{};
+        check(g_node_added_info.call_func != nullptr, "node proof: node-added callback exists");
+        if (g_node_added_info.call_func != nullptr)
+          g_node_added_info.call_func(g_node_added_info.callable_userdata, args, 1, nullptr, &error);
+      }
+      check(adopted_item_nodes().count(node.rid) == 1, "node proof: the node map holds the item for " + label);
+      const uint64_t item = held == Held::None ? 0 : node.rid;
+      materialize(drawn, RefKind::Texture, TextureProof::Unknown, item);
+      materialize(drawn, RefKind::Texture, TextureProof::Unknown, item);  // refused or known: no 2nd lookup
+      const bool proven = gl && held == Held::Flat;
+      check(reads.size() == (!gl || proven ? 1U : 0U), "node proof: getter reads for " + label);
+      check(w.count("Object.get") == (gl && held != Held::None ? 1 : 0),
+            "node proof: one property read per unproven RID, none on RD, for " + label);
+      const auto stats = adopt_resource_stats();
+      check(stats.node_proven == (proven ? 1U : 0U), "node proof: node_proven for " + label);
+      check(stats.refused_not_2d_unproven == (gl && !proven ? 1U : 0U),
+            "node proof: not-2d-unproven refusal for " + label);
+      g_gl_readback = false;
+      g_material_adopt_to_mirror = false;
+      stream_end();
+      adopt_release();
+      adopt_materials_attachment_end();
+    }
+  }
+  fake::install();
+}
+
+// A shader default's 2D proof survives a re-arm inside one attachment: the descriptor replays it
+// even though the per-arm proof map is cleared.
+void test_gl_shader_default_rearm() {
+  using namespace grc::rs;
+  for (const char *kind : {"ImageTexture", "Texture2DArray"}) {
+    fake::install();
+    adopt_materials_attachment_end();
+    auto &w = fake::world();
+    const bool flat = std::string(kind) == "ImageTexture";
+    auto &texture = w.make({"Object", "Resource", "Texture", kind,
+        flat ? "Texture2D" : "TextureLayered"}, 0xabc600);
+    auto &engine = w.make({"Object", "Engine"});
+    auto &tree = w.make({"Object", "SceneTree"});
+    auto &root = w.make({"Object", "Node", "Window", "Viewport"});
+    auto &shader = w.make({"Object", "Resource", "Shader"}, 0xabc601);
+    // One holder per arm; both share the shader RID, so arm 2 replays its descriptor.
+    fake::Object *nodes[2] = {&w.make({"Object", "Node", "CanvasItem", "Control"}, 0xabc605),
+                              &w.make({"Object", "Node", "CanvasItem", "Control"}, 0xabc607)};
+    fake::Object *materials[2] = {&w.make({"Object", "Resource", "Material", "ShaderMaterial"}, 0xabc604),
+                                  &w.make({"Object", "Resource", "Material", "ShaderMaterial"}, 0xabc606)};
+    const auto from_type = grc::g_iface.get_variant_from_type_constructor;
+    for (int arm = 1; arm <= 2; ++arm) {
+      const std::string label = std::string(kind) + " arm " + std::to_string(arm);
+      auto &node = *nodes[arm - 1];
+      auto &material = *materials[arm - 1];
+      // The bindings and the fake's behaviour are per attach; the shader descriptor survives.
+      fake::install();
+      material_parameter_interface();
+      grc::g_iface.get_variant_from_type_constructor = [](GDExtensionVariantType type) {
+        if (type == GDEXTENSION_VARIANT_TYPE_RID)
+          return &fake::detail::from_type<uint64_t, GDEXTENSION_VARIANT_TYPE_RID>;
+        if (type == GDEXTENSION_VARIANT_TYPE_STRING)
+          return &fake::detail::from_type<void *, GDEXTENSION_VARIANT_TYPE_STRING>;
+        return fake::detail::from_type_ctor(type);
+      };
+      std::vector<uint64_t> reads;
+      fake_rendering_server(&reads);
+      w.singletons["Engine"] = &engine;
+      w.overrides["Engine.get_main_loop"] = [&tree](fake::Object *, FakeArgs, void *out) {
+        fake::put_object(out, &tree);
+      };
+      w.overrides["SceneTree.get_root"] = [&root](fake::Object *, FakeArgs, void *out) {
+        fake::put_object(out, &root);
+      };
+      w.overrides["Object.connect"] = [](fake::Object *, FakeArgs, void *out) { fake::put_int(out, 0); };
+      w.overrides["CanvasItem.get_material"] = [&material](fake::Object *, FakeArgs, void *out) {
+        fake::put_object(out, &material);
+      };
+      w.overrides["ShaderMaterial.get_shader"] = [&shader](fake::Object *, FakeArgs, void *out) {
+        fake::put_object(out, &shader);
+      };
+      w.overrides["Shader.get_code"] = [](fake::Object *, FakeArgs, void *out) {
+        const auto *code = &fake::intern("shader_type canvas_item; uniform sampler2D tint;");
+        std::memcpy(out, &code, sizeof(code));
+      };
+      w.overrides["Shader.get_default_texture_parameter"] = [&texture](fake::Object *, FakeArgs, void *out) {
+        fake::put_object(out, &texture);
+      };
+      registry_configure(false, RegistryFault::None);
+      g_material_adopt_to_mirror = true;
+      g_gl_readback = true;
+      stream_begin();
+      adopt_materials_configure(AdoptMaterialSabotage::None);
+      auto &m = mirror_instance();
+      adopt_materials_at_arm();
+      m.adopt_item(node.rid, 1);
+      m.set_parent(node.rid, kRootCanvas, 1);
+      {
+        alignas(8) unsigned char variant[24]{};
+        void *object = &node;
+        fake::detail::from_type<void *, GDEXTENSION_VARIANT_TYPE_OBJECT>(variant, &object);
+        const GDExtensionConstVariantPtr args[] = {variant};
+        GDExtensionCallError error{};
+        if (g_node_added_info.call_func != nullptr)
+          g_node_added_info.call_func(g_node_added_info.callable_userdata, args, 1, nullptr, &error);
+      }
+      m.set_material(node.rid, material.rid, 1);
+      adopt_materials_at_arm();
+      check(m.knows_material(material.rid) && m.knows_shader(shader.rid),
+            "default re-arm: shader adopted on " + label);
+      check(reads.size() == (flat ? 1U : 0U), "default re-arm: getter calls on " + label);
+      check((adopt_refusals_json(1, 1).find("not-2d-unproven") != std::string::npos) == !flat,
+            "default re-arm: strict refusal only for the layered default on " + label);
+      g_gl_readback = false;
+      g_material_adopt_to_mirror = false;
+      stream_end();
+      adopt_release();
+      grc::g_iface.get_variant_from_type_constructor = from_type;
+    }
+    adopt_materials_attachment_end();
+  }
+  fake::install();
 }
 
 // A known shared shader must not turn an off-main lean material readback into a permanent
@@ -2656,7 +3047,6 @@ void test_reload_materialize_guards() {
   grc::rs::registry_configure(false, grc::rs::RegistryFault::None);
 }
 
-GDExtensionCallableCustomInfo2 g_node_added_info{};
 
 void test_reentry_admission() {
   fake::install();
@@ -3433,6 +3823,24 @@ void test_staged_canvas_texture_rereads() {
         "staged ctex: channel and sampling changes during drain survive adoption");
   check(adopt_resource_stats().canvas_residual==3 && adopt_resource_stats().textures_refused==0,
         "staged ctex: retries are dependencies without refusals");
+  {
+    // GL: an unregistered CanvasTexture wrapper is refused like any unproven RID, before the
+    // getter and the resolver, so the resolver reads no renderer storage and caches nothing.
+    g_gl_readback=true;
+    const auto resolver_before=resolver.json();
+    const auto reads_before=reads.size();
+    const auto hooks_before=g_ctex_hook_calls.size();
+    const auto refused_before=adopt_resource_stats().textures_refused;
+    materialize(Storage::wrapper(9),RefKind::Texture);
+    adopt_frame_drain();
+    check(reads.size()==reads_before && g_ctex_hook_calls.size()==hooks_before &&
+          resolver.json()==resolver_before,
+          "gl ctex: unregistered wrapper makes no getter call, no resolver call, no cache entry");
+    check(adopt_resource_stats().textures_refused==refused_before+1 &&
+          adopt_refusals_json(1,1).find("not-2d-unproven")!=std::string::npos,
+          "gl ctex: unregistered wrapper is refused as not-2d-unproven");
+    g_gl_readback=false;
+  }
   g_canvas_resolver=nullptr;
   g_canvas_reader=nullptr;
   g_stage_test_adopt=false;
@@ -3636,6 +4044,11 @@ int main() {
   // From here the fake engine is installed (process-wide): the engine-free tests above run first.
   test_reentry_admission();
   test_fake_binds();
+  test_gl_unproven_readback();
+  test_gl_material_resource_class();
+  test_gl_node_texture_proof();
+  test_gl_replace_proof();
+  test_gl_shader_default_rearm();
   test_multimesh_from_registry();
   test_offmain_lean_material();
   test_canvas_texture_channels_not_reread();

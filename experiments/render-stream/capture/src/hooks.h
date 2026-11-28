@@ -217,7 +217,7 @@ void hooks_internal_end();
 bool hooks_adopt_shader(uint64_t rid, const std::string &code);
 bool hooks_adopt_shader_refused(uint64_t rid, rs2::ShaderReason reason);
 void hooks_adopt_default_texture(uint64_t shader, const std::string &name, uint64_t texture,
-                                 int32_t index);
+                                 int32_t index, rs::TextureProof proof = rs::TextureProof::Unknown);
 bool hooks_adopt_material(uint64_t material, uint64_t shader,
                           const std::vector<rs::AdoptParam> &params);
 // The references a frame-boundary resolution completes: the item's material and the material's

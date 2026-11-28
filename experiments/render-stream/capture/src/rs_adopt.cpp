@@ -33,6 +33,7 @@ namespace rs {
 
 #ifdef GRC_ADOPT_TEST
 // Exercise storage resolution and staging together without an attached engine.
+bool adopt_test_readback_requires_2d();
 bool adopt_test_canvas_texture_resolve(std::uint64_t rid, CanvasTextureChannels *out);
 void adopt_test_canvas_texture_forget(std::uint64_t rid);
 #endif
@@ -1368,6 +1369,70 @@ struct Census {
 };
 Census g_census;
 
+std::unordered_map<std::uint64_t, TextureProof> g_texture_proofs;  // under g_res_mutex
+std::unordered_set<std::uint64_t> g_canvas_resource_rids;  // Class-proven wrappers, never images.
+
+void remember_texture_proof(std::uint64_t rid, TextureProof proof) {
+  if (!rid || proof == TextureProof::Unknown) return;
+  std::lock_guard<std::mutex> lock(g_res_mutex);
+  auto &stored = g_texture_proofs[rid];
+  if (stored != TextureProof::Disproven) stored = proof;
+}
+
+TextureProof remembered_texture_proof(std::uint64_t rid) {
+  std::lock_guard<std::mutex> lock(g_res_mutex);
+  const auto it = g_texture_proofs.find(rid);
+  return it == g_texture_proofs.end() ? TextureProof::Unknown : it->second;
+}
+
+bool gl_texture_readback() {
+#ifdef GRC_ADOPT_TEST
+  return adopt_test_readback_requires_2d();
+#else
+  return !g_res_dummy_host.load(std::memory_order_relaxed) &&
+         canvas_texture_readback_requires_2d();
+#endif
+}
+
+TextureProof texture_resource_proof(void *object, std::uint64_t rid) {
+  if (!object || !gl_texture_readback()) return TextureProof::Unknown;
+  static void *texture_2d = Tags::tag("Texture2D");
+  static void *layered = Tags::tag("TextureLayered");
+  static void *texture_3d = Tags::tag("Texture3D");
+  static void *canvas = Tags::tag("CanvasTexture");
+  if (as(object, canvas)) {
+    std::lock_guard<std::mutex> lock(g_res_mutex);
+    g_canvas_resource_rids.insert(rid);
+    return TextureProof::Disproven;
+  }
+  if (as(object, layered) || as(object, texture_3d)) return TextureProof::Disproven;
+  return as(object, texture_2d) ? TextureProof::Proven : TextureProof::Unknown;
+}
+
+// GL: the canvas items whose draws named a texture RID that arrived without proof. Recorded for
+// cold references only (materialize returns before this for known and refused RIDs), read once by
+// the guard, which then forgets the RID. Integers only, so off-main draws may record too.
+std::unordered_map<std::uint64_t, std::vector<std::uint64_t>> g_texture_draw_items;  // g_res_mutex
+constexpr std::size_t kDrawItemsPerTexture = 4;
+
+void remember_draw_item(std::uint64_t rid, std::uint64_t item) {
+  std::lock_guard<std::mutex> lock(g_res_mutex);
+  auto &items = g_texture_draw_items[rid];
+  if (items.size() < kDrawItemsPerTexture && std::find(items.begin(), items.end(), item) == items.end())
+    items.push_back(item);
+}
+
+std::vector<std::uint64_t> take_draw_items(std::uint64_t rid) {
+  std::lock_guard<std::mutex> lock(g_res_mutex);
+  std::vector<std::uint64_t> items;
+  const auto it = g_texture_draw_items.find(rid);
+  if (it == g_texture_draw_items.end()) return items;
+  items = std::move(it->second);
+  g_texture_draw_items.erase(it);
+  return items;
+}
+
+
 // LAR1: a CanvasTexture's channels are the registry's (rs_registry.h RegistryCanvasTexture), not
 // a map of this file's: LATE-SPINE's g_ctex_channels moved there, recorded with GRC_ADOPT=arm only
 // and armed or not.
@@ -1459,6 +1524,7 @@ struct OwnedString {
 // A Variant slot (24 bytes; all zero is NIL), destroyed through variant_destroy.
 struct VariantSlot {
   alignas(8) unsigned char data[24] = {};
+  TextureProof texture_proof = TextureProof::Unknown;
   VariantSlot() = default;
   VariantSlot(const VariantSlot &) = delete;
   VariantSlot &operator=(const VariantSlot &) = delete;
@@ -2088,7 +2154,7 @@ rs2::AdoptedContent declared(rs2::AdoptedContent honest) {
   return fault() == AdoptFault::ClaimCurrent ? rs2::AdoptedContent::Current : honest;
 }
 
-void materialize_texture(std::uint64_t rid);  // forward
+void materialize_texture(std::uint64_t rid, TextureProof proof = TextureProof::Unknown);  // forward
 void *node_of(std::uint64_t item_rid);  // forward (defined in the G8m section, below)
 
 // PM9: read a cached CanvasTexture resource's channels and register the adopted entry, as
@@ -2098,20 +2164,31 @@ bool adopt_canvas_texture_resource(void *canvas, std::uint64_t rid) {
   std::uint64_t diffuse = 0;
   std::uint64_t normal = 0;
   std::uint64_t specular = 0;
+  TextureProof diffuse_2d = TextureProof::Unknown, normal_2d = TextureProof::Unknown,
+      specular_2d = TextureProof::Unknown;
   {
     RefSlot slot;
     ptrcall(kCtexGetDiffuseTexture, canvas, nullptr, &slot.slot);
-    if (slot.object() != nullptr) diffuse = get_rid(kResourceGetRid, slot.object());
+    if (slot.object() != nullptr) {
+      diffuse = get_rid(kResourceGetRid, slot.object());
+      diffuse_2d = texture_resource_proof(slot.object(), diffuse);
+    }
   }
   {
     RefSlot slot;
     ptrcall(kCtexGetNormalTexture, canvas, nullptr, &slot.slot);
-    if (slot.object() != nullptr) normal = get_rid(kResourceGetRid, slot.object());
+    if (slot.object() != nullptr) {
+      normal = get_rid(kResourceGetRid, slot.object());
+      normal_2d = texture_resource_proof(slot.object(), normal);
+    }
   }
   {
     RefSlot slot;
     ptrcall(kCtexGetSpecularTexture, canvas, nullptr, &slot.slot);
-    if (slot.object() != nullptr) specular = get_rid(kResourceGetRid, slot.object());
+    if (slot.object() != nullptr) {
+      specular = get_rid(kResourceGetRid, slot.object());
+      specular_2d = texture_resource_proof(slot.object(), specular);
+    }
   }
   std::int64_t filter = 0;
   std::int64_t repeat = 0;
@@ -2120,9 +2197,9 @@ bool adopt_canvas_texture_resource(void *canvas, std::uint64_t rid) {
   // The channel textures are adopted first (a canvas texture's diffuse must be a known texture);
   // one the mirror knows or this stream refused is not read back again (CanvasTextures share
   // atlas pages).
-  materialize_texture(diffuse);
-  materialize_texture(normal);
-  materialize_texture(specular);
+  materialize_texture(diffuse, diffuse_2d);
+  materialize_texture(normal, normal_2d);
+  materialize_texture(specular, specular_2d);
   if (stage_pending(diffuse) || stage_pending(normal) || stage_pending(specular)) {
     stage_queue(rid);
     return false;
@@ -2367,6 +2444,39 @@ void reload_one(ReloadEntry entry, const void *path, bool check_mipmaps, bool ch
 // growing, a texture_replace) keeps G8r's rule: an atlas page or a cached compressed texture is
 // current, anything else creation. Rendered attach slices the census before dependent textures
 // drain; direct callers retain lazy one-shot construction when such a texture needs it.
+// GL, main thread: the drawing node's `texture` property is the Resource the draw names when it
+// is a Resource whose RID is exactly `rid`; its class then proves 2D (Texture2D, and neither
+// layered, 3D nor a CanvasTexture wrapper). No node, no property, another RID or another class
+// proves nothing. One lookup per unproven RID: the guard refuses (or adopts) it right after.
+bool node_texture_proves_2d(std::uint64_t rid) {
+  const std::vector<std::uint64_t> items = take_draw_items(rid);
+  if (items.empty()) return false;
+  static GDExtensionMethodBindPtr get = method_bind("Object", "get", 2760726917LL);
+  static void *resource = Tags::tag("Resource");
+  static void *texture_2d = Tags::tag("Texture2D");
+  static void *layered = Tags::tag("TextureLayered");
+  static void *texture_3d = Tags::tag("Texture3D");
+  static void *canvas = Tags::tag("CanvasTexture");
+  if (get == nullptr || resource == nullptr || texture_2d == nullptr) return false;
+  for (const std::uint64_t item : items) {
+    void *node = node_of(item);
+    if (node == nullptr) continue;
+    StringName key("texture");
+    const GDExtensionConstTypePtr args[1] = {key.ptr()};
+    VariantSlot value;
+    g_iface.object_method_bind_ptrcall(get, node, args, value.data);
+    if (value.type() != GDEXTENSION_VARIANT_TYPE_OBJECT) continue;
+    void *object = nullptr;
+    g_iface.get_variant_to_type_constructor(GDEXTENSION_VARIANT_TYPE_OBJECT)(&object, value.data);
+    if (object == nullptr || as(object, resource) == nullptr ||
+        get_rid(kResourceGetRid, object) != rid) continue;
+    if (as(object, texture_2d) != nullptr && !as(object, layered) && !as(object, texture_3d) &&
+        !as(object, canvas))
+      return true;
+  }
+  return false;
+}
+
 void adopt_texture_locked_out(std::uint64_t rid) {
   ArmPhase phase(&AdoptMaterialStats::arm_texture_other_ns);
   if (g_arm_profile) ++g_arm_profile->arm_texture_other;
@@ -2481,14 +2591,62 @@ void adopt_texture_locked_out(std::uint64_t rid) {
     }
   }
   RefSlot creation;
+  bool compressed = false;
+  const bool gl_readback = !held && !reload_source && gl_texture_readback();
+  bool canvas_wrapper = false;
   if (!held && !reload_source) {
+    if (gl_readback) {
+      TextureProof proof = TextureProof::Unknown;
+      {
+        std::lock_guard<std::mutex> lock(g_res_mutex);
+        if (!pristine) compressed = census_compressed_at_reference(rid);
+        const auto it = g_texture_proofs.find(rid);
+        if (it != g_texture_proofs.end()) proof = it->second;
+        canvas_wrapper = g_canvas_resource_rids.count(rid) || g_census.canvas_textures.count(rid);
+      }
+      const bool kind_proves_2d = registered_now &&
+          (kind == RegistryKind::Texture2d || kind == RegistryKind::TexturePlaceholder) &&
+          !rs::registry_texture_storage_unproven(rid);
+      bool proven = proof != TextureProof::Disproven &&
+          (proof == TextureProof::Proven || compressed || kind_proves_2d);
+      if (!proven && !canvas_wrapper && main && proof == TextureProof::Unknown &&
+          node_texture_proves_2d(rid)) {
+        remember_texture_proof(rid, TextureProof::Proven);
+        std::lock_guard<std::mutex> lock(g_res_mutex);
+        ++g_res_stats.node_proven;
+        proven = true;
+      }
+      if (proven || canvas_wrapper) take_draw_items(rid);
+      if (!proven && !canvas_wrapper) {
+        auto record = refusal_record(rid, "not-2d-unproven");
+        std::lock_guard<std::mutex> lock(g_res_mutex);
+        if (refuse_locked(rid, Refusal::Texture)) {
+          ++g_res_stats.textures_refused;
+          ++g_res_stats.refused_not_2d_unproven;
+          record_refusal_locked(std::move(record));
+        }
+        g_res_stats.lookup_ns += now_ns() - t0;
+        return;
+      }
+    }
     void *rs_singleton = singleton_object("RenderingServer");
-    if (rs_singleton != nullptr) {
+    if (rs_singleton != nullptr && !canvas_wrapper) {
       const GDExtensionConstTypePtr args[1] = {&rid};
       // RenderingDevice::texture_get_data_async requires the render thread (Godot 4.5
       // ERR_RENDER_THREAD_GUARD). This attached callback runs on the main thread and
       // capture has no calibrated render-thread submission/callback lifetime path.
       // Keep the synchronous getter here, inside the per-frame adoption budget.
+#ifdef GRC_GL_READBACK_PROBE
+      // Probe builds intercept the hazardous RID before entering the engine getter.
+      const char *probe_rid = rs::env("GRC_TEST_NON2D_RID");
+      if (probe_rid && std::strtoull(probe_rid, nullptr, 10) == rid) {
+        const char *allow_rd = rs::env("GRC_TEST_ALLOW_RD_READBACK");
+        const bool skip = !allow_rd || std::strcmp(allow_rd, "1") != 0;
+        std::fprintf(stderr, "GRC_GL_READBACK_PROBE attempted rid=%llu layers=3 skipped=%d\n",
+                     static_cast<unsigned long long>(rid), skip ? 1 : 0);
+        if (!skip) ptrcall(kRsTexture2dGet, rs_singleton, args, &creation.slot);
+      } else
+#endif
       ptrcall(kRsTexture2dGet, rs_singleton, args, &creation.slot);
     }
   }
@@ -2541,8 +2699,7 @@ void adopt_texture_locked_out(std::uint64_t rid) {
       return;
     }
   }
-  bool compressed = false;
-  if (!held && !reload_source && !pristine) {
+  if (!held && !reload_source && !pristine && !gl_readback) {
     std::lock_guard<std::mutex> lock(g_res_mutex);
     compressed = census_compressed_at_reference(rid);
   }
@@ -2620,14 +2777,14 @@ void adopt_texture_locked_out(std::uint64_t rid) {
 // never read back again; otherwise it dispatches on the kind the registry recorded -- a
 // CanvasTexture from its recorded channels, anything else through the texture read-back. Main
 // thread (materialize queues an off-main reference).
-void materialize_texture(std::uint64_t rid);
+void materialize_texture(std::uint64_t rid, TextureProof proof);
 
 // VS2 (Q3b(4)): a registered TextureProxy is never read back (texture_2d_get on a proxy returns its
 // target's image, or nothing on the dummy); it is adopted by resolution, as texture_proxy_create
 // resolves it: the recorded (adjacency) viewport, else the base (adopted first when it is a plain
 // texture), else unresolved for the node route. The registry records the kind only when viewports
 // are live, so this never runs otherwise.
-void adopt_proxy_registered(std::uint64_t rid, const rs::RegistryProxy &proxy) {
+void adopt_proxy_registered(std::uint64_t rid, const rs::RegistryProxy &proxy, TextureProof proof) {
   const std::uint64_t t0 = now_ns();
   const std::uint64_t frame = hooks_current_frame();
   std::uint64_t rt_viewport = 0;
@@ -2649,7 +2806,7 @@ void adopt_proxy_registered(std::uint64_t rid, const rs::RegistryProxy &proxy) {
       // only in frame_pre_draw, which the dummy never emits).
       hooks_adopt_placeholder(proxy.base, frame);
     } else if (!rs::registry_is_viewport(proxy.base) && !rs::registry_proxy(proxy.base, &nested)) {
-      materialize_texture(proxy.base);
+      materialize_texture(proxy.base, proof);
     }
     if (stage_pending(proxy.base)) {
       stage_queue(rid);
@@ -2680,14 +2837,20 @@ void refuse_viewport_texture(std::uint64_t rid) {
   }
 }
 
-void materialize_texture(std::uint64_t rid) {
+void materialize_texture(std::uint64_t rid, TextureProof proof) {
   if (rid == 0 || mirror_instance().knows_texture(rid) || is_refused(rid)) {
     return;
   }
+  if (gl_texture_readback()) remember_texture_proof(rid, proof);
   if (rs::registry_on()) {
     rs::RegistryProxy proxy;
     if (rs::registry_proxy(rid, &proxy)) {
-      adopt_proxy_registered(rid, proxy);
+      if (proof == TextureProof::Unknown && gl_texture_readback()) {
+        std::lock_guard<std::mutex> lock(g_res_mutex);
+        const auto it = g_texture_proofs.find(rid);
+        if (it != g_texture_proofs.end()) proof = it->second;
+      }
+      adopt_proxy_registered(rid, proxy, proof);
       return;
     }
     // A viewport RID, or a rendered host's render-target texture (texture_2d_get on it would read
@@ -2920,6 +3083,9 @@ void adopt_emitters_reset();                  // PM7, below
 void adopt_emitters_forget(std::uint64_t rid);  // PM7, below
 
 void adopt_resources_begin(AdoptFault f, bool dummy_host) {
+#ifndef GRC_ADOPT_TEST
+  if (!dummy_host) canvas_texture_readback_requires_2d();  // Main thread, before reference admission.
+#endif
   stage_end();
   adopt_emitters_reset();
   queue_reset();
@@ -2931,6 +3097,9 @@ void adopt_resources_begin(AdoptFault f, bool dummy_host) {
   warm_counters().reset();
   g_warm_stats.fault = adopt_fault_name(f);
   std::swap(dropped, g_reload_sources);
+  g_texture_proofs.clear();
+  g_canvas_resource_rids.clear();
+  g_texture_draw_items.clear();
   g_res_stats = AdoptResourceStats();
   g_reload_stats = ReloadStats();
   g_reload_stats.fault = adopt_fault_name(f);
@@ -3035,6 +3204,12 @@ WarmStats adopt_warm_at_arm(std::uint64_t arm_t0_ns, const std::string &workers)
           reload_source = std::move(it->second);
           g_reload_sources.erase(it);
         }
+      } else if (source == WarmSource::Registry && gl_texture_readback() &&
+                 registry_texture_storage_unproven(rec.rid)) {
+        // The record's storage was replaced from an unregistered source; the getter would size a
+        // one-layer buffer for it. The lazy reference refuses it as not-2d-unproven.
+        ++stats.skipped_by.unproven;
+        continue;
       } else if (server) {
         const GDExtensionConstTypePtr args[1] = {&rec.rid};
         ptrcall(kRsTexture2dGet, server, args, &image.slot);
@@ -3611,9 +3786,9 @@ namespace {
 // materialize()'s main-thread handlers (LAR6): the gates every family shares (a null RID, adoption
 // inactive or faulted off, the mirror off), a known RID, a refused RID and the off-main queue are
 // materialize's; these hold what each family adds.
-void ref_texture(std::uint64_t rid) {
+void ref_texture(std::uint64_t rid, TextureProof proof = TextureProof::Unknown) {
   t_res_inside = true;
-  materialize_texture(rid);
+  materialize_texture(rid, proof);
   t_res_inside = false;
 }
 
@@ -3781,6 +3956,9 @@ void adopt_resource_freed(std::uint64_t rid) {
   bool warm_cancelled = false;
   {
     std::lock_guard<std::mutex> lock(g_res_mutex);
+    g_texture_proofs.erase(rid);
+    g_canvas_resource_rids.erase(rid);
+    g_texture_draw_items.erase(rid);
     warm_present = g_warm.find(rid) != g_warm.end();
     const auto refused = g_refused.find(rid);
     if (refused != g_refused.end()) {
@@ -4129,10 +4307,16 @@ void mat_stat(F f) {
 
 // Attachment-local snapshots. Detached setters have no value tap, so detach drops these.
 // Existing event hooks invalidate descriptors; only the attached parameter hook marks names dirty.
+// A default texture and the proof it was adopted with, so a re-arm within the attachment replays
+// the same 2D standing (the proof map itself is cleared per arm).
+struct DescriptorDefault {
+  RegistryDefaultTexture texture;
+  TextureProof proof = TextureProof::Unknown;
+};
 struct ShaderDescriptor {
   std::string code;
   bool refused = false;
-  std::vector<RegistryDefaultTexture> defaults;
+  std::vector<DescriptorDefault> defaults;
 };
 struct MaterialValues {
   std::uint64_t shader = 0;
@@ -4167,7 +4351,7 @@ bool replay_shader_descriptor(std::uint64_t rid) {
       if (descriptor.refused) ++stats.shaders_include_refused;
     });
     for (const auto &d : descriptor.defaults) {
-      hooks_adopt_default_texture(rid, d.name, d.texture, d.index);
+      hooks_adopt_default_texture(rid, d.texture.name, d.texture.texture, d.texture.index, d.proof);
       mat_stat([](AdoptMaterialStats &stats) { ++stats.default_textures; });
     }
   }
@@ -4474,8 +4658,11 @@ bool ensure_shader(void *shader, std::uint64_t rid) {
       const std::uint64_t tex =
           texture.object() != nullptr ? get_rid(kResourceGetRid, texture.object()) : 0;
       if (tex != 0) {
-        descriptor.defaults.push_back({u.name, 0, tex});
-        hooks_adopt_default_texture(rid, u.name, tex, 0);
+        const TextureProof proof = gl_texture_readback() ? texture_resource_proof(texture.object(), tex)
+                                                          : TextureProof::Unknown;
+        if (gl_texture_readback()) remember_texture_proof(tex, proof);
+        descriptor.defaults.push_back({{u.name, 0, tex}, proof});
+        hooks_adopt_default_texture(rid, u.name, tex, 0, proof);
         mat_stat([](AdoptMaterialStats &s) { ++s.default_textures; });
       }
     }
@@ -4607,6 +4794,7 @@ std::unique_ptr<VariantSlot> server_value(std::unique_ptr<VariantSlot> v) {
     return nullptr;
   }
   auto out = std::make_unique<VariantSlot>();
+  out->texture_proof = texture_resource_proof(resource, rid);
   g_iface.get_variant_from_type_constructor(GDEXTENSION_VARIANT_TYPE_RID)(out->data, &rid);
   return out;
 }
@@ -4653,7 +4841,7 @@ bool adopt_material_object(void *material, std::uint64_t rid, bool at_arm) {
       });
       for (std::size_t i = 0; i < names.size(); ++i) {
         if (cached_values[i]->type() != GDEXTENSION_VARIANT_TYPE_NIL)
-          params.push_back({names[i], cached_values[i]->data});
+          params.push_back({names[i], cached_values[i]->data, cached_values[i]->texture_proof});
       }
       // The cache owns the slots through hooks_adopt_material below.
 
@@ -4688,7 +4876,7 @@ bool adopt_material_object(void *material, std::uint64_t rid, bool at_arm) {
             material)));
       });
       for (std::size_t i = 0; i < names.size(); ++i)
-        params.push_back({names[i], cached_values[i]->data});
+        params.push_back({names[i], cached_values[i]->data, cached_values[i]->texture_proof});
     }
   } else {
     return false;  // no recipe for this class: the hooks' unknown-material stays
@@ -4802,8 +4990,9 @@ bool materialize_shader(std::uint64_t rid) {
     mat_stat([](AdoptMaterialStats &s) { ++s.shaders; });
     // Lean descriptors retain indexed defaults whose array length has no public getter.
     for (const auto &d : reg.defaults) {
-      descriptor.defaults.push_back(d);
-      hooks_adopt_default_texture(rid, d.name, d.texture, d.index);
+      const TextureProof proof = remembered_texture_proof(d.texture);
+      descriptor.defaults.push_back({d, proof});
+      hooks_adopt_default_texture(rid, d.name, d.texture, d.index, proof);
       mat_stat([](AdoptMaterialStats &s) { ++s.default_textures; });
     }
     for (const auto &param : server_parameters(rid, server)) {
@@ -4817,8 +5006,9 @@ bool materialize_shader(std::uint64_t rid) {
           return d.name == param.name && d.index == index;
         });
         if (retained != reg.defaults.end()) continue;
-        descriptor.defaults.push_back({param.name, static_cast<std::int32_t>(index), texture});
-        hooks_adopt_default_texture(rid, param.name, texture, static_cast<std::int32_t>(index));
+        const TextureProof proof = remembered_texture_proof(texture);
+        descriptor.defaults.push_back({{param.name, static_cast<std::int32_t>(index), texture}, proof});
+        hooks_adopt_default_texture(rid, param.name, texture, static_cast<std::int32_t>(index), proof);
         mat_stat([](AdoptMaterialStats &s) { ++s.default_textures; });
       }
     }
@@ -4864,7 +5054,7 @@ bool adopt_material_registered(std::uint64_t rid, const rs::RegistryMaterial &re
     for (std::size_t i = 0; i < names.size(); ++i) {
       // NIL means no override. Keep the shader's default, including its default texture.
       if (cached_values[i]->type() != GDEXTENSION_VARIANT_TYPE_NIL)
-        params.push_back({names[i], cached_values[i]->data});
+        params.push_back({names[i], cached_values[i]->data, cached_values[i]->texture_proof});
     }
   } else if (mat_sabotage() != AdoptMaterialSabotage::SkipParams) {
     params.reserve(reg.params.size());
@@ -5170,14 +5360,14 @@ void adopt_materials_at_arm() {
   });
 }
 
-bool materialize_param_texture(std::uint64_t rid, bool shader_default) {
-  if (!g_arm_profile) return materialize(rid, RefKind::Texture);
+bool materialize_param_texture(std::uint64_t rid, bool shader_default, TextureProof proof) {
+  if (!g_arm_profile) return materialize(rid, RefKind::Texture, proof);
   // The outer phase includes known textures and proxy/CanvasTexture dispatch. Each 2D
   // dependency adopts in its own nested phase, so several channels cannot overwrite a result.
   ArmPhase phase(&AdoptMaterialStats::arm_texture_other_ns);
   ++g_arm_profile->arm_texture_references;
   const auto start = g_arm_since;
-  const bool result = materialize(rid, RefKind::Texture);
+  const bool result = materialize(rid, RefKind::Texture, proof);
   if (shader_default) {
     ++g_arm_profile->arm_default_textures;
     g_arm_profile->arm_default_textures_ns += now_ns() - start;
@@ -6005,7 +6195,7 @@ bool materialize_texture_replace_source(std::uint64_t rid) {
   return adopted;
 }
 
-bool materialize(std::uint64_t rid, RefKind ref) {
+bool materialize(std::uint64_t rid, RefKind ref, TextureProof proof, std::uint64_t item) {
   // Admission precedes all per-arm flags; a standby invocation keeps that view when nested.
   if (rid == 0) {
     return false;
@@ -6053,12 +6243,16 @@ bool materialize(std::uint64_t rid, RefKind ref) {
   if (is_refused(rid)) {
     return false;  // refused once this stream: never read back again
   }
+  // Only cold, admitted references need proof. Known textures and RD retain their fast paths.
+  const bool gl = ref == RefKind::Texture && gl_texture_readback();
+  if (gl) remember_texture_proof(rid, proof);
+  if (gl && item != 0 && proof == TextureProof::Unknown) remember_draw_item(rid, item);
   if (std::this_thread::get_id() != g_res_main) {
     queue_offmain(rid, ref);  // design R4: drained at the frame boundary, on the main thread
     return false;
   }
   switch (ref) {
-  case RefKind::Texture: ref_texture(rid); break;
+  case RefKind::Texture: ref_texture(rid, proof); break;
   case RefKind::Mesh: ref_mesh(rid); break;
   case RefKind::Multimesh: adopt_multimesh_locked_out(rid); break;
   case RefKind::Particles: ref_particles(rid); break;
@@ -6724,6 +6918,9 @@ std::size_t adopt_release() {
     std::vector<ReloadEntry>().swap(g_reload_entries);
     g_reload_stats = ReloadStats();
     g_reload_entries_dropped = 0;
+    g_texture_proofs.clear();
+    g_canvas_resource_rids.clear();
+    g_texture_draw_items.clear();
     g_refused = RidMap<Refusal>();
     g_refused_textures.store(0, std::memory_order_release);
     std::vector<RefusalRecord>().swap(g_refusal_records);

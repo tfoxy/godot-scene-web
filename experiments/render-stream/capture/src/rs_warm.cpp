@@ -127,6 +127,7 @@ std::string warm_json(const WarmStats &s) {
   field("updated", s.skipped_by.updated);
   field("evicted", s.skipped_by.evicted);
   field("no_image", s.skipped_by.no_image);
+  field("unproven", s.skipped_by.unproven);
   j << '}';
   field("queued", s.queued);
   field("from_reload", s.from_reload);

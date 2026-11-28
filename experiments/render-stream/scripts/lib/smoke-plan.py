@@ -521,6 +521,15 @@ def self_test(m):
     check("rs-core without sabotage content skips the sabotage legs", not d["sabotage"]["run"])
     f = P("experiments/render-stream/capture/src/hooks.cpp")
     check("the capture library reaches everything", set(f["targets"]) == uni)
+    for path in ("experiments/render-stream/fixtures/texture-dimensionality/probe.gd",
+                 "experiments/render-stream/scripts/probe-texture-dimensionality.sh",
+                 "experiments/render-stream/scripts/lib/check-texture-dimensionality.py",
+                 "experiments/render-stream/scripts/probe-texture-adoption.sh",
+                 "experiments/render-stream/scripts/lib/check-texture-adoption.py"):
+        dimensionality = P(path)
+        check(path + " reaches adoption validation without a map gap",
+              not dimensionality["unmatched"] and set(dimensionality["targets"])
+              == {"capture-build", "pure", "native:gate8@rust"})
     seam = P("experiments/render-stream/capture/src/rs_adopt.cpp", "experiments/render-stream/capture/src/rs_texture_decode.h")
     check("the gate 8 seams reach the build, the pure tests, gate 0 and gate 8 only (G8w, G8a)",
           set(seam["targets"]) == {"capture-build", "pure", "macos", "native:gate0@rust", "native:gate8@rust"})

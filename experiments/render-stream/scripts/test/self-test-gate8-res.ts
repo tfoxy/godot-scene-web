@@ -408,6 +408,96 @@ expect(
     .problems.length > 0,
   "1b: an unknown item RID fails",
 );
+
+// 1b (GL): the worker-thread-only texture is the one refusal, typed not-2d-unproven at frame 16.
+const glLate = (): CaptureResult => {
+  const r = lateResult();
+  r.rendering_method = "gl_compatibility";
+  const res = r.stream!.gate8!.adopt_stats!.resources!;
+  res.textures_refused = 1;
+  res.refused_not_2d_unproven = 1;
+  return r;
+};
+const glRefusals = () => ({
+  records: [{ rid: 330712481809, frame: 16, reason: "not-2d-unproven" }],
+});
+const glResidual = (
+  r: CaptureResult,
+  refusals:
+    | { records?: { rid: number; frame: number; reason: string }[] }
+    | undefined,
+) => judgeResLateResidual(r, honestRec(), [], expected, refusals).problems;
+expect(
+  glResidual(glLate(), glRefusals()).length === 0,
+  "1b GL: the one worker-thread refusal passes",
+  glResidual(glLate(), glRefusals()),
+);
+expect(
+  residual(glLate(), honestRec()).problems.length > 0,
+  "1b GL: no refusals.json fails",
+);
+{
+  const r = glLate();
+  delete r.rendering_method;
+  expect(
+    glResidual(r, glRefusals()).length > 0,
+    "1b GL: the same refusal on a non-GL host fails (RD keeps 0 refused)",
+  );
+}
+for (const [what, mutate, refusals] of [
+  [
+    "two refusals",
+    (r: CaptureResult) => {
+      r.stream!.gate8!.adopt_stats!.resources!.textures_refused = 2;
+      r.stream!.gate8!.adopt_stats!.resources!.refused_not_2d_unproven = 2;
+    },
+    {
+      records: [
+        { rid: 1, frame: 16, reason: "not-2d-unproven" },
+        { rid: 2, frame: 15, reason: "not-2d-unproven" },
+      ],
+    },
+  ],
+  [
+    "an untyped refusal",
+    (r: CaptureResult) => {
+      r.stream!.gate8!.adopt_stats!.resources!.refused_not_2d_unproven = 0;
+    },
+    glRefusals(),
+  ],
+  [
+    "a no-image refusal",
+    () => {},
+    { records: [{ rid: 1, frame: 16, reason: "no-image" }] },
+  ],
+  [
+    "a refusal at another frame (not the thread texture)",
+    () => {},
+    { records: [{ rid: 1, frame: 15, reason: "not-2d-unproven" }] },
+  ],
+  [
+    "no texture adopted",
+    (r: CaptureResult) => {
+      r.stream!.gate8!.adopt_stats!.resources!.textures = 0;
+    },
+    glRefusals(),
+  ],
+  [
+    "an adopted emitter",
+    (r: CaptureResult) => {
+      r.stream!.gate8!.particles!.adoption!.emitters = 1;
+    },
+    glRefusals(),
+  ],
+] as [
+  string,
+  (r: CaptureResult) => void,
+  { records: { rid: number; frame: number; reason: string }[] },
+][]) {
+  const r = glLate();
+  mutate(r);
+  expect(glResidual(r, refusals).length > 0, `1b GL: ${what} fails`);
+}
 expect(
   residual(
     lateResult(),

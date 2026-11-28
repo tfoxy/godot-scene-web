@@ -67,6 +67,9 @@ done
 # Allocator report checks use synthetic evidence and need no native capture build.
 NAMES+=("self-test-capture-memory-report")
 CMDS+=("python3 '$SCRIPT_DIR/lib/test-capture-memory-report.py'")
+# The CanvasTexture probe checker's control branches, judged on synthetic evidence.
+NAMES+=("self-test-canvas-textures-checker")
+CMDS+=("python3 '$SCRIPT_DIR/test/self-test-canvas-textures-checker.py'")
 # GRT2b and GRT4a pure bash self-tests: stub launches, a private lock dir, a private source cache.
 # self-test-socket-owners.sh is not here, because its old-scan half walks every /proc fd (~1 min).
 # self-test-gamescope-owner.sh is not here either: it starts real gamescope compositors on the GPU.

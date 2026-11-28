@@ -78,7 +78,7 @@ struct WarmScanned {
   std::uint64_t registered_2d = 0, mirror_known = 0, refused = 0, census_unregistered = 0;
 };
 struct WarmSkippedBy {
-  std::uint64_t not_texture2d = 0, released = 0, updated = 0, evicted = 0, no_image = 0;
+  std::uint64_t not_texture2d = 0, released = 0, updated = 0, evicted = 0, no_image = 0, unproven = 0;
 };
 struct WarmLazyAtReference {
   std::uint64_t updated = 0, unregistered = 0;

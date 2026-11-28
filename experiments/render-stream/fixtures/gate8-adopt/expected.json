@@ -95,5 +95,21 @@
         3
       ]
     }
+  },
+  "rendered_expectations": {
+    "gl_compatibility": {
+      "textures": 7,
+      "textures_current": 4,
+      "textures_creation": 3,
+      "textures_refused": 0,
+      "refusals_by_reason": {}
+    },
+    "forward_plus": {
+      "textures": 7,
+      "textures_current": 4,
+      "textures_creation": 3,
+      "textures_refused": 0,
+      "refusals_by_reason": {}
+    }
   }
 }

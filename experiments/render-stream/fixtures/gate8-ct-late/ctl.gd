@@ -5,7 +5,7 @@ extends Node
 ## it at frame 12, so every CanvasTexture is in the capture's registry
 ## and is adopted from its recorded channels; `late` loads it at frame 12, after everything exists
 ## (load-late, design F1): only the cached `.tres` (PM9, through the resource cache) can be adopted,
-## and the three runtime-built CanvasTextures are refused, typed `no-image`. Four 64x64 cells:
+## and the three runtime-built CanvasTextures are refused, typed `not-2d-unproven` (GL). Four 64x64 cells:
 ##
 ##   SPRITE (40,40)    Sprite2D at scale 4, through CT_A (add_texture_rect)
 ##   TRECT  (136,40)   TextureRect, through CT_B (a Control's add_texture_rect)

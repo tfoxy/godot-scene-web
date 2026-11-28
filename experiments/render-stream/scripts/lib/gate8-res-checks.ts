@@ -16,7 +16,8 @@
 //                     (the off-main queue discarded) fails res-late-adopt (the loader-thread texture)
 //   res-late-residual late/capture adopts the texture and items, refuses the emitter
 //                     preload-particles (emitters 0), keys the unregistered material through the
-//                     LATE-RES re-link (unknown_material_keyed >= 1), residue 0
+//                     LATE-RES re-link (unknown_material_keyed >= 1), residue 0; on a GL host the
+//                     worker-thread-only texture is the one refusal, typed not-2d-unproven
 //   res-free          after the adoption the fixture frees the adopted cells; the deferred capture
 //                     records them freed
 //   res-late-fault    under GRC_ADOPT_FAULT=no-resources nothing pre-arm is adopted and the pre-arm
@@ -64,6 +65,9 @@ export interface G8resExpected {
     emitters: number;
     refused_preload_particles: number;
     unknown_material_keyed: number;
+    /** GL hosts (result.json rendering_method gl_compatibility): the texture refusals the late
+     * arm must make, each typed not-2d-unproven at `refused_frame`. Absent: none (RD). */
+    gl?: { refused_not_2d_unproven: number; refused_frame: number };
   };
   /** the fixture frame that frees the adopted TEX / PPM / ITEM cells (res.gd FREE_FRAME) */
   free_frame: number;
@@ -87,6 +91,7 @@ const LEGS = [
 const SINKS = ["recording.rs12", "recording-patch.rs12"] as const;
 
 export interface CaptureResult {
+  rendering_method?: string;
   stream?: {
     gate8?: {
       adopt_stats?: {
@@ -347,15 +352,26 @@ export function judgeResLateAdopt(
   return { problems, detail: parts.join(", ") };
 }
 
+/** One texture refusal from the capture's refusals.json. */
+export interface RefusalRecordJson {
+  rid: number;
+  frame: number;
+  reason: string;
+}
+
 /** res-late-residual's verdict (LAR5): the late capture still adopts the texture and the pre-arm
  * items at their first post-arm draw, but the pre-arm emitter is unregistered and refused
  * `preload-particles` (never adopted, so emitters 0), and its unregistered process material is
- * keyed through the LATE-RES re-link when a post-arm emitter references it. Pure. */
+ * keyed through the LATE-RES re-link when a post-arm emitter references it. On a GL host the
+ * texture drawn only from a worker thread (res.gd frame 16, an RS-only canvas item with no node,
+ * so nothing proves it 2D) is refused not-2d-unproven: `late.gl` names that refusal, and
+ * `refusals` (refusals.json) must hold exactly it. Pure. */
 export function judgeResLateResidual(
   r: CaptureResult | undefined,
   rec: { rec?: Pick<ResolvedRecording, "transactions">; error?: string },
   sinkProblems: readonly string[],
   expected: Pick<G8resExpected, "textures" | "items_adopted" | "late">,
+  refusals?: { records?: RefusalRecordJson[] },
 ): { problems: string[]; detail: string } {
   const problems: string[] = [];
   const parts: string[] = [];
@@ -366,9 +382,36 @@ export function judgeResLateResidual(
       problems.push(
         `adopted ${res.textures} textures, ${expected.textures} expected`,
       );
-    if ((res.textures_refused ?? 0) !== 0)
-      problems.push(`refused ${res.textures_refused} textures`);
-    parts.push(`textures ${res.textures}`);
+    const gl =
+      r?.rendering_method === "gl_compatibility" ? expected.late.gl : undefined;
+    if (!gl) {
+      if ((res.textures_refused ?? 0) !== 0)
+        problems.push(`refused ${res.textures_refused} textures`);
+    } else {
+      const want = gl.refused_not_2d_unproven;
+      if ((res.textures_refused ?? 0) !== want)
+        problems.push(
+          `refused ${res.textures_refused} textures, ${want} expected`,
+        );
+      if ((res.refused_not_2d_unproven ?? 0) !== want)
+        problems.push(
+          `${res.refused_not_2d_unproven ?? 0} not-2d-unproven refusals, ${want} expected`,
+        );
+      const records = refusals?.records;
+      if (!records) problems.push("no refusals.json records");
+      else {
+        if (records.length !== want)
+          problems.push(`${records.length} refusal records, ${want} expected`);
+        for (const x of records)
+          if (x.reason !== "not-2d-unproven" || x.frame !== gl.refused_frame)
+            problems.push(
+              `refusal of ${x.rid}: ${x.reason} at frame ${x.frame}, not-2d-unproven at frame ${gl.refused_frame} expected`,
+            );
+      }
+    }
+    parts.push(
+      `textures ${res.textures}, refused ${res.textures_refused ?? 0}`,
+    );
   }
   const mat = materialAdoption(r);
   if (!mat) problems.push("no stream.gate8.adopt_stats.material_adoption");
@@ -571,6 +614,9 @@ export async function runG8res(
         await loadResRecording(dir(leg)),
         await validateSinkProblems(dir(leg)),
         expected,
+        await readJson<{ records?: RefusalRecordJson[] }>(
+          join(dir(leg), "evidence", "refusals.json"),
+        ),
       );
       problems = j.problems;
       detail = j.detail;

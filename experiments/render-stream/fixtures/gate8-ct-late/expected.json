@@ -1,6 +1,6 @@
 {
   "schema": "render-stream-gate8-ct-late-expected/1",
-  "doc": "Hand-derived from ctl.gd, not measured (README.md). Four 64x64 cells, every image drawn only through a CanvasTexture's diffuse (no command names an image directly): three CanvasTextures built in code at _ready, and CACHED, a .tres CanvasTexture loaded by path. The `deferred` leg loads the capture before the scene exists and arms it at frame 12 (LAR1): all four CanvasTextures are in the registry and adopted from it (canvas_count, residual 0). The `late` leg loads the capture at frame 12, after everything exists (load-late, the residual path under F1): CACHED is adopted from the resource cache (PM9) and the three runtime CanvasTextures are refused, typed no-image (`late`). At frame 22 SPRITE's CanvasTexture is released (texture = null): the capture's table drops it and its diffuse, the receivers release a texture, and checkpoint 1 shows the SPRITE cell empty. Regions are inclusive [x0, y0, x1, y1].",
+  "doc": "Hand-derived from ctl.gd, not measured (README.md). Four 64x64 cells, every image drawn only through a CanvasTexture's diffuse (no command names an image directly): three CanvasTextures built in code at _ready, and CACHED, a .tres CanvasTexture loaded by path. The `deferred` leg loads the capture before the scene exists and arms it at frame 12 (LAR1): all four CanvasTextures are in the registry and adopted from it (canvas_count, residual 0). The `late` leg loads the capture at frame 12, after everything exists (load-late, the residual path under F1): CACHED is adopted from the resource cache (PM9) and the three runtime CanvasTextures are refused (`late`). They are known by RID only, and this fixture renders on gl_compatibility, so they are typed not-2d-unproven: no Resource class or recorded 2D creation proves them 2D, so the getter is not called. At frame 22 SPRITE's CanvasTexture is released (texture = null): the capture's table drops it and its diffuse, the receivers release a texture, and checkpoint 1 shows the SPRITE cell empty. Regions are inclusive [x0, y0, x1, y1].",
   "arm_frame": 12,
   "quit_frame": 30,
   "canvas_count": 4,
@@ -16,7 +16,8 @@
   "freed_canvas_count": 1,
   "late": {
     "canvas_residual": 1,
-    "refused_no_image": 3,
+    "refused_no_image": 0,
+    "refused_not_2d_unproven": 3,
     "unknown_cells": ["SPRITE", "TRECT", "MESH"]
   },
   "checkpoints": [
