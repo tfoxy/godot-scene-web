@@ -44,6 +44,7 @@ bool collect_windows_fingerprint(ProcessFingerprint *out, std::string *error, bo
   if (!pe_read_codeview_id(base, h.size_of_image, h, true, &out->codeview_id, error)) return false;
   const uint64_t address = reinterpret_cast<uint64_t>(base);
   out->load_bias = address - out->image_base;
+  out->set_pe_image_ranges(h, address);
   for (const auto &section : h.sections) {
     if (section.characteristics & IMAGE_SCN_MEM_EXECUTE)
       out->exec_ranges.emplace_back(address + section.va, address + section.va + section.vsize);

@@ -1,5 +1,6 @@
 #include "rs_canvas_texture_resolver.h"
 #include "rs_canvas_texture_derive.h"
+#include "rs_canvas_texture_liveness.h"
 #include "rs_platform.h"
 
 #include <atomic>
@@ -10,8 +11,6 @@
 
 #if defined(__linux__)
 #include <link.h>
-#include <sys/uio.h>
-#include <unistd.h>
 #endif
 
 #include "calib.h"
@@ -28,6 +27,7 @@ GDExtensionMethodBindPtr format_call = nullptr, native_call = nullptr;
 GDExtensionMethodBindPtr rd_texture_call = nullptr, rd_valid_call = nullptr;
 GDExtensionMethodBindPtr rd_format_call = nullptr, rd_type_call = nullptr;
 std::uint64_t type_checks = 0;
+CanvasTextureLiveCounts live_counts;
 const char *storage_source = "none";
 std::uint64_t image_reads = 0, storage_reads = 0, owner_reads = 0;
 
@@ -36,14 +36,7 @@ void call(GDExtensionMethodBindPtr bind, const GDExtensionConstTypePtr *args, vo
 }
 
 bool safe_copy(std::uint64_t address, void *out, std::size_t bytes) {
-#if defined(__linux__)
-  iovec local{out, bytes};
-  iovec remote{reinterpret_cast<void *>(address), bytes};
-  return process_vm_readv(getpid(), &local, 1, &remote, 1, 0) == static_cast<ssize_t>(bytes);
-#else
-  (void)address; (void)out; (void)bytes;
-  return false;
-#endif
+  return rs::safe_read_self(address, out, bytes);
 }
 class LiveReader final : public CanvasTextureReader {
  public:
@@ -52,16 +45,9 @@ class LiveReader final : public CanvasTextureReader {
     return safe_copy(address, out, bytes);
   }
   bool live_texture(std::uint64_t rid) override {
-    const std::uint8_t srgb = 0;
-    const GDExtensionConstTypePtr args[] = {&rid, &srgb};
-    std::uint64_t native = 0;
-    std::int64_t format = -1;
-    call(native_call, args, &native);
-    if (!native) return false;
-    call(format_call, args, &format);
-    // Image::FORMAT_MAX is 39 in the calibrated 4.5.1 ABI. This establishes liveness;
-    // resolution separately proves dimensionality before exposing any channel to adoption.
-    return format >= 0 && format < 39;
+    return canvas_texture_is_live({g_iface.object_method_bind_ptrcall, server, device,
+                                  native_call, format_call, rd_texture_call, rd_valid_call},
+                                 rid, live_counts);
   }
   std::int64_t texture_type(std::uint64_t rid) override {
     ++type_checks;
@@ -117,6 +103,9 @@ bool dispatch(Work *work) {
 }
 
 bool main_image_word(const ProcessFingerprint &fp, std::uint64_t address, bool readonly) {
+  if (fp.platform == "windows-x86_64")
+    return fp.main_image_contains(address, 8, readonly ? MainImageKind::readonly :
+                                                      MainImageKind::writable);
   for (const auto &line : fp.exe_maps) {
     unsigned long long begin = 0, end = 0;
     char perms[5] = {};
@@ -159,7 +148,12 @@ class DeriveReader final : public CanvasTextureDeriveReader {
     using Range = CanvasTextureImageRange;
     if (!address || bytes > UINT64_MAX-address) return false;
     bool valid = false;
-    if (kind == Range::code) {
+    if (fp_.platform == "windows-x86_64") {
+      const auto image_kind = kind == Range::code ? MainImageKind::code :
+                              kind == Range::readonly ? MainImageKind::readonly :
+                                                        MainImageKind::writable;
+      valid = fp_.main_image_contains(address, bytes, image_kind);
+    } else if (kind == Range::code) {
       for (const auto &[lo, hi] : fp_.exec_ranges)
         if (address >= lo && address < hi && bytes <= hi-address) valid = true;
     } else if (kind == Range::readonly) {
@@ -219,7 +213,8 @@ void canvas_texture_resolver_attach(const Calibration &calib, const ProcessFinge
   }
   // Other platforms need independently validated records and platform heap readers. Never
   // reinterpret a Linux record as a Windows or Mach-O layout just because versions agree.
-  if (fp.platform != "linux-x86_64") {
+  if (fp.platform != "linux-x86_64" &&
+      (fp.platform != "windows-x86_64" || calib.canvas_texture_storage.empty())) {
     resolver.attach(true, nullptr, "platform-unrecorded"); return;
   }
   CanvasTextureRecord record;
@@ -232,6 +227,13 @@ void canvas_texture_resolver_attach(const Calibration &calib, const ProcessFinge
     if (!main_image_word(fp, record.global, false) || !main_image_word(fp, record.rd.vptr, true) ||
         !main_image_word(fp, record.gles3.vptr, true)) {
       resolver.attach(true, nullptr, "record-outside-image"); return;
+    }
+    if (fp.platform == "windows-x86_64") {
+      DeriveReader reader(fp);
+      if (!validate_canvas_texture_record(reader, record, &why)) {
+        resolver.attach(true, nullptr, why); return;
+      }
+      record = canvas_texture_record_probe_copy(record, rs::env("GRC_CTRES_SABOTAGE"));
     }
   } else {
     storage_source = "derived";
@@ -318,6 +320,7 @@ void canvas_texture_resolver_detach() {
   resolver.detach(); server = device = nullptr; attachment_initialized = false;
   rd_texture_call = rd_valid_call = rd_format_call = rd_type_call = nullptr;
   type_checks = 0;
+  live_counts = {};
   storage_source = "none"; image_reads = storage_reads = owner_reads = 0;
 }
 
@@ -354,6 +357,8 @@ std::string canvas_texture_resolver_json() {
   json.insert(1, std::string("\"storage_source\":\"") + storage_source + "\",\"derivation_image_reads\":" +
       std::to_string(image_reads) + ",\"derivation_storage_reads\":" + std::to_string(storage_reads) +
       ",\"owner_reads\":" + std::to_string(owner_reads) +
+      ",\"live_native\":" + std::to_string(live_counts.native) +
+      ",\"live_rd\":" + std::to_string(live_counts.rd) +
       ",\"channel_type_checks\":" + std::to_string(type_checks) + ",");
   return json;
 }

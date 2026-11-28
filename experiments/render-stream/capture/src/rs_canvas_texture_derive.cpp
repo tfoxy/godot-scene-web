@@ -48,6 +48,32 @@ constexpr std::string_view gl_repeat =
     "480314c78b423839f0750d894a304883c408c3";
 }  // namespace
 
+bool validate_canvas_texture_record(CanvasTextureDeriveReader &reader,
+                                    const CanvasTextureRecord &record, std::string *why) {
+  auto fail = [&](const char *reason) { *why = reason; return false; };
+  std::uint64_t storage = 0, ignored = 0, vptr = 0;
+  if (!word(reader, record.rd.vptr, &ignored) || !word(reader, record.gles3.vptr, &ignored) ||
+      record.global % 8 || !image(reader, record.global, &storage, 8, Range::writable))
+    return fail("record-outside-image");
+  if (!storage || storage % 8 || !extent(storage, 8) || !reader.storage_vptr(storage, &vptr))
+    return fail("storage-unreadable");
+  if (vptr != record.rd.vptr && vptr != record.gles3.vptr)
+    return fail("storage-vptr-mismatch");
+  std::uint64_t top = 1, typeinfo = 0, name = 0;
+  if (vptr < 16 || !word(reader, vptr - 16, &top) || top ||
+      !word(reader, vptr - 8, &typeinfo) || typeinfo > UINT64_MAX - 8 ||
+      !word(reader, typeinfo + 8, &name)) return fail("storage-rtti");
+  constexpr char rd[] = "N10RendererRD14TextureStorageE";
+  constexpr char gl[] = "N5GLES314TextureStorageE";
+  std::array<char, sizeof(rd)> text{};
+  const bool is_rd = vptr == record.rd.vptr;
+  const auto bytes = is_rd ? sizeof(rd) : sizeof(gl);
+  if (!image(reader, name, text.data(), bytes, Range::readonly) ||
+      std::memcmp(text.data(), is_rd ? rd : gl, bytes)) return fail("storage-rtti");
+  why->clear();
+  return true;
+}
+
 bool derive_canvas_texture_record(CanvasTextureDeriveReader &reader, const std::string &platform,
                                   const std::string &version, std::uint64_t create_slot,
                                   CanvasTextureRecord *out, std::string *why) {

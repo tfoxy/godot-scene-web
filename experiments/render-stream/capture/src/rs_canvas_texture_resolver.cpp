@@ -68,6 +68,13 @@ bool CanvasTextureRecord::parse(
   return ok;
 }
 
+CanvasTextureRecord canvas_texture_record_probe_copy(const CanvasTextureRecord &record,
+                                                     const char *fault) {
+  auto copy = record;
+  if (fault && std::strcmp(fault, "record-validator") == 0) copy.rd.validator += 4;
+  return copy;
+}
+
 void CanvasTextureResolver::attach(bool enabled, const CanvasTextureRecord *record,
                                    const std::string &reason) {
   detach();

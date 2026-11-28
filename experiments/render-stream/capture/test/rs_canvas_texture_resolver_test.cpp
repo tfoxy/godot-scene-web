@@ -239,6 +239,45 @@ int main() {
   CanvasTextureRecord parsed; std::string why;
   check(CanvasTextureRecord::parse(fields,0x100000,&parsed,&why) && parsed.global==0x101000 &&
         parsed.rd.vptr==0x105000 && parsed.rd.owner==128,"record relocates addresses only");
+  {
+    CanvasTextureRecord source;
+    check(CanvasTextureRecord::parse(fields,0,&source,&why),"parse probe record");
+    for (const auto fault : {static_cast<const char *>(nullptr), "", "derive-create-opcode",
+                             "record-validator-unknown"}) {
+      Fake g; CanvasTextureResolver a;
+      const auto copy = canvas_texture_record_probe_copy(source,fault);
+      a.attach(true,&copy,"");
+      check(a.selfcheck(g,{{g.rid,g.channels}}) && a.resolve(g,g.rid,&out),
+            "absent or unrelated record fault preserves sentinel and resolve");
+    }
+    Fake g; CanvasTextureResolver a;
+    unsigned char before[sizeof(g.memory)];
+    std::memcpy(before,g.memory,sizeof(before));
+    const auto copy = canvas_texture_record_probe_copy(source,"record-validator");
+    check(copy.rd.validator==source.rd.validator+4 && source.rd.validator==56 &&
+          copy.gles3.validator==source.gles3.validator,
+          "record fault changes only local RD validator");
+    a.attach(true,&copy,"");
+    check(!a.selfcheck(g,{{g.rid,g.channels}}) && !a.ready() &&
+          a.reason()=="selfcheck-rid-owner-mismatch",
+          "record validator fault refuses through ordinary sentinel check");
+    check(std::memcmp(before,g.memory,sizeof(before))==0,
+          "record fault and sentinel leave reader memory unchanged");
+    const int reads_after_check=g.reads;
+    check(!a.resolve(g,g.rid,&out) && !a.resolve(g,g.rid,&out) && g.reads==reads_after_check &&
+          g.type_checks==0,"failed record self-check prevents subsequent reader and type calls");
+    check(a.json().find("\"canvas-texture-unresolved:selfcheck-rid-owner-mismatch\": 1") !=
+              std::string::npos && a.json().find("\"runs\": 1") != std::string::npos &&
+          a.json().find("\"samples\": 0") != std::string::npos,
+          "record self-check refusal counted once and cached");
+    a.detach(); a.attach(true,&source,"");
+    check(!a.selfcheck(g,{{g.rid,g.channels}}) && g.reads==reads_after_check &&
+          a.permanent_failure()=="selfcheck-rid-owner-mismatch",
+          "record fault remains latched after reattachment");
+    CanvasTextureResolver fresh;
+    check(g.start(fresh) && fresh.resolve(g,g.rid,&out),
+          "original record and engine memory remain usable in fresh resolver");
+  }
   auto invalid=[&](Fields v,const char *name){check(!CanvasTextureRecord::parse(v,0,&parsed,&why),name);};
   auto v=fields; v.pop_back(); invalid(v,"missing layout field");
   v=fields; v.push_back(fields[0]); invalid(v,"duplicate record field");

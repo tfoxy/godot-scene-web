@@ -14,6 +14,7 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
+#include <sys/uio.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -28,6 +29,12 @@
 #include <unordered_set>
 
 namespace grc::rs {
+bool safe_read_self(std::uint64_t address, void *out, std::size_t bytes) {
+  iovec local{out, bytes};
+  iovec remote{reinterpret_cast<void *>(address), bytes};
+  return process_vm_readv(getpid(), &local, 1, &remote, 1, 0) == static_cast<ssize_t>(bytes);
+}
+
 namespace {
 void fail(std::string *error, const char *op) {
   if (error)

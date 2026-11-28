@@ -286,6 +286,10 @@ def main():
                 require(run.returncode == 2 and message in run.stderr, run.stdout + run.stderr)
             test(f"pe-refuse-{name}", malformed)
 
+    test("canvas-texture-pe", lambda: require(
+        subprocess.run([sys.executable, "-I", str(HERE / "test_canvas_textures.py")],
+                       capture_output=True, text=True).returncode == 0,
+        "CanvasTexture PE suite failed; run tools/test/test_canvas_textures.py"))
     print(f"calibrate self-test: {passed} passed, {failed} failed")
     return bool(failed)
 

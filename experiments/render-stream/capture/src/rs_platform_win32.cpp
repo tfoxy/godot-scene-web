@@ -28,6 +28,12 @@
 #include <system_error>
 
 namespace grc::rs {
+bool safe_read_self(std::uint64_t address, void *out, std::size_t bytes) {
+  SIZE_T copied = 0;
+  return ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<const void *>(address),
+                           out, bytes, &copied) && copied == bytes;
+}
+
 bool is_absolute_path(const std::string &path) {
   const bool drive = path.size() >= 3 &&
       ((path[0] >= 'A' && path[0] <= 'Z') || (path[0] >= 'a' && path[0] <= 'z')) &&

@@ -116,12 +116,31 @@ if(GRC_MACOS)
 endif()
 grc_add_test(NAME rs_canvas_texture_resolver COMMAND rs_canvas_texture_resolver_test)
 
+add_executable(rs_canvas_texture_liveness_test test/rs_canvas_texture_liveness_test.cpp)
+target_include_directories(rs_canvas_texture_liveness_test PRIVATE src vendor)
+target_link_libraries(rs_canvas_texture_liveness_test PRIVATE grc_warnings)
+if(GRC_MACOS)
+  set_target_properties(rs_canvas_texture_liveness_test PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+  grc_sign_macho(rs_canvas_texture_liveness_test)
+endif()
+grc_add_test(NAME rs_canvas_texture_liveness COMMAND rs_canvas_texture_liveness_test)
+
 if(GRC_MACOS)
   enable_testing()
   grc_macos_engine_free_tests()
   return()
 endif()
 include(cmake/platform-tests.cmake)
+add_executable(rs_canvas_texture_record_test test/rs_canvas_texture_record_test.cpp
+  src/rs_canvas_texture_derive.cpp src/pe_image.cpp src/rs_sha256.cpp)
+target_include_directories(rs_canvas_texture_record_test PRIVATE src)
+target_link_libraries(rs_canvas_texture_record_test PRIVATE grc_warnings grc_platform)
+grc_add_test(NAME rs_canvas_texture_record COMMAND rs_canvas_texture_record_test)
+
+add_executable(rs_safe_read_test test/rs_safe_read_test.cpp)
+target_link_libraries(rs_safe_read_test PRIVATE grc_warnings grc_platform)
+grc_add_test(NAME rs_safe_read COMMAND rs_safe_read_test)
+
 
 # Exercise the Apple conversion fallback on Linux too, without changing the Linux parser path.
 if(NOT GRC_WINDOWS)

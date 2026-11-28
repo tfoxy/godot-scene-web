@@ -32,6 +32,9 @@ struct CanvasTextureRecord {
                     std::uint64_t bias, CanvasTextureRecord *out, std::string *why);
 };
 
+// Probe-only fault injection returns a local record copy; engine memory is never changed.
+CanvasTextureRecord canvas_texture_record_probe_copy(const CanvasTextureRecord &, const char *fault);
+
 class CanvasTextureReader {
  public:
   virtual ~CanvasTextureReader() = default;

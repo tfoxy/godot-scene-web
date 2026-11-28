@@ -12,6 +12,9 @@ class CanvasTextureDeriveReader {
   // Only a storage object's vptr may be copied from the heap during derivation.
   virtual bool storage_vptr(std::uint64_t, std::uint64_t *) = 0;
 };
+// Validate a shipped PE record before engine calls or sentinel allocation.
+bool validate_canvas_texture_record(CanvasTextureDeriveReader &, const CanvasTextureRecord &,
+                                    std::string *why);
 bool derive_canvas_texture_record(CanvasTextureDeriveReader &, const std::string &platform,
                                   const std::string &version, std::uint64_t create_slot,
                                   CanvasTextureRecord *, std::string *why);

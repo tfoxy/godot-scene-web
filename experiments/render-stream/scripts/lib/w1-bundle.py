@@ -56,7 +56,14 @@ def main():
     (ext / "render_stream_capture.gdextension").write_text(configuration + f'[libraries]\n{args.target}.x86_64 = "{library.name}"\n', encoding="utf-8")
     cal = w1 / "calibration"
     cal.mkdir(exist_ok=True)
-    shutil.copyfile(record, cal / "record.json")
+    if windows:
+        subprocess.run([sys.executable, str(rs / "capture/tools/calibrate_canvas_textures.py"),
+                        "--binary", str(source), "--base", str(record),
+                        "--out", str(cal / "record.json")], cwd=repo, check=True)
+        record = cal / "record.json"
+        calibration = json.loads(record.read_text())
+    else:
+        shutil.copyfile(record, cal / "record.json")
     subprocess.run(["mise", "exec", "--", "node", str(rs / "scripts/lib/tamper-calibration.mjs"), "prefix", str(record), str(cal / "shift.json")], cwd=repo, check=True)
     image_key = "image_sha256" if windows else "sha256"
     original = calibration["engine"][image_key]

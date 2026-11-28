@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Add a fail-closed Linux x86-64 CanvasTexture record to an existing calibration.
+"""Add a fail-closed x86-64 CanvasTexture record to an existing calibration.
 
 Only the inspected Godot 4.5.1 GCC instruction shapes are accepted. Addresses come
 from the exact binary, never from another build. This does not execute the binary.
-Windows/MSVC and Mach-O records require independent ABI and reader validation.
+MinGW PE records decode operands independently; Mach-O remains unsupported.
 """
 
 import argparse
@@ -13,10 +13,13 @@ import re
 import struct
 from pathlib import Path
 
-from calibrate import Elf, find_vtable
+from calibrate import CalibrationError, Elf, find_vtable
 
 
 def derive(binary, base):
+    if base["engine"]["platform"] == "windows-x86_64":
+        from ctres_pe import derive_windows
+        return derive_windows(binary, base)
     image = Elf(str(binary))
     if base["engine"]["platform"] != "linux-x86_64":
         raise ValueError("Linux x86-64 records only")
@@ -80,11 +83,25 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", type=Path, required=True)
     parser.add_argument("--base", type=Path, required=True)
-    parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--out", type=Path)
+    parser.add_argument("--verify", action="store_true", help="rederive and compare storage fields in --base")
     args = parser.parse_args()
     try:
-        record, evidence = derive(args.binary, json.loads(args.base.read_text()))
-    except (ValueError, KeyError, OSError) as error:
+        base = json.loads(args.base.read_text())
+        record, evidence = derive(args.binary, base)
+        if args.verify:
+            expected = base.get("canvas_texture_storage", {})
+            actual = record["canvas_texture_storage"]
+            differences = [f"{k}: record={expected.get(k)!r}, derived={actual.get(k)!r}"
+                           for k in sorted(expected.keys() | actual.keys())
+                           if expected.get(k) != actual.get(k)]
+            if differences:
+                raise ValueError("storage mismatch: " + "; ".join(differences))
+            print(f"verified {len(actual)} storage fields")
+            return
+        if not args.out:
+            raise ValueError("--out is required unless --verify is used")
+    except (CalibrationError, ValueError, KeyError, OSError) as error:
         parser.exit(1, f"canvas calibration refused: {error}\n")
     args.out.write_text(json.dumps(record, indent=2) + "\n")
     args.out.with_suffix(".storage-evidence.json").write_text(json.dumps(evidence, indent=2) + "\n")

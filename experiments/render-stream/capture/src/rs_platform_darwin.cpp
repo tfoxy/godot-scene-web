@@ -28,6 +28,8 @@
 #include <limits>
 
 namespace grc::rs {
+bool safe_read_self(std::uint64_t, void *, std::size_t) { return false; }
+
 namespace {
 bool close_on_exec(int fd) {
   const int flags = ::fcntl(fd, F_GETFD);

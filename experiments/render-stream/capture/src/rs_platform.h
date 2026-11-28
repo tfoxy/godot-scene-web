@@ -99,6 +99,8 @@ bool wake_open(Wake *out, std::string *error);
 void wake_signal(const Wake &w);
 void wake_drain(const Wake &w);
 void wake_close(Wake *w);
+// Fault-tolerant copy of our own process memory; success requires the entire extent.
+bool safe_read_self(std::uint64_t address, void *out, std::size_t bytes);
 bool fill_random(void *buf, std::size_t n);
 std::uint64_t rss_bytes();
 std::optional<std::uint64_t> private_bytes();
