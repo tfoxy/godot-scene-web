@@ -202,6 +202,11 @@
   },
   "rules": [
     {
+      "why": "CDP replay trace collection and per-frame budget analysis are host tooling with synthetic trace tests; changes reach pure checks and package tests, not rendered receiver legs",
+      "paths": ["experiments/render-stream/scripts/lib/frame-budget*.ts"],
+      "reach": ["pure", "pnpm-test"]
+    },
+    {
       "why": "Optional host FMOD module: its standalone CMake/ctest suite covers takes, host links, live lanes and error latches; check-fmod-licence.sh is separate acceptance. No existing capture or receiver leg loads it",
       "paths": [
         "experiments/render-stream/fmod/**",

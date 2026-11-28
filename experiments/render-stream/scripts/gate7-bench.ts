@@ -148,6 +148,8 @@ interface Args {
   profile: boolean;
   traceSeconds: number;
   traceFromSeq: number;
+  fromSeq: number | undefined;
+  toSeq: number | undefined;
   /** G7x: Rust-arm sabotages (drop-draws, stale-item-row, digest-skip, skip-payload-hash). */
   rsSabotage: string[];
   /** G7x: host frames whose RGB10_A2 target the Rust arm reads back (pace checks). */
@@ -191,6 +193,8 @@ function parseArgs(argv: string[]): Args {
     profile: false,
     traceSeconds: 0,
     traceFromSeq: 0,
+    fromSeq: undefined,
+    toSeq: undefined,
     webBundleBase: undefined,
     rsBuild: join(
       SCRIPT_DIR,
@@ -293,6 +297,12 @@ function parseArgs(argv: string[]): Args {
       }
       case "--rs-build-base":
         a.rsBuildBase = resolve(v());
+        break;
+      case "--from":
+        a.fromSeq = Number(v());
+        break;
+      case "--to":
+        a.toSeq = Number(v());
         break;
       case "--trace-seconds":
         a.traceSeconds = Number(v());
@@ -422,6 +432,19 @@ function parseArgs(argv: string[]): Args {
     );
   if (a.traceFromSeq > 0 && a.traceSeconds === 0)
     throw new HarnessUsageError("--trace-from-seq needs --trace-seconds");
+  if (a.fromSeq !== undefined || a.toSeq !== undefined) {
+    if (!usesRustArm(a) || a.interleave.includes("gsw-ts"))
+      throw new HarnessUsageError("--from/--to need Rust bench arms");
+    if (
+      (a.fromSeq !== undefined &&
+        (!Number.isSafeInteger(a.fromSeq) || a.fromSeq < 0)) ||
+      (a.toSeq !== undefined &&
+        (!Number.isSafeInteger(a.toSeq) || a.toSeq < (a.fromSeq ?? 0)))
+    )
+      throw new HarnessUsageError(
+        "--from/--to need nonnegative integer from <= to",
+      );
+  }
   return a;
 }
 
@@ -807,6 +830,8 @@ function pageUrl(
     warmup: String(warmup),
     repeats: String(repeats),
   });
+  if (args.fromSeq !== undefined) q.set("from", String(args.fromSeq));
+  if (args.toSeq !== undefined) q.set("to", String(args.toSeq));
   if (args.rsSabotage.length) q.set("sabotage", args.rsSabotage.join(","));
   if (args.profile || args.traceSeconds > 0) q.set("prof", "1");
   if (args.shotFrames.length) q.set("shot-frames", args.shotFrames.join(","));
@@ -2039,6 +2064,9 @@ async function main(): Promise<void> {
     inputs: inputs.map((i) => i.name),
     warmup: args.warmup,
     repeats: args.repeats,
+    ...(args.fromSeq !== undefined || args.toSeq !== undefined
+      ? { window: { from: args.fromSeq ?? 0, to: args.toSeq ?? null } }
+      : {}),
     // D31/G7o1; meaningful for `gsw` only -- native and web stay inline (D31).
     record_digest: args.recordDigest,
     started_at: new Date().toISOString(),

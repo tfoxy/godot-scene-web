@@ -5,7 +5,7 @@
 //
 // ?mode=oracle: streamed partial/full pixel comparison, driven by scripts/damage-oracle.ts.
 // ?mode=bench&arm=gsw-rs|gsw-rs-inline|gsw-rs-base&input=<url>&store=<dir url>&name=<input>
-//   &nonce=<leg nonce>&warmup=1&repeats=1[&shot-frames=10,60,...][&sabotage=drop-draws,...][&prof=1]
+//   &nonce=<leg nonce>&warmup=1&repeats=1[&from=<seq>&to=<seq>][&shot-frames=10,60,...][&sabotage=drop-draws,...][&prof=1]
 // `gsw-rs-base` (G7o2) is `gsw-rs` on a second build (gate7-bench.ts --rs-build-base, served at
 // /gsw-rs-base/): the before arm of a before/after comparison. `prof=1` (G7o2) turns the core's
 // phase timers on (`prof_enable`) and adds each sample's `phases` (µs per core phase, `prof_take`);
@@ -274,36 +274,65 @@ interface Sample {
   texture_upload_bytes: number;
 }
 
-async function runBench(): Promise<void> {
-  const arm = params.get("arm") ?? "gsw-rs";
+/** Inclusive transaction seq bounds. Null keeps the original whole-recording path. */
+export function readReplayWindow(
+  params: URLSearchParams,
+): { from: number; to: number | null } | null {
+  if (!params.has("from") && !params.has("to")) return null;
+  const from = Number(params.get("from") ?? "0");
+  const to = params.has("to") ? Number(params.get("to")) : null;
+  if (
+    params.get("from") === "" ||
+    params.get("to") === "" ||
+    !Number.isSafeInteger(from) ||
+    from < 0 ||
+    (to !== null && (!Number.isSafeInteger(to) || to < from))
+  )
+    throw new Error("replay window needs nonnegative integer from <= to");
+  return { from, to };
+}
+
+export async function runBench(
+  benchParams = params,
+  moduleOverride?: GswRsModule,
+): Promise<void> {
+  const arm = benchParams.get("arm") ?? "gsw-rs";
   if (arm !== "gsw-rs" && arm !== "gsw-rs-inline" && arm !== "gsw-rs-base")
     throw new Error(
       `arm must be gsw-rs, gsw-rs-inline or gsw-rs-base (got ${arm})`,
     );
   const wasmDir = arm === "gsw-rs-base" ? "gsw-rs-base" : "gsw-rs";
   // A build without timers (an earlier base) runs unprofiled.
-  const userTimings = params.get("prof") === "1";
+  const userTimings = benchParams.get("prof") === "1";
   let profile = userTimings;
-  const input = params.get("input");
-  const store = params.get("store");
-  const name = params.get("name") ?? "input";
-  const nonce = params.get("nonce") ?? "";
-  const warmup = Number(params.get("warmup") ?? "1");
-  const repeats = Number(params.get("repeats") ?? "1");
-  const sabotage = (params.get("sabotage") ?? "").split(",").filter(Boolean);
+  const input = benchParams.get("input");
+  const store = benchParams.get("store");
+  const name = benchParams.get("name") ?? "input";
+  const nonce = benchParams.get("nonce") ?? "";
+  const warmup = Number(benchParams.get("warmup") ?? "1");
+  const repeats = Number(benchParams.get("repeats") ?? "1");
+  const replayWindow = readReplayWindow(benchParams);
+  const sabotage = (benchParams.get("sabotage") ?? "")
+    .split(",")
+    .filter(Boolean);
   const shotFrames = new Set(
-    (params.get("shot-frames") ?? "").split(",").filter(Boolean).map(Number),
+    (benchParams.get("shot-frames") ?? "")
+      .split(",")
+      .filter(Boolean)
+      .map(Number),
   );
   const shotSeqs = new Set(
-    (params.get("shot-seqs") ?? "").split(",").filter(Boolean).map(Number),
+    (benchParams.get("shot-seqs") ?? "").split(",").filter(Boolean).map(Number),
   );
   if (!input || !nonce) throw new Error("bench needs ?input= and ?nonce=");
   const corrupt = sabotage.includes("corrupt-payload");
 
   setState({ state: "running", detail: "loading rs-gsw-wasm" });
-  const mod = (await import(
-    /* @vite-ignore */ `${location.origin}/${wasmDir}/rs_gsw_wasm.js`
-  )) as GswRsModule;
+  const mod =
+    moduleOverride ??
+    ((await import(
+      /* @vite-ignore */ `${location.origin}/${wasmDir}/rs_gsw_wasm.js`
+    )) as GswRsModule);
   const wasmBytes = await (
     await fetch(`/${wasmDir}/rs_gsw_wasm_bg.wasm`)
   ).arrayBuffer();
@@ -372,7 +401,7 @@ async function runBench(): Promise<void> {
     if (gs.start() < 0) throw new Error(`start: ${gs.error()}`);
     await nextFrame();
     const watchdog = makeWatchdog();
-    const t0 = performance.now();
+    let t0 = performance.now();
     const samples: Sample[] = [];
     const rafTimes: number[] = [];
     const longGaps: { gapMs: number; prevWorkMs: number }[] = [];
@@ -383,19 +412,37 @@ async function runBench(): Promise<void> {
     let error: string | null = null;
     let parityViolations = 0;
     const shots: { frame: number; seq: number; path: string }[] = [];
+    let enteredWindow = false;
     for (let i = 1; i < recordCount; i++) {
-      const ts = await nextFrame();
-      const cbStart = performance.now();
-      if (lastRaf >= 0 && ts - lastRaf > 250)
-        longGaps.push({ gapMs: ts - lastRaf, prevWorkMs });
-      if (lastRaf >= 0) rafTimes.push(ts - lastRaf);
-      lastRaf = ts;
-      // gpu_complete (report-only): the previous frame's fence, polled before this frame's work.
-      if (fenceDrawEnd >= 0 && gs.poll_fence() === 1) {
-        gpuComplete.push(performance.now() - fenceDrawEnd);
+      // File-mode transactions are consecutive. Resources between transactions retain seq.
+      // Use the next transaction's seq to pace the boundary without accepting it early.
+      const previousSeq = replayWindow ? stats().seq : 0;
+      if (
+        replayWindow &&
+        replayWindow.to !== null &&
+        enteredWindow &&
+        previousSeq >= replayWindow.to
+      )
+        break;
+      const paced = !replayWindow || previousSeq + 1 >= replayWindow.from;
+      if (replayWindow && paced && !enteredWindow) {
+        t0 = performance.now();
         fenceDrawEnd = -1;
+        enteredWindow = true;
       }
-
+      const ts = paced ? await nextFrame() : 0;
+      const cbStart = performance.now();
+      if (paced) {
+        if (lastRaf >= 0 && ts - lastRaf > 250)
+          longGaps.push({ gapMs: ts - lastRaf, prevWorkMs });
+        if (lastRaf >= 0) rafTimes.push(ts - lastRaf);
+        lastRaf = ts;
+        // gpu_complete (report-only): the previous frame's fence, polled before this frame's work.
+        if (fenceDrawEnd >= 0 && gs.poll_fence() === 1) {
+          gpuComplete.push(performance.now() - fenceDrawEnd);
+          fenceDrawEnd = -1;
+        }
+      }
       const a = nowUs();
       let code = gs.accept(i);
       const decodeUs = nowUs() - a;
@@ -524,6 +571,20 @@ async function runBench(): Promise<void> {
         evidenceUs = nowUs() - e0;
       }
       const st = stats();
+      if (
+        code === ACCEPT_TRANSACTION &&
+        st.executed_calls !== st.expected_calls
+      )
+        parityViolations++;
+      // Replay the prefix through the same accept/provide/program/apply/draw/digest path,
+      // without rAF waits or samples. A window measures transactions, not resource records.
+      if (
+        replayWindow &&
+        (code !== ACCEPT_TRANSACTION ||
+          st.seq < replayWindow.from ||
+          (replayWindow.to !== null && st.seq > replayWindow.to))
+      )
+        continue;
       if (userTimings) {
         // Numeric bounds reuse the existing wall timers; diagnostics add no marks when off.
         const detail = { seq: st.seq, repeat: r, warmup: isWarmup };
@@ -544,11 +605,6 @@ async function runBench(): Promise<void> {
         for (const phase of ["decode", "provide", "program", "apply", "draw"])
           performance.clearMeasures(`rs-bench:${phase}`);
       }
-      if (
-        code === ACCEPT_TRANSACTION &&
-        st.executed_calls !== st.expected_calls
-      )
-        parityViolations++;
       if (
         code === ACCEPT_TRANSACTION &&
         (shotFrames.has(st.frame) || shotSeqs.has(st.seq)) &&
@@ -601,6 +657,14 @@ async function runBench(): Promise<void> {
       });
       prevWorkMs = performance.now() - cbStart;
     }
+    if (
+      replayWindow &&
+      !error &&
+      (samples.length === 0 ||
+        samples[0].seq !== replayWindow.from ||
+        (replayWindow.to !== null && samples.at(-1)?.seq !== replayWindow.to))
+    )
+      error = `replay window ${replayWindow.from}..${replayWindow.to ?? "end"} is not fully present in the recording`;
     // record-digest-complete (D31): every accepted record has its digest before evidence.
     let digestPending = 0;
     if (!error) {
@@ -642,6 +706,15 @@ async function runBench(): Promise<void> {
       },
       shots,
       evidence: isWarmup ? null : JSON.parse(gs.evidence_json()),
+      ...(replayWindow
+        ? {
+            measured: {
+              first_seq: samples[0]?.seq ?? null,
+              last_seq: samples.at(-1)?.seq ?? null,
+              frames: samples.length,
+            },
+          }
+        : {}),
       samples,
     });
     if (error) break;
@@ -672,6 +745,7 @@ async function runBench(): Promise<void> {
       },
       warmup,
       repeats,
+      ...(replayWindow ? { window: replayWindow } : {}),
       sabotage,
       results: repeatResults,
     }),
