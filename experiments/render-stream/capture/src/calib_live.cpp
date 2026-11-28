@@ -191,7 +191,7 @@ bool CalibLiveReader::is_exec(uint64_t address) const {
 }
 bool derive_live_calibration(const AbiTable &table, const ProcessFingerprint &fp,
                              Calibration *out, std::vector<CheckResult> *checks,
-                             std::string *error) {
+                             std::string *error, bool require_exe_sha256) {
   *out = {};
   checks->push_back({"derive_census", true, "not-run"});
   const auto fail = [&](const std::string &detail) {
@@ -210,6 +210,8 @@ bool derive_live_calibration(const AbiTable &table, const ProcessFingerprint &fp
   if (fp.platform != "linux-x86_64" && !pe && !macho) return fail("unsupported live engine platform");
   if ((pe ? fp.image_sha256.empty() : fp.exe_sha256.empty()) || fp.version_string.empty())
     return fail("incomplete live engine identity");
+  if (pe && require_exe_sha256 && fp.exe_sha256.empty())
+    return fail("whole-file PE digest unavailable after identity worker");
   CalibLiveReader reader(fp);
   if (!reader.error().empty()) return fail("live reader: " + reader.error());
   if (reader.readonly_ranges().empty()) return fail("no read-only main-image mappings");
@@ -226,10 +228,9 @@ bool derive_live_calibration(const AbiTable &table, const ProcessFingerprint &fp
     identity.slice_offset = fp.slice_offset; identity.slice_size = fp.slice_size;
   }
   if (pe) {
-    // The PE check compares the image digest only. The record also carries the whole-file hash,
-    // computed here for derivation alone: the executable can embed the game data (hundreds of MB),
-    // and hashing it on every first use froze the host's main thread for seconds.
-    identity.sha256 = sha256_file(fp.exe_path);
+    // Detached derivation consumes the worker's whole-file digest. Startup-loaded modes
+    // retain the synchronous fallback when only the image identity was collected.
+    if (identity.sha256.empty()) identity.sha256 = sha256_file(fp.exe_path);
     if (identity.sha256.empty()) return fail("cannot hash PE executable for derived record");
     identity.image_sha256 = fp.image_sha256;
     identity.codeview_id = fp.codeview_id;

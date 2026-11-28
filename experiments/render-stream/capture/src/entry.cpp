@@ -5764,10 +5764,9 @@ bool attempt(const char *phase) {
         g_api->wait_for_identity(g_state.mode == "detached");
         try {
           const auto path = g_state.fp.exe_path;
-          g_identity_digest.start(g_state.fp.platform, g_state.mode, [path] {
-            ImageDigestResult result;
+          g_identity_digest.start(g_state.fp.platform, g_state.mode, [path, derived] {
             const auto start = rs::warm_now_ns();
-            result.ok = pe_image_sha256(path, &result.hex, &result.bytes, &result.image_base, &result.error);
+            auto result = compute_windows_image_digest(path, derived);
             std::printf("[grc] fingerprint: image hash %.3f ms over %llu bytes (worker)\n",
                         (rs::warm_now_ns() - start) / 1e6,
                         static_cast<unsigned long long>(result.bytes));
@@ -5820,7 +5819,8 @@ bool attempt(const char *phase) {
       refuse("derive-failed");
       return true;
     }
-    if (!derive_live_calibration(table, g_state.fp, &g_state.calib, &g_state.checks, &error)) {
+    if (!derive_live_calibration(table, g_state.fp, &g_state.calib, &g_state.checks,
+                                 &error, g_state.fingerprint_async)) {
       g_state.derive_error = error;
       log_line("derive: " + error);
       refuse("derive-failed");

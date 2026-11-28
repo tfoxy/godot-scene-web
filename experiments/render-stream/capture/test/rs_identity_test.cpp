@@ -74,8 +74,18 @@ void flush() {
     event.call_func(event.callable_userdata, nullptr, 0, nullptr, &error);
   check(error.error == GDEXTENSION_CALL_OK, "completion callback returns OK");
 }
+bool fake_pe_hash(const std::string &path, std::string *hex, uint64_t *bytes,
+                  uint64_t *base, std::string *, std::string *whole) {
+  if (path != "derived" && path != "record") return false;
+  // Refuse an unexpected request: record mode must never read the file overlay.
+  if ((whole != nullptr) != (path == "derived")) return false;
+  *hex = "matched"; *bytes = 1024; *base = 0x140000000;
+  if (whole) *whole = std::string(64, 'a');
+  return true;
+}
 void test_digest(const std::string &hex, bool ok, const char *expected, bool requests = false,
-                 uint64_t mapped_base = 0x140000000, uint64_t loaded_base = 0x140000000) {
+                 uint64_t mapped_base = 0x140000000, uint64_t loaded_base = 0x140000000,
+                 bool derived = false) {
   install();
   grc::IdentityDigest digest;
   grc::IdentityEvent event;
@@ -114,6 +124,8 @@ void test_digest(const std::string &hex, bool ok, const char *expected, bool req
       api.loaded(grc::rs::capture::State::Refused, reason); api.identity_complete(false, reason);
       return;
     }
+    check(fp.exe_sha256 == (derived ? std::string(64, 'a') : std::string()),
+          "whole-file digest is resolved before derived checks; record mode leaves it empty");
     std::vector<grc::CheckResult> results;
     if (!grc::check_fingerprint(calibration, fp, &results)) reason = "fingerprint-mismatch";
     else {
@@ -136,12 +148,15 @@ void test_digest(const std::string &hex, bool ok, const char *expected, bool req
     provider_priority = GetThreadPriority(GetCurrentThread());
 #endif
     provider_thread = std::this_thread::get_id(); entered.set_value(); ready.wait();
-    grc::ImageDigestResult result; result.ok = ok; result.hex = hex;
+    auto result = grc::compute_windows_image_digest(
+        derived ? "derived" : "record", derived, fake_pe_hash);
+    result.ok = result.ok && ok; result.hex = hex;
     result.image_base = calibration.image_base; return result;
   }, [&] { event.post(); }), "Windows starts one digest worker");
   started.wait();
   grc::ImageDigestResult result;
-  check(!digest.result(&result) && !decided && !shadow.built() && object == table + 2, "pending has no decision or hooks");
+  check(!digest.result(&result) && fp.exe_sha256.empty() && !decided && !shadow.built() &&
+        object == table + 2, "pending has no decision or hooks");
   check(provider_thread != main, "image provider runs off main");
 #if defined(_WIN32)
   check(provider_priority == THREAD_PRIORITY_BELOW_NORMAL, "image provider runs below normal Windows priority");
@@ -260,6 +275,8 @@ int main() {
   test_digest("matched", true, "", true, 0x7ff600000000, 0x7ff600000000);
   test_digest("matched", true, "", true, 0x140000000, 0x7ff600000000);
   test_digest("matched", true, "fingerprint-unavailable", true, 0x150000000, 0x7ff600000000);
+  test_digest("matched", true, "", true, 0x140000000, 0x140000000, true);
+  test_digest("matched", true, "", false, 0x7ff600000000, 0x7ff600000000, true);
   test_shutdown(); test_deinit_queued(); test_sync();
   std::printf("rs_identity_test: %d checks, %d failures\n", checks, failures);
   return failures ? 1 : 0;

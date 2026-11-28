@@ -16,6 +16,27 @@ class IdentitySource(unittest.TestCase):
         self.assertLess(attempt.index('return false;\n        } catch'),
                         attempt.index("check_slot_mask("))
 
+    def test_derived_waits_for_identity_and_consumes_worker_digest(self):
+        attempt = ENTRY.split("bool attempt(const char *phase) {", 1)[1]
+        self.assertLess(attempt.index("if (g_state.identity_pending) return false;"),
+                        attempt.index("derive_live_calibration("))
+        self.assertLess(attempt.index('return false;\n        } catch'),
+                        attempt.index("derive_live_calibration("))
+        self.assertIn("compute_windows_image_digest(path, derived)", attempt)
+        self.assertIn("[path, derived]", attempt)
+        self.assertIn("&error, g_state.fingerprint_async)", attempt)
+        derive = attempt.split("if (!derive_live_calibration(", 1)[1].split("g_state.derived_record", 1)[0]
+        self.assertIn('refuse("derive-failed");', derive)
+
+    def test_async_pe_derivation_never_falls_back_to_file_hash(self):
+        live = (ROOT / "calib_live.cpp").read_text().split("bool derive_live_calibration(", 1)[1]
+        guard = 'if (pe && require_exe_sha256 && fp.exe_sha256.empty())'
+        self.assertIn(guard, live)
+        self.assertLess(live.index(guard), live.index("CalibLiveReader reader(fp)"))
+        self.assertIn('return fail("whole-file PE digest unavailable after identity worker")', live)
+        self.assertIn("if (identity.sha256.empty()) identity.sha256 = sha256_file(fp.exe_path);", live)
+        self.assertLess(live.index(guard), live.index("sha256_file(fp.exe_path)"))
+
     def test_frames_skip_identity_attempts_without_polling_worker(self):
         frame = ENTRY.split("void on_frame() {", 1)[1].split("void rearm_kept_release()", 1)[0]
         self.assertIn("if (g_state.identity_pending) return;", frame)

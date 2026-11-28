@@ -28,7 +28,8 @@ class CalibLiveReader final : public CalibMemoryReader {
 
 // The caller waits for singleton registration before invoking this. Identity comes
 // from the current process; census needs offline disassembly and is never inferred.
+// Async Windows callers require the worker's whole-file digest; no file-hash fallback is allowed.
 bool derive_live_calibration(const AbiTable &table, const ProcessFingerprint &fp,
                              Calibration *out, std::vector<CheckResult> *checks,
-                             std::string *error);
+                             std::string *error, bool require_exe_sha256 = false);
 }  // namespace grc

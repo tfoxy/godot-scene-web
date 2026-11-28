@@ -2,6 +2,7 @@
 #include "abi.h"
 #include "calib_live.h"
 #include "iface.h"
+#include "rs_identity_digest.h"
 #include <cstdio>
 #include <cstring>
 #if defined(_WIN32)
@@ -195,6 +196,28 @@ void main_module() {
         c.time_date_stamp == fp.time_date_stamp && c.size_of_image == fp.size_of_image &&
         c.codeview_id == fp.codeview_id && c.codeview_id_present == !fp.codeview_id.empty() &&
         c.dynamic_base == fp.dynamic_base, "all Windows derived record identities");
+  const auto sync_record = serialize_derived_calibration(c, table());
+  const auto digest = compute_windows_image_digest(fp.exe_path, true);
+  check(digest.ok && digest.whole_file_hex == c.sha256,
+        "shared PE pass produces the identical whole-file derived identity");
+  check(resolve_windows_image_digest(&fp, digest, &error) && fp.exe_sha256 == c.sha256,
+        "worker whole-file digest lands in fingerprint before derivation");
+  // Preserve the executable name (and therefore flavor) while making any file hash fail.
+  const auto slash = fp.exe_path.find_last_of("/\\");
+  fp.exe_path = "Z:\\missing-derived-test\\" + fp.exe_path.substr(slash + 1);
+  check(sha256_file(fp.exe_path).empty(), "async fixture cannot fall back to a file hash");
+  checks.clear(); error.clear();
+  check(derive_live_calibration(table(), fp, &c, &checks, &error, true),
+        "async Windows derivation consumes supplied whole-file hash without reading file");
+  check(serialize_derived_calibration(c, table()) == sync_record,
+        "async and synchronous Windows derived records are byte identical");
+  auto missing = fp; missing.exe_sha256.clear();
+  checks.clear(); error.clear();
+  Calibration refused;
+  check(!derive_live_calibration(table(), missing, &refused, &checks, &error, true) &&
+        refused.slots.empty() && error == "whole-file PE digest unavailable after identity worker" &&
+        !checks.back().ok && checks.back().detail == error,
+        "missing async whole-file digest refuses derive-failed with detail");
   check(c.abstract_vtable_vaddr + fp.load_bias == reinterpret_cast<uint64_t>(&abstract_table),
         "Windows main module ASLR bias");
   LiveVtableFacts facts;

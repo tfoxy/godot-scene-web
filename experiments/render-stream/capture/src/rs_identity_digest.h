@@ -29,9 +29,19 @@ inline bool async_identity_digest(std::string_view platform, std::string_view mo
 
 struct ImageDigestResult {
   bool ok = false;
-  std::string hex, error;
+  std::string hex, whole_file_hex, error;
   uint64_t bytes = 0, image_base = 0, ns = 0;
 };
+
+// Derived records retain the whole-file identity. Request it alongside the image digest
+// so both digests share file reads; shipped records need only the image digest.
+inline ImageDigestResult compute_windows_image_digest(
+    const std::string &path, bool derived, decltype(&pe_image_sha256) hash = pe_image_sha256) {
+  ImageDigestResult result;
+  result.ok = hash(path, &result.hex, &result.bytes, &result.image_base, &result.error,
+                   derived ? &result.whole_file_hex : nullptr);
+  return result;
+}
 
 // Complete the metadata-only fingerprint before any calibrated address is used.
 inline bool resolve_windows_image_digest(ProcessFingerprint *fp, const ImageDigestResult &result,
@@ -51,6 +61,7 @@ inline bool resolve_windows_image_digest(ProcessFingerprint *fp, const ImageDige
   fp->image_base = result.image_base;
   fp->load_bias = loaded_base - result.image_base;
   fp->image_sha256 = result.hex;
+  fp->exe_sha256 = result.whole_file_hex;
   return true;
 }
 
