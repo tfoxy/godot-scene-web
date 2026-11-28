@@ -22,13 +22,15 @@ describe("replay seq window", () => {
       from: 1500,
       to: null,
     });
-    expect(readReplayWindow(new URLSearchParams("to=0"))).toEqual({
-      from: 0,
-      to: 0,
+    expect(readReplayWindow(new URLSearchParams("to=3"))).toEqual({
+      from: 1,
+      to: 3,
     });
   });
   it.each([
     "from=-1",
+    "from=0",
+    "to=0",
     "from=1.5",
     "from=NaN",
     "from=1800&to=1500",
@@ -44,17 +46,30 @@ it.each(
     { repeats: 1, windowed: true },
     { repeats: 2, windowed: true },
     { repeats: 1, windowed: false },
+    { repeats: 1, windowed: true, resource: true },
+    { repeats: 1, windowed: true, toOnly: true },
     ...[false, true].flatMap((staging) => [
       { repeats: 1, windowed: true, missing: "fatal", staging },
       { repeats: 2, windowed: true, missing: "skip", staging },
     ]),
-  ].map((row) => ({ missing: "none", staging: false, ...row })),
-)("replays with repeats=$repeats, window=$windowed", async ({
+  ].map((row) => ({
+    missing: "none",
+    staging: false,
+    resource: false,
+    toOnly: false,
+    ...row,
+  })),
+)("replays with repeats=$repeats, window=$windowed, resource=$resource, toOnly=$toOnly", async ({
   repeats,
   windowed,
   missing,
   staging,
+  resource,
+  toOnly,
 }) => {
+  const from = toOnly ? 1 : 1500;
+  const to = toOnly ? 3 : 1800;
+  const measured = to - from + 1;
   const { runBench } = await import("./bench-rs");
   const memory = new WebAssembly.Memory({ initial: 1 });
   const stats = new Uint32Array(memory.buffer, 0, 40);
@@ -92,8 +107,10 @@ it.each(
       return 0;
     }
     accept(index: number) {
-      stats[1] = index - 1;
+      // Real recordings start transaction seqs at 1; resources retain the previous seq.
+      stats[1] = index - (resource && index >= 1501 ? 1 : 0);
       stats[2] = index;
+      if (resource && index === 1501) return 1;
       return missing === "none" ? 0 : 3;
     }
     needed_count() {
@@ -174,7 +191,7 @@ it.each(
   });
   const measure = vi.spyOn(performance, "measure");
   try {
-    const query = `input=/recording&nonce=test&warmup=0&repeats=${repeats}${windowed ? "&from=1500&to=1800&prof=1" : ""}${missing !== "none" ? "&store=/store" : ""}${missing === "skip" ? "&missing=skip" : ""}`;
+    const query = `input=/recording&nonce=test&warmup=0&repeats=${repeats}${windowed ? `${toOnly ? "" : `&from=${from}`}&to=${to}&prof=1` : ""}${missing !== "none" ? "&store=/store" : ""}${missing === "skip" ? "&missing=skip" : ""}`;
     await runBench(new URLSearchParams(query), {
       default: async () => ({ memory }),
       GswRs: FakeRs,
@@ -190,29 +207,50 @@ it.each(
     }
     if (missing === "skip") {
       expect(uploaded?.missing_skipped).toEqual(["00".repeat(32)]);
-      expect(deferred).toBe(1801 * repeats);
-      expect(provided).toBe(1801 * repeats);
-      expect(staged).toBe(staging ? 1801 * repeats : 0);
+      expect(deferred).toBe(1800 * repeats);
+      expect(provided).toBe(1800 * repeats);
+      expect(staged).toBe(staging ? 1800 * repeats : 0);
     } else expect(uploaded).not.toHaveProperty("missing_skipped");
     expect(uploaded?.repeats).toBe(repeats);
-    if (windowed) expect(uploaded?.window).toEqual({ from: 1500, to: 1800 });
+    if (windowed) expect(uploaded?.window).toEqual({ from, to });
     else expect(uploaded).not.toHaveProperty("window");
     expect(uploaded?.results).toHaveLength(repeats);
     for (const result of uploaded?.results ?? []) {
       expect(result.error).toBeNull();
-      if (windowed) expect(result.measured.frames).toBe(301);
+      if (windowed) expect(result.measured.frames).toBe(measured);
       else expect(result).not.toHaveProperty("measured");
       expect(result.samples.map((s) => s.seq)).toEqual(
         Array.from(
-          { length: windowed ? 301 : 1809 },
-          (_, i) => (windowed ? 1500 : 0) + i,
+          { length: windowed ? measured : 1809 },
+          (_, i) => (windowed ? from : 1) + i,
         ),
       );
     }
     expect(resets).toBe(repeats);
-    expect(draws).toBe((windowed ? 1801 : 1809) * repeats); // prefix really applied/drew again after each reset
-    expect(frames).toBe((windowed ? 302 : 1810) * repeats); // one setup rAF plus the measured window
-    expect(measure).toHaveBeenCalledTimes(windowed ? 5 * 301 * repeats : 0); // prefix has no user timings
+    expect(draws).toBe((windowed ? to : 1809) * repeats); // prefix really applied/drew again after each reset
+    expect(frames).toBe(
+      (windowed ? measured + Number(resource) + 1 : 1810) * repeats,
+    ); // one setup rAF plus the measured window
+    expect(measure).toHaveBeenCalledTimes(
+      windowed ? 5 * (measured + Number(resource)) * repeats : 0,
+    ); // every paced accept has all five timings; the prefix has none
+    if (windowed) {
+      const decodes = measure.mock.calls.filter(
+        ([name]) => name === "rs-bench:decode",
+      );
+      expect(
+        decodes.map(
+          ([, options]) => (options as PerformanceMeasureOptions).detail.seq,
+        ),
+      ).toEqual(
+        Array.from({ length: repeats }, () =>
+          Array.from(
+            { length: measured + Number(resource) },
+            (_, i) => from + i - (resource && i >= 1 ? 1 : 0),
+          ),
+        ).flat(),
+      );
+    }
   } finally {
     measure.mockRestore();
   }

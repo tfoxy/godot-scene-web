@@ -280,16 +280,16 @@ export function readReplayWindow(
   params: URLSearchParams,
 ): { from: number; to: number | null } | null {
   if (!params.has("from") && !params.has("to")) return null;
-  const from = Number(params.get("from") ?? "0");
+  const from = Number(params.get("from") ?? "1");
   const to = params.has("to") ? Number(params.get("to")) : null;
   if (
     params.get("from") === "" ||
     params.get("to") === "" ||
     !Number.isSafeInteger(from) ||
-    from < 0 ||
+    from < 1 ||
     (to !== null && (!Number.isSafeInteger(to) || to < from))
   )
-    throw new Error("replay window needs nonnegative integer from <= to");
+    throw new Error("replay window needs positive integer from <= to");
   return { from, to };
 }
 
@@ -599,16 +599,7 @@ export async function runBench(
         st.executed_calls !== st.expected_calls
       )
         parityViolations++;
-      // Replay the prefix through the same accept/provide/program/apply/draw/digest path,
-      // without rAF waits or samples. A window measures transactions, not resource records.
-      if (
-        replayWindow &&
-        (code !== ACCEPT_TRANSACTION ||
-          st.seq < replayWindow.from ||
-          (replayWindow.to !== null && st.seq > replayWindow.to))
-      )
-        continue;
-      if (userTimings) {
+      if (userTimings && paced) {
         // Numeric bounds reuse the existing wall timers; diagnostics add no marks when off.
         const detail = { seq: st.seq, repeat: r, warmup: isWarmup };
         const measure = (phase: string, start: number, duration: number) =>
@@ -628,6 +619,15 @@ export async function runBench(
         for (const phase of ["decode", "provide", "program", "apply", "draw"])
           performance.clearMeasures(`rs-bench:${phase}`);
       }
+      // Replay the prefix through the same accept/provide/program/apply/draw/digest path,
+      // without rAF waits or samples. A window measures transactions, not resource records.
+      if (
+        replayWindow &&
+        (code !== ACCEPT_TRANSACTION ||
+          st.seq < replayWindow.from ||
+          (replayWindow.to !== null && st.seq > replayWindow.to))
+      )
+        continue;
       if (
         code === ACCEPT_TRANSACTION &&
         (shotFrames.has(st.frame) || shotSeqs.has(st.seq)) &&

@@ -1,7 +1,7 @@
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { waitTracedBench } from "../gate7-bench";
+import { parseArgs, waitTracedBench } from "../gate7-bench";
 import {
   startCdpTrace,
   TRACE_CATEGORIES,
@@ -149,4 +149,21 @@ it("fails explicitly if a measured repeat never reaches the trace threshold", as
       "fake",
     ),
   ).rejects.toThrow("trace threshold seq 10 was never reported");
+});
+
+it("rejects a sequence window starting at zero in the gate driver", () => {
+  expect(() =>
+    parseArgs([
+      "--arm",
+      "gsw-rs",
+      "--inputs",
+      "unused",
+      "--out",
+      "unused",
+      "--from",
+      "0",
+      "--to",
+      "3",
+    ]),
+  ).toThrow(/from/);
 });

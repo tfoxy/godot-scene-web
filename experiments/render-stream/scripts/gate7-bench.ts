@@ -186,7 +186,7 @@ interface Args {
   webBundleBase: string | undefined;
 }
 
-function parseArgs(argv: string[]): Args {
+export function parseArgs(argv: string[]): Args {
   const a: Args = {
     arm: "gsw-ts",
     interleave: [],
@@ -452,12 +452,12 @@ function parseArgs(argv: string[]): Args {
       throw new HarnessUsageError("--from/--to need Rust bench arms");
     if (
       (a.fromSeq !== undefined &&
-        (!Number.isSafeInteger(a.fromSeq) || a.fromSeq < 0)) ||
+        (!Number.isSafeInteger(a.fromSeq) || a.fromSeq < 1)) ||
       (a.toSeq !== undefined &&
-        (!Number.isSafeInteger(a.toSeq) || a.toSeq < (a.fromSeq ?? 0)))
+        (!Number.isSafeInteger(a.toSeq) || a.toSeq < (a.fromSeq ?? 1)))
     )
       throw new HarnessUsageError(
-        "--from/--to need nonnegative integer from <= to",
+        "--from/--to need positive integer from <= to",
       );
   }
   return a;
@@ -2081,7 +2081,7 @@ async function main(): Promise<void> {
     warmup: args.warmup,
     repeats: args.repeats,
     ...(args.fromSeq !== undefined || args.toSeq !== undefined
-      ? { window: { from: args.fromSeq ?? 0, to: args.toSeq ?? null } }
+      ? { window: { from: args.fromSeq ?? 1, to: args.toSeq ?? null } }
       : {}),
     // D31/G7o1; meaningful for `gsw` only -- native and web stay inline (D31).
     record_digest: args.recordDigest,
