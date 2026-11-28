@@ -363,6 +363,44 @@ export async function launchHarnessBrowser(
   return { browser, executablePath };
 }
 
+/** Start browser-wide tracing on the existing desktop or device CDP connection. */
+export async function startHarnessTrace(
+  browser: Browser | DeviceBrowser,
+  path: string,
+) {
+  const { startCdpTrace } = await import("./frame-budget-trace");
+  if ("newBrowserCDPSession" in browser) {
+    const session = await browser.newBrowserCDPSession();
+    return startCdpTrace(
+      {
+        send: (method, params) =>
+          session.send(method as Parameters<CDPSession["send"]>[0], params),
+        onComplete: (listener) => {
+          session.on("Tracing.tracingComplete", listener);
+          return () => {
+            session.off("Tracing.tracingComplete", listener);
+          };
+        },
+        dispose: () => session.detach(),
+      },
+      path,
+    );
+  }
+  const client = browser.client;
+  return startCdpTrace(
+    {
+      send: (method, params) =>
+        client.send(method, params, { flat: true, timeoutMs: 180_000 }),
+      onComplete: (listener) => {
+        client.on("Tracing.tracingComplete", listener);
+        return () => client.off("Tracing.tracingComplete");
+      },
+      dispose: async () => {}, // The device harness owns this shared CDP connection.
+    },
+    path,
+  );
+}
+
 // ---------------------------------------------------------------------------------------------
 // Provenance (D9, D22 `browser-provenance`).
 // ---------------------------------------------------------------------------------------------

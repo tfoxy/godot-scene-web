@@ -1,0 +1,177 @@
+{
+  "traceEvents": [
+    {
+      "ph": "M",
+      "name": "thread_name",
+      "pid": 1,
+      "tid": 11,
+      "args": {
+        "name": "CrRendererMain"
+      }
+    },
+    {
+      "ph": "M",
+      "name": "thread_name",
+      "pid": 2,
+      "tid": 21,
+      "args": {
+        "name": "CrGpuMain"
+      }
+    },
+    {
+      "ph": "X",
+      "name": "FireAnimationFrame",
+      "pid": 1,
+      "tid": 11,
+      "ts": 1000,
+      "dur": 6000
+    },
+    {
+      "ph": "X",
+      "name": "FireAnimationFrame",
+      "pid": 1,
+      "tid": 11,
+      "ts": 11000,
+      "dur": 4000
+    },
+    {
+      "ph": "X",
+      "name": "FireAnimationFrame",
+      "pid": 1,
+      "tid": 11,
+      "ts": 21000,
+      "dur": 3000
+    },
+    {
+      "ph": "b",
+      "cat": "blink.user_timing",
+      "name": "rs-bench:decode",
+      "id": "a",
+      "pid": 1,
+      "tid": 11,
+      "ts": 1000,
+      "args": {
+        "detail": {
+          "seq": 1500,
+          "repeat": 0
+        }
+      }
+    },
+    {
+      "ph": "e",
+      "cat": "blink.user_timing",
+      "name": "rs-bench:decode",
+      "id": "a",
+      "pid": 1,
+      "tid": 11,
+      "ts": 2000
+    },
+    {
+      "ph": "X",
+      "name": "rs-bench:provide",
+      "pid": 1,
+      "tid": 11,
+      "ts": 2000,
+      "dur": 500
+    },
+    {
+      "ph": "X",
+      "name": "rs-bench:program",
+      "pid": 1,
+      "tid": 11,
+      "ts": 2500,
+      "dur": 500
+    },
+    {
+      "ph": "X",
+      "name": "rs-bench:apply",
+      "pid": 1,
+      "tid": 11,
+      "ts": 3000,
+      "dur": 1000
+    },
+    {
+      "ph": "X",
+      "name": "rs-bench:draw",
+      "pid": 1,
+      "tid": 11,
+      "ts": 4000,
+      "dur": 2000
+    },
+    {
+      "ph": "B",
+      "name": "ThreadControllerImpl::RunTask",
+      "cat": "toplevel",
+      "pid": 2,
+      "tid": 21,
+      "ts": 0
+    },
+    {
+      "ph": "X",
+      "name": "WebGL",
+      "pid": 2,
+      "tid": 21,
+      "ts": 1000,
+      "dur": 3000
+    },
+    {
+      "ph": "E",
+      "pid": 2,
+      "tid": 21,
+      "ts": 5000
+    },
+    {
+      "ph": "X",
+      "name": "ThreadControllerImpl::RunTask",
+      "cat": "toplevel",
+      "pid": 2,
+      "tid": 21,
+      "ts": 9000,
+      "dur": 4000
+    },
+    {
+      "ph": "X",
+      "name": "WebGL",
+      "pid": 2,
+      "tid": 21,
+      "ts": 9500,
+      "dur": 3000
+    },
+    {
+      "ph": "X",
+      "name": "WebGL",
+      "pid": 2,
+      "tid": 21,
+      "ts": 16000,
+      "dur": 2000
+    },
+    {
+      "ph": "X",
+      "name": "Display::DrawAndSwap",
+      "pid": 3,
+      "tid": 31,
+      "ts": 8000,
+      "dur": 200
+    },
+    {
+      "ph": "X",
+      "name": "SkiaOutputSurfaceImplOnGpu::SwapBuffers",
+      "pid": 2,
+      "tid": 21,
+      "ts": 8100,
+      "dur": 100
+    },
+    {
+      "ph": "b",
+      "name": "PipelineReporter",
+      "pid": 3,
+      "tid": 31,
+      "ts": 12000,
+      "args": {
+        "frame_reporter": {
+          "state": "STATE_DROPPED"
+        }
+      }
+    }
+  ]
+}

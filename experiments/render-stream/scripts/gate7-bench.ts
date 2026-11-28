@@ -20,6 +20,7 @@
 //                            # transcode (web/bench/basis.html; G8kb)
 //   gate7-bench.ts --interleave gsw-ts,gsw-rs,gsw-rs-inline --rounds 5 ...  # G7x's bench protocol
 //   gate7-bench.ts --interleave gsw-rs-base,gsw-rs --rs-build-base <dir> ...  # G7o2: before/after
+//       [--trace-seconds N --trace-from-seq S] # Rust replay trace + frame-budget.json
 //       [--profile]   # G7o2: the core's phase timers on in every Rust page (diagnostics only)
 // `gsw-ts` is the TypeScript arm (G7x renamed it; G7a retired its `gsw` alias: since G7a the GSW
 // receiver is the Rust core, so `gsw` alone no longer names this arm).
@@ -84,9 +85,11 @@ import {
   loadDeviceTable,
   openHarnessDevice,
   resolveDeviceSelection,
+  startHarnessTrace,
 } from "./lib/browser-harness";
 import { probeDeviceAdb } from "./lib/device-probes";
 import { DeviceSampler } from "./lib/device-sampler";
+import { frameBudget, readTrace } from "./lib/frame-budget";
 import {
   type BenchInputSummary,
   decide,
@@ -143,6 +146,8 @@ interface Args {
   rsBuildBase: string | undefined;
   /** G7o2: `prof=1` on every Rust page (per-sample core phases; never a budget run). */
   profile: boolean;
+  traceSeconds: number;
+  traceFromSeq: number;
   /** G7x: Rust-arm sabotages (drop-draws, stale-item-row, digest-skip, skip-payload-hash). */
   rsSabotage: string[];
   /** G7x: host frames whose RGB10_A2 target the Rust arm reads back (pace checks). */
@@ -184,6 +189,8 @@ function parseArgs(argv: string[]): Args {
     rounds: 5,
     rsBuildBase: undefined,
     profile: false,
+    traceSeconds: 0,
+    traceFromSeq: 0,
     webBundleBase: undefined,
     rsBuild: join(
       SCRIPT_DIR,
@@ -286,6 +293,12 @@ function parseArgs(argv: string[]): Args {
       }
       case "--rs-build-base":
         a.rsBuildBase = resolve(v());
+        break;
+      case "--trace-seconds":
+        a.traceSeconds = Number(v());
+        break;
+      case "--trace-from-seq":
+        a.traceFromSeq = Number(v());
         break;
       case "--profile":
         a.profile = true;
@@ -391,6 +404,24 @@ function parseArgs(argv: string[]): Args {
     );
   if (a.arm !== "native" && a.taskset)
     throw new HarnessUsageError("--taskset is a native-arm option");
+  if (
+    !Number.isFinite(a.traceSeconds) ||
+    a.traceSeconds < 0 ||
+    !Number.isSafeInteger(a.traceFromSeq) ||
+    a.traceFromSeq < 0
+  )
+    throw new HarnessUsageError(
+      "--trace-seconds needs a nonnegative finite number; --trace-from-seq a nonnegative integer",
+    );
+  if (
+    a.traceSeconds > 0 &&
+    (!usesRustArm(a) || a.interleave.includes("gsw-ts"))
+  )
+    throw new HarnessUsageError(
+      "tracing needs a Rust bench arm (gsw-rs, gsw-rs-inline or gsw-rs-base)",
+    );
+  if (a.traceFromSeq > 0 && a.traceSeconds === 0)
+    throw new HarnessUsageError("--trace-from-seq needs --trace-seconds");
   return a;
 }
 
@@ -777,7 +808,7 @@ function pageUrl(
     repeats: String(repeats),
   });
   if (args.rsSabotage.length) q.set("sabotage", args.rsSabotage.join(","));
-  if (args.profile) q.set("prof", "1");
+  if (args.profile || args.traceSeconds > 0) q.set("prof", "1");
   if (args.shotFrames.length) q.set("shot-frames", args.shotFrames.join(","));
   if (args.shotSeqs.length) q.set("shot-seqs", args.shotSeqs.join(","));
   return `${origin}/rs.html?${q.toString()}`;
@@ -826,11 +857,16 @@ async function runRustProtocol(
       const label = `${step.input} ${step.arm} ${step.round === 0 ? "warmup" : `round ${step.round}`}${attempt ? " (re-run)" : ""}`;
       await mark(`${label} before`);
       t0 = Date.now();
+      const resultStem = `${input.name}-${step.arm}-r${step.round}${attempt ? "-rerun" : ""}`;
+      const traceDir = join(pagesDir, resultStem);
+      if (args.traceSeconds > 0) await mkdir(traceDir, { recursive: true });
       const page = await openPage(
         pageUrl(args, origin, nonce, input, step.arm, warmup, repeats),
       );
       try {
-        await waitBench(page, 30 * 60_000, label);
+        if (args.traceSeconds > 0 && step.round !== 0)
+          await waitTracedBench(page, args, traceDir, label);
+        else await waitBench(page, 30 * 60_000, label);
       } finally {
         await page.close().catch(() => {});
       }
@@ -843,12 +879,11 @@ async function runRustProtocol(
         await readFile(join(evidence, nonce, file), "utf8"),
       );
       await writeFile(
-        join(
-          pagesDir,
-          `${input.name}-${step.arm}-r${step.round}${attempt ? "-rerun" : ""}.json`,
-        ),
+        join(pagesDir, `${resultStem}.json`),
         JSON.stringify(raw),
       );
+      if (args.traceSeconds > 0)
+        await writeFile(join(traceDir, "result.json"), JSON.stringify(raw));
       got =
         step.arm === "gsw-ts"
           ? summarizeTsPage(raw, step.round)
@@ -893,6 +928,7 @@ async function runRustProtocol(
 }
 
 interface BenchPage {
+  startTrace?(path: string): ReturnType<typeof startHarnessTrace>;
   evaluate<T>(expression: string): Promise<T>;
   close(): Promise<void>;
 }
@@ -901,15 +937,31 @@ async function waitBench(
   page: BenchPage,
   timeoutMs: number,
   label: string,
+  onPoll?: (
+    state: {
+      state: string;
+      detail: string;
+      seq?: number;
+      warmup?: boolean;
+    } | null,
+  ) => Promise<void>,
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   let last = "";
   for (;;) {
     const state = await page
-      .evaluate<{ state: string; detail: string } | null>(
-        "window.__bench ?? null",
+      .evaluate<{
+        state: string;
+        detail: string;
+        seq?: number;
+        warmup?: boolean;
+      } | null>(
+        onPoll
+          ? "window.__bench ? { ...window.__bench, ...window.__benchTraceProgress } : null"
+          : "window.__bench ?? null",
       )
       .catch(() => null);
+    await onPoll?.(state);
     if (state) {
       if (state.detail !== last) {
         last = state.detail;
@@ -923,7 +975,56 @@ async function waitBench(
       throw new Error(
         `${label}: timed out after ${timeoutMs} ms (last: ${last})`,
       );
-    await new Promise((r) => setTimeout(r, 500));
+    await new Promise((r) => setTimeout(r, onPoll ? 50 : 500));
+  }
+}
+
+export async function waitTracedBench(
+  page: BenchPage,
+  args: Pick<Args, "traceSeconds" | "traceFromSeq">,
+  dir: string,
+  label: string,
+): Promise<void> {
+  let trace: Awaited<ReturnType<typeof startHarnessTrace>> | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let finished: Promise<void> | undefined;
+  const path = join(dir, "trace.json");
+  try {
+    await waitBench(page, 30 * 60_000, label, async (state) => {
+      if (
+        !trace &&
+        state?.warmup === false &&
+        (state.seq ?? -1) >= args.traceFromSeq
+      ) {
+        if (!page.startTrace)
+          throw new Error(
+            "bench page has no browser-target CDP trace connection",
+          );
+        trace = await page.startTrace(path);
+        console.log(
+          `gate7-bench: ${label}: trace started at seq ${state.seq} for ${args.traceSeconds} s`,
+        );
+        finished = new Promise<void>((res, rej) => {
+          timer = setTimeout(() => {
+            trace?.stop().then(res, rej);
+          }, args.traceSeconds * 1000);
+        });
+        // Preserve failures while the page is still replaying; await below propagates them.
+        void finished.catch(() => {});
+      }
+    });
+    if (!finished)
+      throw new Error(
+        `trace threshold seq ${args.traceFromSeq} was never reported by a measured repeat`,
+      );
+    await finished;
+    await writeFile(
+      join(dir, "frame-budget.json"),
+      `${JSON.stringify(frameBudget(readTrace(path)), null, 2)}\n`,
+    );
+  } finally {
+    if (timer) clearTimeout(timer);
+    await trace?.stop();
   }
 }
 
@@ -1014,7 +1115,11 @@ async function runGswArm(
       openPage = async (url) => {
         const page = await context.newPage();
         await page.goto(url);
-        return { evaluate: (e) => page.evaluate(e), close: () => page.close() };
+        return {
+          evaluate: (e) => page.evaluate(e),
+          close: () => page.close(),
+          startTrace: (path) => startHarnessTrace(launched.browser, path),
+        };
       };
     } else {
       const entry = sel.entry;
@@ -1122,7 +1227,11 @@ async function runGswArm(
       sampler.start();
       openPage = async (url) => {
         const page = await harness.openPage(url);
-        return { evaluate: (e) => page.evaluate(e), close: () => page.close() };
+        return {
+          evaluate: (e) => page.evaluate(e),
+          close: () => page.close(),
+          startTrace: (path) => startHarnessTrace(harness.browser, path),
+        };
       };
     }
     if (sel.env === "desktop" && args.probes) {

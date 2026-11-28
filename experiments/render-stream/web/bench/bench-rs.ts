@@ -54,6 +54,7 @@ interface BenchState {
 declare global {
   interface Window {
     __bench?: BenchState;
+    __benchTraceProgress?: { seq: number; warmup: boolean };
   }
 }
 
@@ -281,7 +282,8 @@ async function runBench(): Promise<void> {
     );
   const wasmDir = arm === "gsw-rs-base" ? "gsw-rs-base" : "gsw-rs";
   // A build without timers (an earlier base) runs unprofiled.
-  let profile = params.get("prof") === "1";
+  const userTimings = params.get("prof") === "1";
+  let profile = userTimings;
   const input = params.get("input");
   const store = params.get("store");
   const name = params.get("name") ?? "input";
@@ -398,6 +400,7 @@ async function runBench(): Promise<void> {
       let code = gs.accept(i);
       const decodeUs = nowUs() - a;
       let provideUs = 0;
+      let provideStart = a + decodeUs;
       let verifyUs = 0;
       let verifyPhases: Record<string, number> | undefined;
       let provided = 0;
@@ -442,6 +445,7 @@ async function runBench(): Promise<void> {
         if (profile && staging) verifyPhases = takePhases();
         if (error) break;
         const p0 = nowUs();
+        provideStart = p0;
         for (const h of names) {
           if (staging) {
             if ((gs.provide_staged as () => number)() < 0) {
@@ -478,10 +482,14 @@ async function runBench(): Promise<void> {
       let applyUs = 0;
       let drawUs = 0;
       let programUs = 0;
+      let programStart = a;
+      let applyStart = a;
+      let drawStart = a;
       if (code === ACCEPT_TRANSACTION) {
         // G7s: custom shaders this transaction names first, transpiled and compiled once per code
         // hash (inside the frame's total, as in the receiver page).
         const q0 = nowUs();
+        programStart = q0;
         try {
           await resolvePrograms(gs, memory, null);
         } catch (e) {
@@ -490,11 +498,13 @@ async function runBench(): Promise<void> {
         }
         programUs = nowUs() - q0;
         const b = nowUs();
+        applyStart = b;
         if (gs.apply() < 0) {
           error = `record ${i}: apply: ${gs.error()}`;
           break;
         }
         const c = nowUs();
+        drawStart = c;
         if (gs.draw() < 0) {
           error = `record ${i}: draw: ${gs.error()}`;
           break;
@@ -514,6 +524,26 @@ async function runBench(): Promise<void> {
         evidenceUs = nowUs() - e0;
       }
       const st = stats();
+      if (userTimings) {
+        // Numeric bounds reuse the existing wall timers; diagnostics add no marks when off.
+        const detail = { seq: st.seq, repeat: r, warmup: isWarmup };
+        const measure = (phase: string, start: number, duration: number) =>
+          performance.measure(`rs-bench:${phase}`, {
+            start: start / 1000,
+            duration: duration / 1000,
+            detail,
+          });
+        measure("decode", a, decodeUs);
+        // Payload verification sits between decode and provide, outside the bench total.
+        measure("provide", provideStart, provideUs);
+        measure("program", programStart, programUs);
+        measure("apply", applyStart, applyUs);
+        measure("draw", drawStart, drawUs);
+        window.__benchTraceProgress = { seq: st.seq, warmup: isWarmup };
+        // CDP has consumed these entries; do not retain a recording's worth in the JS timeline.
+        for (const phase of ["decode", "provide", "program", "apply", "draw"])
+          performance.clearMeasures(`rs-bench:${phase}`);
+      }
       if (
         code === ACCEPT_TRANSACTION &&
         st.executed_calls !== st.expected_calls
