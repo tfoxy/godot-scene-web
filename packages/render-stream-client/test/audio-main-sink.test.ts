@@ -3,6 +3,8 @@ import { MessageChannel } from "node:worker_threads";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   type AudioContextLike,
+  LANE_LEAD_MARGIN_S,
+  LANE_LEAD_MAX_S,
   MainAudioEngine,
 } from "../src/audio/mainEngine";
 import { MainSinkReceiver } from "../src/audio/mainSink";
@@ -11,6 +13,7 @@ import {
   type SinkBatch,
   SinkBatcher,
 } from "../src/audio/sinkBatch";
+import type { SinkEnvelope } from "../src/audio/sinkProtocol";
 import { type Take, TakeStore } from "../src/audio/takeStore";
 import type { AudioCue, Block } from "../src/audio/wire";
 import { encodeBlock, keyId } from "../src/audio/wire";
@@ -103,10 +106,10 @@ function context() {
       sources.push(n);
       return n;
     },
-    createConstantSource: node,
+    createConstantSource: vi.fn(node),
     createBuffer: (_channels: number, length: number) => {
       const pcm = [new Float32Array(length), new Float32Array(length)];
-      return { getChannelData: (c: number) => pcm[c] };
+      return { length, getChannelData: (c: number) => pcm[c] };
     },
   };
   return { ctx, gains, sources };
@@ -244,6 +247,172 @@ describe("adaptive main lane lead", () => {
     fixed.laneBlock(block(), lane, 0);
     expect(f.sources).toHaveLength(count);
     fixed.dispose();
+  });
+});
+
+describe("main lane spans", () => {
+  const frames = 512,
+    T = frames / 48000;
+  function spanBlock(index = 0) {
+    const b = block(index);
+    b.header.frames = frames;
+    b.header.due_us = 1_000_000n;
+    b.header.made_us = 900_000n;
+    b.header.sent_us = 950_000n;
+    return b;
+  }
+  function pcm(count: number) {
+    return [new Float32Array(frames * count), new Float32Array(frames * count)];
+  }
+  it("connects an unfaded block straight to the voice gain", () => {
+    const f = context(),
+      e = new MainAudioEngine(f.ctx as unknown as AudioContextLike);
+    e.laneBlock(spanBlock(), lane, 1, pcm(1));
+    const gains = f.gains.length;
+    e.laneBlock(spanBlock(1), lane, 1 + T, pcm(1));
+    expect(f.gains).toHaveLength(gains);
+    expect(f.sources[1].connect).toHaveBeenCalledWith(f.gains[1]);
+    e.dispose();
+  });
+  it("keeps 100 contiguous blocks on the same keepAlive transition", () => {
+    const f = context(),
+      e = new MainAudioEngine(f.ctx as unknown as AudioContextLike);
+    const touch = vi.spyOn(e as unknown as { touch(): void }, "touch");
+    for (let i = 0; i < 100; i++)
+      e.laneBlock(spanBlock(i), lane, 1 + i * T, pcm(1));
+    expect(touch).toHaveBeenCalledTimes(1);
+    expect(f.ctx.createConstantSource).toHaveBeenCalledTimes(1);
+    for (let i = 0; i < 99; i++) {
+      (f.sources[i].onended as (() => void) | null)?.();
+      expect(f.ctx.createConstantSource).toHaveBeenCalledTimes(1);
+    }
+    expect(touch).toHaveBeenCalledTimes(1);
+    (f.sources[99].onended as (() => void) | null)?.();
+    expect(touch).toHaveBeenCalledTimes(2);
+    expect(f.ctx.createConstantSource).toHaveBeenCalledTimes(2);
+    e.dispose();
+  });
+  it("schedules four blocks as one 2048-frame source and accepts the next span without a fade", () => {
+    const f = context(),
+      stage = vi.fn(),
+      e = new MainAudioEngine(f.ctx as unknown as AudioContextLike, stage);
+    e.laneBlock(spanBlock(), lane, 1, pcm(4), 4);
+    expect(f.sources).toHaveLength(1);
+    expect(f.sources[0].buffer).toHaveProperty("length", 2048);
+    expect(f.sources[0].start).toHaveBeenCalledWith(1.06);
+    const gains = f.gains.length;
+    e.laneBlock(spanBlock(4), lane, 1 + 4 * T, pcm(4), 4);
+    expect(f.gains).toHaveLength(gains);
+    expect(stage).toHaveBeenLastCalledWith(
+      expect.objectContaining({ type: "lane-start", block: 4, count: 4 }),
+    );
+    e.dispose();
+  });
+  it("keeps the fixed all-main block playable exactly at its deadline", () => {
+    const f = context(),
+      e = new MainAudioEngine(f.ctx as unknown as AudioContextLike);
+    f.ctx.currentTime = 1.06;
+    e.laneBlock(spanBlock(), lane, 1, pcm(1));
+    expect(f.sources).toHaveLength(1);
+    expect(f.sources[0].start).toHaveBeenCalledWith(1.06);
+    e.dispose();
+  });
+  it("does not trim an adaptive head because of roundoff when raising the lead", () => {
+    const f = context(),
+      e = new MainAudioEngine(f.ctx as unknown as AudioContextLike, undefined, {
+        laneLead: "adaptive",
+      });
+    f.ctx.currentTime = 0.088;
+    e.laneBlock(spanBlock(), lane, 0.008, pcm(1));
+    expect(f.sources).toHaveLength(1);
+    expect(f.sources[0].start.mock.calls[0]).toHaveLength(1);
+    expect(f.sources[0].start.mock.calls[0][0]).toBeCloseTo(0.108, 12);
+    e.dispose();
+  });
+  it("trims a head 2.5 blocks past the cap, fades and reports the surviving block", () => {
+    const f = context(),
+      stage = vi.fn(),
+      e = new MainAudioEngine(f.ctx as unknown as AudioContextLike, stage, {
+        laneLead: "adaptive",
+      });
+    f.ctx.currentTime = 1 + LANE_LEAD_MAX_S + 2.5 * T - LANE_LEAD_MARGIN_S;
+    e.laneBlock(spanBlock(), lane, 1, pcm(4), 4);
+    expect(f.sources).toHaveLength(1);
+    const at = 1 + 3 * T + LANE_LEAD_MAX_S;
+    expect(f.sources[0].start).toHaveBeenCalledWith(at, 3 * T);
+    expect(f.gains.at(-1)!.gain.linearRampToValueAtTime).toHaveBeenCalledWith(
+      1,
+      at + 0.005,
+    );
+    expect(stage).toHaveBeenCalledWith({
+      type: "lane-drop",
+      lane: 9,
+      stream: 5,
+      block: 0,
+      count: 3,
+    });
+    expect(stage).toHaveBeenCalledWith({
+      type: "lane-start",
+      lane: 9,
+      stream: 5,
+      block: 3,
+      count: 1,
+      contextTime: at,
+      due_us: 1_032_000,
+      made_us: 900_000,
+      sent_us: 950_000,
+    });
+    expect(stage).toHaveBeenCalledWith({ type: "lane-lead", lead_ms: 250 });
+    e.dispose();
+  });
+  it("advances over a fully late span without a source or a lead change", () => {
+    const f = context(),
+      stage = vi.fn(),
+      e = new MainAudioEngine(f.ctx as unknown as AudioContextLike, stage, {
+        laneLead: "adaptive",
+      });
+    e.laneBlock(spanBlock(), lane, 1, pcm(1));
+    f.ctx.currentTime = 2;
+    e.laneBlock(spanBlock(1), lane, 1 + T, pcm(4), 4);
+    expect(f.sources).toHaveLength(1);
+    expect(stage).toHaveBeenLastCalledWith({
+      type: "lane-drop",
+      lane: 9,
+      stream: 5,
+      block: 1,
+      count: 4,
+    });
+    expect(
+      stage.mock.calls.filter(([r]) => r.type === "lane-lead"),
+    ).toHaveLength(0);
+    e.laneBlock(spanBlock(5), lane, 2, pcm(1));
+    expect(f.sources[1].start).toHaveBeenCalledWith(2.06);
+    expect(f.sources[1].connect).toHaveBeenCalledWith(f.gains[1]);
+    e.dispose();
+  });
+  it("passes a span count from the main receiver to the engine", () => {
+    const engine = engineMock(),
+      sink = new MainSinkReceiver(engine, new TakeStore()),
+      b = spanBlock(),
+      planes = pcm(4);
+    sink.handle({
+      epoch: 0,
+      command: {
+        kind: "lane-block",
+        block: { header: b.header },
+        lane,
+        due: 1,
+        pcm: planes,
+        count: 4,
+      },
+    });
+    expect(engine.laneBlock).toHaveBeenCalledWith(
+      { header: b.header, payload: new Uint8Array(0) },
+      lane,
+      1,
+      planes,
+      4,
+    );
   });
 });
 
@@ -393,6 +562,289 @@ describe("sink batching", () => {
       expect(engine.laneBlock).toHaveBeenCalledTimes(1);
       expect(t.pcm[0].length).toBe(480);
     } finally {
+      channel.port1.close();
+      channel.port2.close();
+    }
+  });
+});
+
+describe("Worker lane coalescing", () => {
+  const T = 512 / 48000;
+  function message(
+    index = 0,
+    id = 9,
+  ): SinkEnvelope & {
+    command: Extract<SinkEnvelope["command"], { kind: "lane-block" }>;
+  } {
+    const b = block(index);
+    b.header.lane = id;
+    b.header.frames = 512;
+    b.payload = new Uint8Array(2048);
+    const view = new DataView(b.payload.buffer);
+    for (let f = 0; f < 512; f++) {
+      view.setInt16(f * 4, (index * 512 + f) % 32768, true);
+      view.setInt16(f * 4 + 2, -32768 + ((index * 512 + f) % 32768), true);
+    }
+    return {
+      epoch: 0,
+      command: {
+        kind: "lane-block",
+        block: b,
+        lane: { ...lane, id },
+        due: 1 + index * T,
+      },
+    };
+  }
+  async function held(time = () => 0) {
+    const send = vi.fn(),
+      batcher = new SinkBatcher(send, time, () => 123);
+    for (let i = 0; i < 2; i++) {
+      batcher.push({ kind: "stage", data: { type: "clock" } });
+      await tick();
+    }
+    return { send, batcher };
+  }
+  function lanes(batch: SinkBatch) {
+    return batch.items.flatMap((i) =>
+      "command" in i && i.command.kind === "lane-block" ? [i.command] : [],
+    );
+  }
+  it("posts a count-one span in the same microtask when credit is free", async () => {
+    const send = vi.fn(),
+      b = new SinkBatcher(send, () => 0),
+      m = message();
+    b.push(m);
+    expect(send).not.toHaveBeenCalled();
+    await tick();
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(lanes(send.mock.calls[0][0])[0]).toMatchObject({
+      count: 1,
+      due: 1,
+      block: { header: m.command.block.header },
+    });
+  });
+  it("holds raw payload until flush and never decodes a pre-dropped block", async () => {
+    let time = 0;
+    const { send, batcher } = await held(() => time),
+      m = message();
+    const raw = m.command.block.payload;
+    const payload = vi.fn(() => raw);
+    Object.defineProperty(m.command.block, "payload", { get: payload });
+    batcher.push(m);
+    await tick();
+    expect(payload).not.toHaveBeenCalled();
+    time = 2;
+    batcher.ack();
+    await tick();
+    expect(payload).not.toHaveBeenCalled();
+    expect(lanes(send.mock.calls[2][0])).toHaveLength(0);
+  });
+  it("releases three interleaved lanes of four blocks as three exact PCM spans and six transfers", async () => {
+    const { send, batcher } = await held();
+    for (let i = 0; i < 4; i++)
+      for (const id of [9, 10, 11]) {
+        const m = message(i, id);
+        if (i === 2) {
+          m.command.block.header.flags = 4;
+          m.command.block.payload = new Uint8Array(0);
+        }
+        batcher.push(m);
+      }
+    await tick();
+    expect(send).toHaveBeenCalledTimes(2);
+    batcher.ack();
+    await tick();
+    const spans = lanes(send.mock.calls[2][0]);
+    expect(spans).toHaveLength(3);
+    expect(send.mock.calls[2][1]).toHaveLength(6);
+    for (const [i, span] of spans.entries()) {
+      expect(span).toMatchObject({ count: 4, lane: { id: 9 + i }, due: 1 });
+      expect(span.block).toEqual({
+        header: message(0, 9 + i).command.block.header,
+      });
+      expect(span.block).not.toHaveProperty("payload");
+      for (let c = 0; c < 2; c++) {
+        const expected = Float32Array.from({ length: 2048 }, (_, f) =>
+          f >= 1024 && f < 1536 ? 0 : (c === 0 ? f : -32768 + f) / 32768,
+        );
+        expect(span.pcm[c]).toEqual(expected);
+        expect(send.mock.calls[2][1]).toContain(span.pcm[c].buffer);
+      }
+    }
+  });
+  it.each([
+    "first",
+    "last",
+    "gap",
+    "index",
+    "stream",
+    "epoch",
+    "due",
+  ])("splits on %s", async (why) => {
+    const { send, batcher } = await held(),
+      a = message(),
+      b = message(1);
+    if (why === "first") b.command.block.header.flags = 1;
+    if (why === "last") a.command.block.header.flags = 2;
+    if (why === "gap") b.command.block.header.flags = 8;
+    if (why === "index") b.command.block.header.block = 2;
+    if (why === "stream") b.command.block.header.stream++;
+    if (why === "epoch") b.epoch++;
+    if (why === "due") b.command.due += 0.0011;
+    batcher.push(a);
+    batcher.push(b);
+    batcher.ack();
+    await tick();
+    expect(lanes(send.mock.calls[2][0]).map((s) => s.count)).toEqual([1, 1]);
+  });
+  it("allows a due delta inside 1 ms and splits at the 24-block cap", async () => {
+    const { send, batcher } = await held();
+    for (let i = 0; i < 25; i++) {
+      const m = message(i);
+      if (i > 0) m.command.due += 0.0009;
+      batcher.push(m);
+    }
+    batcher.ack();
+    await tick();
+    expect(lanes(send.mock.calls[2][0]).map((s) => s.count)).toEqual([24, 1]);
+  });
+  it.each([
+    "gate",
+    "groups",
+    "lane-stop",
+    "reset",
+    "play",
+    "load",
+    "sample",
+  ])("closes every lane span at a %s barrier", async (kind) => {
+    const { send, batcher } = await held();
+    const commands: Record<string, SinkEnvelope["command"]> = {
+      gate: { kind: "gate", cue },
+      groups: { kind: "groups", gains: {}, snapshot: true },
+      "lane-stop": { kind: "lane-stop", lane: 9 },
+      reset: { kind: "reset" },
+      play: { kind: "play", cue, key: "bank/key", handledMs: 0 },
+      load: { kind: "load", take: take() },
+    };
+    batcher.push(message(0));
+    batcher.push(message(0, 10));
+    batcher.push(
+      kind === "sample"
+        ? { kind: "sample", data: {} }
+        : { epoch: 0, command: commands[kind] },
+    );
+    batcher.push(message(1));
+    batcher.push(message(1, 10));
+    await tick();
+    expect(lanes(send.mock.calls[2][0]).map((s) => s.count)).toEqual([
+      1, 1, 1, 1,
+    ]);
+    expect(send.mock.calls[2][0].items[2]).toMatchObject(
+      kind === "sample" ? { kind } : { command: { kind } },
+    );
+  });
+  it("keeps the span at its head across take blocks and stage rows", async () => {
+    const { send, batcher } = await held();
+    batcher.push(message());
+    batcher.push({
+      epoch: 0,
+      command: { kind: "take-block", block: block(), pcm: take().pcm },
+    });
+    batcher.push({ kind: "stage", data: { type: "clock" } });
+    batcher.push(message(1));
+    batcher.ack();
+    await tick();
+    expect(send.mock.calls[2][0].items).toMatchObject([
+      { command: { kind: "lane-block", count: 2 } },
+      { command: { kind: "take-block" } },
+      { kind: "stage", data: { type: "clock" } },
+    ]);
+  });
+  it("pre-drops before merging and aggregates a dropped run without decoding it", async () => {
+    let time = 0;
+    const { send, batcher } = await held(() => time);
+    for (let i = 0; i < 5; i++) {
+      const m = message(i);
+      if (i < 3) m.command.block.payload = new Uint8Array(0);
+      batcher.push(m);
+    }
+    time = 1 + LANE_LEAD_MAX_S + 2.5 * T;
+    batcher.ack();
+    await tick();
+    expect(send.mock.calls[2][0].items).toMatchObject([
+      {
+        kind: "stage",
+        data: {
+          type: "lane-drop",
+          at: "worker",
+          lane: 9,
+          stream: 5,
+          block: 0,
+          count: 3,
+          handledMs: 123,
+        },
+      },
+      {
+        command: {
+          kind: "lane-block",
+          count: 2,
+          block: { header: { block: 3 } },
+        },
+      },
+    ]);
+    expect(send.mock.calls[2][1]).toHaveLength(2);
+  });
+  it("does not forward per-block lane diagnostic rows", async () => {
+    const send = vi.fn(),
+      batcher = new SinkBatcher(send, () => 0);
+    batcher.push({ kind: "stage", data: { type: "lane-block", block: 0 } });
+    batcher.push({ kind: "stage", data: { type: "take-block", block: 0 } });
+    batcher.push(message());
+    await tick();
+    expect(send.mock.calls[0][0].items).toHaveLength(2);
+    expect(send.mock.calls[0][0].items[0]).toMatchObject({
+      data: { type: "take-block" },
+    });
+  });
+  it("loops twelve held blocks through MessageChannel into three main sources", async () => {
+    const channel = new MessageChannel(),
+      f = context(),
+      engine = new MainAudioEngine(f.ctx as unknown as AudioContextLike),
+      sink = new MainSinkReceiver(engine, new TakeStore());
+    const batcher = new SinkBatcher(
+      (batch, transfer) =>
+        channel.port1.postMessage(batch, transfer as ArrayBuffer[]),
+      () => 0,
+    );
+    const done = new Promise<void>((resolve, reject) => {
+      channel.port2.on("message", (batch: SinkBatch) => {
+        try {
+          for (const item of batch.items)
+            if ("command" in item) sink.handle(item);
+          if (lanes(batch).length) resolve();
+        } catch (error) {
+          reject(error);
+        }
+      });
+    });
+    try {
+      batcher.push({ kind: "stage" });
+      await tick();
+      batcher.push({ kind: "stage" });
+      await tick();
+      for (let i = 0; i < 4; i++)
+        for (const id of [9, 10, 11]) batcher.push(message(i, id));
+      await tick();
+      expect(f.sources).toHaveLength(0);
+      batcher.ack();
+      await done;
+      expect(f.sources).toHaveLength(3);
+      for (const source of f.sources) {
+        expect(source.buffer).toHaveProperty("length", 2048);
+        expect(source.start).toHaveBeenCalledWith(1.06);
+      }
+    } finally {
+      engine.dispose();
       channel.port1.close();
       channel.port2.close();
     }

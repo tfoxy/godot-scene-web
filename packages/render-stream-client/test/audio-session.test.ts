@@ -443,7 +443,7 @@ describe("audio session", () => {
     });
     s.block(header({ flags: 1 }));
     const source = s.context.sources[0];
-    const gain = (source.connections[0] as Node).connections[0] as Node;
+    const gain = source.connections[0] as Node;
     if (endedBefore) source.end();
     s.text({ type: "take-unavailable", key_id: KEY, reason: "link-down" });
     if (!endedBefore) source.end();
@@ -552,8 +552,7 @@ describe("audio session", () => {
     });
     s.block();
     s.finish();
-    const group = s.context.sources[0].connections[0] as Node;
-    const gain = group.connections[0] as Node;
+    const gain = s.context.sources[0].connections[0] as Node;
     expect(gain.gain.value).toBe(0.125);
     s.text({ type: "groups", gains: { SFX: 0 }, snapshot: false });
     expect(gain.gain.value).toBe(0);

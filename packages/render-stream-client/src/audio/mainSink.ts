@@ -47,6 +47,7 @@ export class MainSinkReceiver {
           c.lane,
           c.due,
           c.pcm,
+          ...(c.count === undefined ? [] : [c.count]),
         );
         break;
       case "lane-stop":

@@ -217,6 +217,8 @@ or an end.
   scheduling thread lags may raise L to cover the measured lag, up to 250 ms, and lowers it only on
   session reset or when no lane has audio scheduled. A block that cannot start by `due_us + L` with
   L at its cap is dropped, never played late.
+  A client may hand consecutive blocks of one lane epoch to its audio API as one contiguous span; each
+  block still plays whole within 1 ms of its own `due_us + L`, or is dropped.
 
 ## Carriage per carrier
 

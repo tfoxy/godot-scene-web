@@ -14,13 +14,14 @@ export class LaneJitterBuffer {
     now: number,
     gap: boolean,
     target = 0.06,
+    count = 1,
   ): { at: number; fade: boolean; newEpoch: boolean } | null {
     if (epoch < this.epoch || (epoch === this.epoch && index < this.next))
       return null;
     const newEpoch = epoch !== this.epoch;
     const fade = gap || newEpoch || index !== this.next;
     this.epoch = epoch;
-    this.next = index + 1;
+    this.next = index + count;
     const at = dueContextTime + target;
     if (at < now) return null;
     return { at, fade, newEpoch };

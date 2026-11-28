@@ -383,17 +383,29 @@ export function openAudioTrack(options: OpenAudioTrackOptions): AudioTrack {
       }
       try {
         if (e.data.kind !== "batch") throw new Error("audio-protocol");
-        stage({
-          type: "sink-batch",
-          handledMs: performance.now(),
-          lag_ms: performance.timeOrigin + performance.now() - e.data.postedMs,
-          items: e.data.items.length,
-        });
+        const handledMs = performance.now();
+        const lag_ms = performance.timeOrigin + handledMs - e.data.postedMs;
+        let lane_spans = 0,
+          lane_blocks = 0;
         for (const item of e.data.items) {
           if (closed || settled || fallingBack) break;
-          if ("command" in item) receiver!.handle(item);
-          else void handleMessage(item);
+          if ("command" in item) {
+            if (item.command.kind === "lane-block") {
+              lane_spans++;
+              lane_blocks += item.command.count ?? 1;
+            }
+            receiver!.handle(item);
+          } else void handleMessage(item);
         }
+        stage({
+          type: "sink-batch",
+          handledMs,
+          lag_ms,
+          items: e.data.items.length,
+          handle_ms: performance.now() - handledMs,
+          lane_spans,
+          lane_blocks,
+        });
       } catch {
         fail();
       } finally {

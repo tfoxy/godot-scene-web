@@ -486,6 +486,70 @@ describe("audio path lifecycle", () => {
     expect(worker.terminate).toHaveBeenCalledTimes(1);
     expect(openMainTrack).not.toHaveBeenCalled();
   });
+  it("reports batch handling time and lane counts after the item loop", async () => {
+    vi.stubGlobal("isSecureContext", false);
+    const Worker = fakeWorker(),
+      ctx = context(),
+      onStage = vi.fn();
+    const track = openPublicTrack({
+      url: "ws://localhost/render-stream",
+      credential: "token",
+      context: ctx,
+      onStage,
+    });
+    let time = 100;
+    const now = vi.spyOn(performance, "now").mockImplementation(() => time);
+    const createBuffer = ctx.createBuffer.bind(ctx);
+    ctx.createBuffer = (...args) => {
+      time += 7;
+      return createBuffer(...args);
+    };
+    onStage.mockClear();
+    try {
+      Worker.instances[0].receive({
+        kind: "batch",
+        postedMs: performance.timeOrigin + 90,
+        items: [
+          ...[4, 3].map((count, i) => ({
+            epoch: 0,
+            command: {
+              kind: "lane-block",
+              block: { header: { ...block().header, frames: 512 } },
+              lane: { id: 9 + i, group: "music", state: "on" },
+              due: 1,
+              count,
+              pcm: [
+                new Float32Array(count * 512),
+                new Float32Array(count * 512),
+              ],
+            },
+          })),
+          { epoch: 0, command: { kind: "groups", gains: {}, snapshot: true } },
+        ],
+      });
+      expect(onStage.mock.calls.map(([row]) => row.type)).toEqual([
+        "lane-start",
+        "lane-start",
+        "sink-batch",
+      ]);
+      expect(onStage).toHaveBeenLastCalledWith({
+        type: "sink-batch",
+        handledMs: 100,
+        lag_ms: 10,
+        items: 3,
+        handle_ms: 14,
+        lane_spans: 2,
+        lane_blocks: 7,
+      });
+      expect(Worker.instances[0].postMessage).toHaveBeenLastCalledWith({
+        kind: "batch-ack",
+      });
+    } finally {
+      now.mockRestore();
+      track.close();
+      await track.finished;
+    }
+  });
   it("keeps the secure worklet init message and transfer unchanged", async () => {
     secure();
     const Worker = fakeWorker(),
